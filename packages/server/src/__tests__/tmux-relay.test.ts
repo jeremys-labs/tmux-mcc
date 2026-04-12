@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as nodePty from 'node-pty';
+import { WebSocket } from 'ws';
 import { TmuxRelay } from '../services/tmux-relay.js';
 
 const mockTerm = {
@@ -28,7 +29,7 @@ describe('TmuxRelay', () => {
   });
 
   it('spawns a PTY attaching to the named tmux window', () => {
-    const mockWs = { send: vi.fn(), readyState: 1 };
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
 
     relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
 
@@ -40,7 +41,7 @@ describe('TmuxRelay', () => {
   });
 
   it('forwards PTY output to the WebSocket', () => {
-    const mockWs = { send: vi.fn(), readyState: 1 };
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
 
     // Simulate PTY data arriving
@@ -50,7 +51,7 @@ describe('TmuxRelay', () => {
   });
 
   it('does not send to closed WebSocket', () => {
-    const mockWs = { send: vi.fn(), readyState: 3 }; // 3 = CLOSED
+    const mockWs = { send: vi.fn(), readyState: WebSocket.CLOSED };
     relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
 
     (mockTerm as any)._dataCallback?.('hello world');
@@ -59,14 +60,14 @@ describe('TmuxRelay', () => {
   });
 
   it('writes input data to PTY', () => {
-    const mockWs = { send: vi.fn(), readyState: 1 };
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     const id = relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
     relay.write(id, 'ls -la\n');
     expect(mockTerm.write).toHaveBeenCalledWith('ls -la\n');
   });
 
   it('kills PTY on detach and removes session from map', () => {
-    const mockWs = { send: vi.fn(), readyState: 1 };
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     const id = relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
     relay.detach(id);
 
@@ -80,7 +81,7 @@ describe('TmuxRelay', () => {
   });
 
   it('resizes PTY on resize call', () => {
-    const mockWs = { send: vi.fn(), readyState: 1 };
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     const id = relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
     relay.resize(id, 100, 30);
 
