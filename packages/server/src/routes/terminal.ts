@@ -32,12 +32,21 @@ export function handleUpgrade(
   const agentName = match[1];
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    const colsHeader = request.headers['x-cols'];
-    const rowsHeader = request.headers['x-rows'];
-    const cols = colsHeader ? Math.max(1, parseInt(String(colsHeader), 10)) : 220;
-    const rows = rowsHeader ? Math.max(1, parseInt(String(rowsHeader), 10)) : 50;
+    const parseSize = (val: string | string[] | undefined, fallback: number): number => {
+      const n = parseInt(String(val ?? ''), 10);
+      return (!isNaN(n) && n > 0) ? n : fallback;
+    };
+    const cols = parseSize(request.headers['x-cols'], 220);
+    const rows = parseSize(request.headers['x-rows'], 50);
 
-    const sessionId = relay.attach(agentName, ws, { cols, rows });
+    let sessionId: string;
+    try {
+      sessionId = relay.attach(agentName, ws, { cols, rows });
+    } catch (err) {
+      console.error(`[terminal] failed to attach to tmux window '${agentName}':`, err);
+      ws.close(1011, 'Failed to attach to tmux session');
+      return;
+    }
 
     ws.on('message', (raw) => {
       const msg = raw.toString();
