@@ -1,11 +1,13 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { Terminal } from '@xterm/xterm';
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+// Exported so TerminalPanel can share the same type without duplication
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 interface UseTerminalOptions {
   agentWindow: string;  // the tmux window name (may differ from agentKey)
   terminal: Terminal | null;
+  // Must be stable (e.g. from useState setter) — an inline arrow fn would cause reconnect storms
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -53,11 +55,15 @@ export function useTerminal({ agentWindow, terminal, onStatusChange }: UseTermin
       if (!mountedRef.current) return;
       onStatusChange?.('disconnected');
       wsRef.current = null;
+      // Exponential backoff: 3s base, 1.5x multiplier, 30s cap
       const delay = Math.min(3000 * Math.pow(1.5, attemptsRef.current++), 30000);
       reconnectTimerRef.current = setTimeout(connect, delay);
     };
 
-    ws.onerror = () => ws.close();
+    ws.onerror = (e) => {
+      if (import.meta.env.DEV) console.warn('[useTerminal] WebSocket error:', e);
+      ws.close();
+    };
 
     wsRef.current = ws;
   }, [agentWindow, terminal, onStatusChange]);

@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { useTerminal } from '../hooks/useTerminal.js';
+import { useTerminal, type ConnectionStatus } from '../hooks/useTerminal.js';
 import { useAgentStore } from '../stores/agentStore.js';
 import '@xterm/xterm/css/xterm.css';
-
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 interface TerminalPanelProps {
   agentKey: string;
@@ -13,6 +11,8 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // termRef: synchronous access for ResizeObserver (avoids stale closures)
+  // terminal state: triggers useTerminal re-evaluation when xterm instance becomes available
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
@@ -47,6 +47,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
         white: '#b1bac4',
       },
       scrollback: 5000,
+      // Leave EOL conversion to the shell/tmux — don't auto-convert \n to \r\n
       convertEol: false,
     });
 
