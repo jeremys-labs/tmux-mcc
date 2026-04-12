@@ -7,9 +7,7 @@ export function createConfigRouter(config: AppConfig): Router {
   const router = Router();
 
   router.get('/config', (_req, res) => {
-    // Strip gateway secrets before sending to client
-    const { gateway: _gateway, ...safeConfig } = config;
-    res.json(safeConfig);
+    res.json(config);
   });
 
   // Runtime provider toggle — switches an agent between 'llm' and 'persistent-harness'
