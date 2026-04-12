@@ -20,7 +20,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
 
   const agent = useAgentStore((s) => s.agents[agentKey]);
   // Use tmuxWindow if configured, fall back to agentKey
-  const agentWindow = (agent as any)?.tmuxWindow ?? agentKey;
+  const agentWindow = agent?.tmuxWindow ?? agentKey;
 
   // Initialize xterm.js Terminal once container is mounted
   useEffect(() => {
