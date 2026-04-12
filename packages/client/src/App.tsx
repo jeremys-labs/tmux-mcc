@@ -5,6 +5,7 @@ import { useAgentStore } from './stores/agentStore';
 import { useConnectionStore } from './stores/connectionStore';
 import { DashboardLayout } from './layouts/DashboardLayout';
 import { ChatPanel } from './components/ChatPanel';
+import { TerminalPanel } from './components/TerminalPanel.js';
 
 // Lazy-load PixiJS canvas to keep initial bundle small
 const OfficeCanvas = lazy(() => import('./canvas/OfficeCanvas').then(m => ({ default: m.OfficeCanvas })));
@@ -165,7 +166,7 @@ export default function App() {
 }
 
 function PanelTabs({ agentKey }: { agentKey: string }) {
-  const [tab, setTab] = useState<'chat' | 'info'>('chat');
+  const [tab, setTab] = useState<'terminal' | 'info'>('terminal');
   const agent = useAgentStore((s) => s.agents[agentKey]);
   const hasTabs = agent?.tabs && agent.tabs.length > 0;
 
@@ -174,10 +175,10 @@ function PanelTabs({ agentKey }: { agentKey: string }) {
       {hasTabs && (
         <div className="flex border-b border-white/10 shrink-0">
           <button
-            onClick={() => setTab('chat')}
-            className={`flex-1 px-3 py-2 text-xs ${tab === 'chat' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary'}`}
+            onClick={() => setTab('terminal')}
+            className={`flex-1 px-3 py-2 text-xs ${tab === 'terminal' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary'}`}
           >
-            Chat
+            Terminal
           </button>
           <button
             onClick={() => setTab('info')}
@@ -188,7 +189,7 @@ function PanelTabs({ agentKey }: { agentKey: string }) {
         </div>
       )}
       <div className="flex-1 overflow-hidden">
-        {tab === 'chat' ? <ChatPanel agentKey={agentKey} /> : <AgentInfoTabs agentKey={agentKey} />}
+        {tab === 'terminal' ? <TerminalPanel agentKey={agentKey} /> : <AgentInfoTabs agentKey={agentKey} />}
       </div>
     </>
   );
