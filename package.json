@@ -1,0 +1,16 @@
+{
+  "name": "openclaw-mcc",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=packages/server\" \"npm run dev --workspace=packages/client\"",
+    "build": "npm run build --workspace=packages/client && npm run build --workspace=packages/server",
+    "test": "npm run test --workspace=@openclaw/server && npm run test --workspace=@openclaw/client",
+    "test:server": "npm run test --workspace=@openclaw/server",
+    "test:client": "npm run test --workspace=@openclaw/client",
+    "test:e2e": "npx playwright test --config packages/client/playwright.config.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
