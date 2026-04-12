@@ -1,13 +1,13 @@
 {
-  "name": "openclaw-mcc",
+  "name": "mcc-tmux",
   "private": true,
   "workspaces": ["packages/*"],
   "scripts": {
     "dev": "concurrently \"npm run dev --workspace=packages/server\" \"npm run dev --workspace=packages/client\"",
     "build": "npm run build --workspace=packages/client && npm run build --workspace=packages/server",
-    "test": "npm run test --workspace=@openclaw/server && npm run test --workspace=@openclaw/client",
-    "test:server": "npm run test --workspace=@openclaw/server",
-    "test:client": "npm run test --workspace=@openclaw/client",
+    "test": "npm run test --workspace=@mcc-tmux/server && npm run test --workspace=@mcc-tmux/client",
+    "test:server": "npm run test --workspace=@mcc-tmux/server",
+    "test:client": "npm run test --workspace=@mcc-tmux/client",
     "test:e2e": "npx playwright test --config packages/client/playwright.config.ts"
   },
   "devDependencies": {
