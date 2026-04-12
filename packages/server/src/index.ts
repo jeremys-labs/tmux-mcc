@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
+import { createServer } from 'http';
 import { loadConfig, resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { loadAgentModels } from './models.js';
@@ -19,6 +20,7 @@ import { createAgentDataRoutes } from './routes/agent-data.js';
 import { createVoiceRouter, startVoiceHealthChecks, stopVoiceHealthChecks } from './routes/voice.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createSearchRouter } from './routes/search.js';
+import { terminalRouter, handleUpgrade } from './routes/terminal.js';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
@@ -164,6 +166,7 @@ app.use('/api', createAgentDataRoutes(config, contentRoot, gateway));
 app.use('/api', createVoiceRouter(config));
 app.use('/api', createProjectsRouter(contentRoot));
 app.use('/api/search', createSearchRouter(db));
+app.use('/api/terminal', terminalRouter);
 
 // Serve built client (production)
 const clientDist = path.join(import.meta.dirname, '../../client/dist');
@@ -196,8 +199,15 @@ app.get('*splat', (_req, res) => {
 });
 
 // Start server
-const server = app.listen(PORT, () => {
-  console.log(`[Server] Listening on port ${PORT}`);
+const server = createServer(app);
+
+server.on('upgrade', (request, socket, head) => {
+  handleUpgrade(request, socket, head as Buffer);
+});
+
+server.listen(PORT, () => {
+  console.log(`[server] listening on :${PORT}`);
+  console.log(`[server] tmux session: ${process.env.TMUX_SESSION ?? 'agents'}`);
   console.log(`[Server] Content root: ${contentRoot}`);
   console.log(`[Server] Agents: ${Object.keys(config.agents).join(', ')}`);
 
