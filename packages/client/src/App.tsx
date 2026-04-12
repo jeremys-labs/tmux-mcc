@@ -188,7 +188,7 @@ function PanelTabs({ agentKey }: { agentKey: string }) {
         </div>
       )}
       <div className="flex-1 overflow-hidden">
-        {tab === 'terminal' ? <TerminalPanel agentKey={agentKey} /> : <AgentInfoTabs agentKey={agentKey} />}
+        {tab === 'terminal' ? <TerminalPanel key={agentKey} agentKey={agentKey} /> : <AgentInfoTabs agentKey={agentKey} />}
       </div>
     </>
   );

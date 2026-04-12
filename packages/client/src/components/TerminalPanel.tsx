@@ -127,12 +127,13 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
         </div>
       </div>
 
-      {/* Terminal container — fills remaining height */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-hidden"
-        style={{ padding: '4px', minHeight: 0 }}
-      />
+      {/* Terminal container — relative wrapper gives FitAddon a concrete size to measure */}
+      <div className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
+        <div
+          ref={containerRef}
+          style={{ position: 'absolute', inset: '4px' }}
+        />
+      </div>
     </div>
   );
 }
