@@ -4,7 +4,6 @@ import { useUIStore } from './stores/uiStore';
 import { useAgentStore } from './stores/agentStore';
 import { useConnectionStore } from './stores/connectionStore';
 import { DashboardLayout } from './layouts/DashboardLayout';
-import { ChatPanel } from './components/ChatPanel';
 import { TerminalPanel } from './components/TerminalPanel.js';
 
 // Lazy-load PixiJS canvas to keep initial bundle small
