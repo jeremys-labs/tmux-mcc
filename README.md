@@ -84,6 +84,12 @@ cp .env.example .env
 mkdir -p ~/.tmux-mcc
 # Edit ~/.tmux-mcc/config.yaml — see Configuration below
 
+# Create an agent directory for each agent you want visible in the UI
+mkdir -p ~/.tmux-mcc/agents/myagent
+
+# Start your agents in a tmux session named "agents" (or set TMUX_SESSION in .env)
+tmux new-session -d -s agents -n myagent
+
 npm run dev
 ```
 
@@ -124,13 +130,16 @@ agents:
     tabs:
       - id: findings
         label: Findings
+        icon: search
         source: "file:findings.json"
       - id: memory
         label: Memory
+        icon: user
         source: memory
         renderer: markdown
       - id: jobs
         label: Jobs
+        icon: clock
         source: crons
 ```
 
@@ -210,7 +219,9 @@ Maps agents to LLM models for display in the chat header:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONTENT_ROOT` | `~/.tmux-mcc` | Path to content directory |
+| `CONTENT_ROOT` | `~/.tmux-mcc` | Path to content directory (config.yaml, workspace, etc.) |
+| `AGENTS_DIR` | `~/.tmux-mcc/agents` | Directory containing one subdirectory per agent. Only agents with a matching subdirectory here are shown in the UI. Place `avatar.png` inside each subdirectory for custom avatars. |
+| `TMUX_SESSION` | `agents` | Name of the tmux session your agents run in. All agent windows must be in this session. |
 | `SERVER_PORT` | `8081` | Server listen port |
 | `CLIENT_PORT` | `3001` | Vite dev server port |
 | `WHISPER_SERVER_URL` | `http://127.0.0.1:8090/inference` | Whisper HTTP server for STT |
