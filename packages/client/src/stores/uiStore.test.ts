@@ -3,14 +3,14 @@ import { useUIStore } from './uiStore';
 
 describe('uiStore', () => {
   beforeEach(() => {
-    useUIStore.setState({ activeView: 'office', activeAgent: null, panelOpen: false });
+    useUIStore.setState({ activeView: null, activeAgent: null, fileSplitOpen: false });
   });
 
-  it('has default view of office and panel closed', () => {
+  it('has default state: no view, no agent, file split closed', () => {
     const state = useUIStore.getState();
-    expect(state.activeView).toBe('office');
-    expect(state.panelOpen).toBe(false);
+    expect(state.activeView).toBeNull();
     expect(state.activeAgent).toBeNull();
+    expect(state.fileSplitOpen).toBe(false);
   });
 
   describe('setView', () => {
@@ -19,30 +19,32 @@ describe('uiStore', () => {
       expect(useUIStore.getState().activeView).toBe('channels');
     });
 
-    it('can switch to files view', () => {
-      useUIStore.getState().setView('files');
-      expect(useUIStore.getState().activeView).toBe('files');
+    it('does not clear activeAgent', () => {
+      useUIStore.getState().setActiveAgent('marcus');
+      useUIStore.getState().setView('office');
+      expect(useUIStore.getState().activeAgent).toBe('marcus');
+      expect(useUIStore.getState().activeView).toBe('office');
     });
   });
 
-  describe('openAgentPanel', () => {
-    it('sets the agent key and opens the panel', () => {
-      useUIStore.getState().openAgentPanel('agent-coder');
+  describe('setActiveAgent', () => {
+    it('sets the active agent and clears the active view', () => {
+      useUIStore.getState().setView('office');
+      useUIStore.getState().setActiveAgent('marcus');
 
       const state = useUIStore.getState();
-      expect(state.activeAgent).toBe('agent-coder');
-      expect(state.panelOpen).toBe(true);
+      expect(state.activeAgent).toBe('marcus');
+      expect(state.activeView).toBeNull();
     });
   });
 
-  describe('closePanel', () => {
-    it('closes the panel but keeps activeAgent', () => {
-      useUIStore.getState().openAgentPanel('agent-coder');
-      useUIStore.getState().closePanel();
-
-      const state = useUIStore.getState();
-      expect(state.panelOpen).toBe(false);
-      expect(state.activeAgent).toBe('agent-coder');
+  describe('toggleFileSplit', () => {
+    it('toggles fileSplitOpen', () => {
+      expect(useUIStore.getState().fileSplitOpen).toBe(false);
+      useUIStore.getState().toggleFileSplit();
+      expect(useUIStore.getState().fileSplitOpen).toBe(true);
+      useUIStore.getState().toggleFileSplit();
+      expect(useUIStore.getState().fileSplitOpen).toBe(false);
     });
   });
 });

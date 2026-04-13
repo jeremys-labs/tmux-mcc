@@ -1,27 +1,25 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useConfig } from './hooks/useConfig';
+import { useAgentStatusStream } from './hooks/useAgentStatusStream';
 import { useUIStore } from './stores/uiStore';
 import { useAgentStore } from './stores/agentStore';
 import { useConnectionStore } from './stores/connectionStore';
-import { DashboardLayout } from './layouts/DashboardLayout';
+import { AppLayout } from './layouts/AppLayout';
 import { TerminalPanel } from './components/TerminalPanel.js';
-
-// Lazy-load PixiJS canvas to keep initial bundle small
-const OfficeCanvas = lazy(() => import('./canvas/OfficeCanvas').then(m => ({ default: m.OfficeCanvas })));
-import { AgentInfoTabs } from './components/AgentInfoTabs';
 import { ChannelsView } from './components/ChannelsView';
 import { FileReview } from './components/FileReview';
 import { StandupWidget } from './components/StandupWidget';
 import { ProjectsView } from './components/ProjectsView';
+import { ResizableSplit } from './components/ResizableSplit';
+
+// Lazy-load PixiJS canvas to keep initial bundle small
+const OfficeCanvas = lazy(() => import('./canvas/OfficeCanvas').then(m => ({ default: m.OfficeCanvas })));
 
 export default function App() {
   useConfig();
+  useAgentStatusStream();
   const activeView = useUIStore((s) => s.activeView);
   const activeAgent = useUIStore((s) => s.activeAgent);
-  const panelOpen = useUIStore((s) => s.panelOpen);
-  const panelExpanded = useUIStore((s) => s.panelExpanded);
-  const closePanel = useUIStore((s) => s.closePanel);
-  const togglePanelExpanded = useUIStore((s) => s.togglePanelExpanded);
   const loading = useAgentStore((s) => s.loading);
   const error = useAgentStore((s) => s.error);
   const setGatewayStatus = useConnectionStore((s) => s.setGatewayStatus);
@@ -61,18 +59,7 @@ export default function App() {
       mounted = false;
       clearInterval(interval);
     };
-  }, [setGatewayStatus]);
-
-  // Global keyboard shortcuts
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        closePanel();
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [closePanel]);
+  }, [setGatewayStatus, setMetrics]);
 
   if (loading) {
     return (
@@ -91,105 +78,73 @@ export default function App() {
   }
 
   return (
-    <DashboardLayout>
-      <div className="flex h-full w-full">
-        {/* Main content area */}
-        <div className="flex-1 relative overflow-hidden">
-          {activeView === 'office' && (
-            <>
-              <Suspense fallback={
-                <div className="h-full w-full bg-surface flex items-center justify-center text-text-secondary">
-                  Loading office...
-                </div>
-              }>
-                <OfficeCanvas />
-              </Suspense>
-              <div className="absolute top-2 left-2 right-2 max-w-56 md:top-4 md:left-4 md:right-auto md:max-w-72 z-10">
-                <StandupWidget />
-              </div>
-            </>
-          )}
-          {activeView === 'channels' && <ChannelsView />}
-          {activeView === 'files' && <FileReview />}
-          {activeView === 'projects' && <ProjectsView />}
-        </div>
-
-        {/* Agent side panel - sidebar on desktop, slide-up sheet on mobile */}
-        {panelOpen && activeAgent && (
-          <>
-            {/* Mobile overlay backdrop */}
-            <div
-              className="fixed inset-0 bg-black/50 z-40 md:hidden"
-              onClick={() => closePanel()}
-            />
-            <aside
-              className={[
-                // Mobile: slide-up full-height sheet
-                'fixed inset-x-0 bottom-0 z-50 bg-surface-raised flex flex-col',
-                'h-[85vh] rounded-t-2xl',
-                'transition-transform duration-300 ease-out',
-                // Desktop: static sidebar
-                'md:static md:inset-auto md:z-auto md:h-auto md:rounded-none',
-                'md:border-l md:border-white/10 md:shrink-0',
-                'md:transition-[width] md:duration-200 md:ease-out',
-                panelExpanded ? 'md:w-[48rem]' : 'md:w-96',
-              ].join(' ')}
-            >
-              {/* Mobile drag handle */}
-              <div className="flex items-center justify-center pt-2 pb-1 md:hidden">
-                <div className="w-10 h-1 rounded-full bg-white/20" />
-              </div>
-              <div className="flex border-b border-white/10">
-                <button
-                  onClick={togglePanelExpanded}
-                  className="hidden md:block px-3 py-2 text-xs text-text-secondary hover:text-text-primary"
-                  title={panelExpanded ? 'Collapse panel' : 'Expand panel'}
-                >
-                  {panelExpanded ? '\u25B6' : '\u25C0'}
-                </button>
-                <button
-                  onClick={() => closePanel()}
-                  className="ml-auto px-3 py-2 text-xs text-text-secondary hover:text-text-primary"
-                >
-                  Close
-                </button>
-              </div>
-              {/* Panel tabs: Chat and Info */}
-              <PanelTabs agentKey={activeAgent} />
-            </aside>
-          </>
-        )}
-      </div>
-    </DashboardLayout>
+    <AppLayout>
+      <CenterPane activeView={activeView} activeAgent={activeAgent} />
+    </AppLayout>
   );
 }
 
-function PanelTabs({ agentKey }: { agentKey: string }) {
-  const [tab, setTab] = useState<'terminal' | 'info'>('terminal');
-  const agent = useAgentStore((s) => s.agents[agentKey]);
-  const hasTabs = agent?.tabs && agent.tabs.length > 0;
+type View = 'office' | 'channels' | 'projects';
 
-  return (
-    <>
-      {hasTabs && (
-        <div className="flex border-b border-white/10 shrink-0">
+function CenterPane({
+  activeView,
+  activeAgent,
+}: {
+  activeView: View | null;
+  activeAgent: string | null;
+}) {
+  const fileSplitOpen = useUIStore((s) => s.fileSplitOpen);
+  const toggleFileSplit = useUIStore((s) => s.toggleFileSplit);
+
+  // View takes priority over terminal
+  if (activeView === 'office') {
+    return (
+      <div className="h-full w-full relative overflow-hidden">
+        <Suspense fallback={
+          <div className="h-full w-full flex items-center justify-center text-text-secondary">
+            Loading office...
+          </div>
+        }>
+          <OfficeCanvas />
+        </Suspense>
+        <div className="absolute top-2 left-2 right-2 max-w-56 md:top-4 md:left-4 md:right-auto md:max-w-72 z-10">
+          <StandupWidget />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeView === 'channels') return <ChannelsView />;
+  if (activeView === 'projects') return <ProjectsView />;
+
+  // No view selected — show terminal for active agent, or empty state
+  if (activeAgent) {
+    return (
+      <div className="flex flex-col h-full w-full">
+        {/* Toolbar — desktop only (file split not supported on mobile) */}
+        <div className="hidden md:flex items-center justify-end px-2 py-1 border-b border-white/10 shrink-0 bg-surface-raised">
           <button
-            onClick={() => setTab('terminal')}
-            className={`flex-1 px-3 py-2 text-xs ${tab === 'terminal' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary'}`}
+            onClick={toggleFileSplit}
+            title={fileSplitOpen ? 'Close file browser' : 'Open file browser'}
+            className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
           >
-            Terminal
-          </button>
-          <button
-            onClick={() => setTab('info')}
-            className={`flex-1 px-3 py-2 text-xs ${tab === 'info' ? 'text-accent border-b-2 border-accent' : 'text-text-secondary'}`}
-          >
-            Info
+            {fileSplitOpen ? '⊟ Files' : '⊞ Files'}
           </button>
         </div>
-      )}
-      <div className="flex-1 overflow-hidden">
-        {tab === 'terminal' ? <TerminalPanel key={agentKey} agentKey={agentKey} /> : <AgentInfoTabs agentKey={agentKey} />}
+        <div className="flex-1 overflow-hidden">
+          <ResizableSplit
+            left={<TerminalPanel key={activeAgent} agentKey={activeAgent} />}
+            right={<FileReview />}
+            rightVisible={fileSplitOpen}
+          />
+        </div>
       </div>
-    </>
+    );
+  }
+
+  return (
+    <div className="h-full w-full flex items-center justify-center text-text-secondary text-sm">
+      Select an agent to start chatting
+    </div>
   );
 }

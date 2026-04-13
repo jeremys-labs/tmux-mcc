@@ -1,27 +1,27 @@
 import { create } from 'zustand';
 
-type View = 'office' | 'channels' | 'files' | 'projects';
+type View = 'office' | 'channels' | 'projects';
 
 interface UIState {
-  activeView: View;
+  activeView: View | null;   // null = show terminal for activeAgent
   activeAgent: string | null;
-  panelOpen: boolean;
-  panelExpanded: boolean;
+  fileSplitOpen: boolean;
+  mobileInfoOpen: boolean;
   setView: (view: View) => void;
-  openAgentPanel: (agentKey: string) => void;
-  closePanel: () => void;
-  togglePanelExpanded: () => void;
+  setActiveAgent: (agentKey: string) => void;
+  toggleFileSplit: () => void;
+  setMobileInfoOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  activeView: 'office',
+  activeView: null,
   activeAgent: null,
-  panelOpen: false,
-  panelExpanded: false,
+  fileSplitOpen: false,
+  mobileInfoOpen: false,
   setView: (view) => set({ activeView: view }),
-  openAgentPanel: (agentKey) => set({ activeAgent: agentKey, panelOpen: true }),
-  closePanel: () => set({ panelOpen: false }),
-  togglePanelExpanded: () => set((s) => ({ panelExpanded: !s.panelExpanded })),
+  setActiveAgent: (agentKey) => set({ activeAgent: agentKey, activeView: null, mobileInfoOpen: false }),
+  toggleFileSplit: () => set((s) => ({ fileSplitOpen: !s.fileSplitOpen })),
+  setMobileInfoOpen: (open) => set({ mobileInfoOpen: open }),
 }));
 
 // Expose for debugging

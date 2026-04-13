@@ -114,6 +114,14 @@ export function createAgentDataRoutes(config: AppConfig, contentRoot: string): R
       return;
     }
 
+    // ------------------------------------------------------------------
+    // source: crons — proxy to /api/cron/agent/:agentKey
+    // ------------------------------------------------------------------
+    if (source === 'crons') {
+      res.redirect(`/api/cron/agent/${agentKey}`);
+      return;
+    }
+
     res.status(400).json({ error: `Unsupported source type: ${source}` });
   });
 

@@ -28,11 +28,11 @@ const COLUMNS: { id: string; label: string; statuses: Project['status'][] }[] = 
 ];
 
 function ProjectCard({ project }: { project: Project }) {
-  const openAgentPanel = useUIStore((s) => s.openAgentPanel);
+  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
 
   return (
     <button
-      onClick={() => openAgentPanel(project.owner)}
+      onClick={() => setActiveAgent(project.owner)}
       className="w-full text-left bg-surface-overlay border border-white/10 rounded-lg p-3 hover:border-accent/40 hover:bg-accent/5 transition-colors cursor-pointer"
     >
       <div className="flex items-start gap-2 mb-1.5">

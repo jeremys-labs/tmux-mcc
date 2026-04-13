@@ -53,6 +53,7 @@ export interface AgentConfig {
   position: AgentPosition;
   tabs: AgentTab[];
   avatar?: AgentAvatar;
+  avatarUrl?: string;
   providerType?: 'llm' | 'persistent-harness';
   harnessConfig?: HarnessConfig;
   /** Optional tmux window name for this agent. Defaults to agentKey if not set. */

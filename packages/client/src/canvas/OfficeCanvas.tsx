@@ -10,7 +10,7 @@ export function OfficeCanvas() {
   const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<IsometricScene | null>(null);
   const agents = useAgentStore((s) => s.agents);
-  const openAgentPanel = useUIStore((s) => s.openAgentPanel);
+  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
   const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,7 +51,7 @@ export function OfficeCanvas() {
         sceneRef.current = scene;
 
         scene.on('agentClick', (agentKey: string) => {
-          openAgentPanel(agentKey);
+          setActiveAgent(agentKey);
         });
 
         scene.render();
@@ -106,7 +106,7 @@ export function OfficeCanvas() {
         appRef.current = null;
       }
     };
-  }, [agents, openAgentPanel]);
+  }, [agents, setActiveAgent]);
 
   if (initError) {
     return (

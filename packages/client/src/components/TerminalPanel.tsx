@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useTerminal, type ConnectionStatus } from '../hooks/useTerminal.js';
 import { useAgentStore } from '../stores/agentStore.js';
+import { useUIStore } from '../stores/uiStore.js';
 import '@xterm/xterm/css/xterm.css';
 
 interface TerminalPanelProps {
@@ -11,14 +12,17 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const touchWrapperRef = useRef<HTMLDivElement>(null);
   // termRef: synchronous access for ResizeObserver (avoids stale closures)
   // terminal state: triggers useTerminal re-evaluation when xterm instance becomes available
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  const [scrolledUp, setScrolledUp] = useState(false);
 
   const agent = useAgentStore((s) => s.agents[agentKey]);
+  const setMobileInfoOpen = useUIStore((s) => s.setMobileInfoOpen);
   // Use tmuxWindow if configured, fall back to agentKey
   const agentWindow = agent?.tmuxWindow ?? agentKey;
 
@@ -56,6 +60,11 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     term.open(container);
     // Fit after a brief delay so the container has dimensions
     requestAnimationFrame(() => fitAddon.fit());
+
+    term.onScroll(() => {
+      const buf = term.buffer.active;
+      setScrolledUp(buf.viewportY < buf.baseY);
+    });
 
     termRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -96,6 +105,38 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     return () => observer.disconnect();
   }, [sendResize]);
 
+  // Touch scroll — xterm.js doesn't handle touch natively; translate swipes to scrollLines()
+  useEffect(() => {
+    const wrapper = touchWrapperRef.current;
+    if (!wrapper) return;
+
+    let lastY = 0;
+
+    const onTouchStart = (e: TouchEvent) => {
+      lastY = e.touches[0].clientY;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const term = termRef.current;
+      if (!term) return;
+      const deltaY = lastY - e.touches[0].clientY;
+      lastY = e.touches[0].clientY;
+      const lineHeight = (term.options.fontSize ?? 13) * 1.5;
+      const lines = Math.round(deltaY / lineHeight);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        e.preventDefault();
+      }
+    };
+
+    wrapper.addEventListener('touchstart', onTouchStart, { passive: true });
+    wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => {
+      wrapper.removeEventListener('touchstart', onTouchStart);
+      wrapper.removeEventListener('touchmove', onTouchMove);
+    };
+  }, []);
+
   const statusDot = {
     connecting: 'bg-yellow-400 animate-pulse',
     connected: 'bg-green-400',
@@ -121,18 +162,35 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <span className={`text-xs ${statusText}`}>{status}</span>
           <div className={`w-2 h-2 rounded-full ${statusDot}`} />
+          <button
+            onClick={() => setMobileInfoOpen(true)}
+            className="md:hidden text-xs text-text-secondary px-2 py-0.5 rounded border border-white/10"
+          >
+            Info
+          </button>
         </div>
       </div>
 
       {/* Terminal container — relative wrapper gives FitAddon a concrete size to measure */}
-      <div className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
+      <div ref={touchWrapperRef} className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
         <div
           ref={containerRef}
           style={{ position: 'absolute', inset: '4px' }}
         />
+        {scrolledUp && (
+          <button
+            onClick={() => {
+              termRef.current?.scrollToBottom();
+              setScrolledUp(false);
+            }}
+            className="absolute bottom-3 right-4 z-10 px-3 py-2 text-xs rounded bg-accent/80 hover:bg-accent text-white shadow"
+          >
+            ↓ Jump to bottom
+          </button>
+        )}
       </div>
     </div>
   );

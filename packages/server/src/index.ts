@@ -17,6 +17,10 @@ import { createVoiceRouter, startVoiceHealthChecks, stopVoiceHealthChecks } from
 import { createProjectsRouter } from './routes/projects.js';
 import { createSearchRouter } from './routes/search.js';
 import { terminalRouter, handleUpgrade } from './routes/terminal.js';
+import { createAgentStatusRouter } from './routes/agent-status.js';
+import { agentStatusBroadcaster } from './services/agent-status-broadcaster.js';
+import { createAvatarRouter } from './routes/avatars.js';
+import { createCronRouter } from './routes/cron.js';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
@@ -33,6 +37,32 @@ for (const [key, model] of Object.entries(agentModels)) {
   if (config.agents[key] && model) {
     config.agents[key].model = model;
   }
+}
+
+// Inject avatarUrl for agents that have a local avatar file (auto-discovery)
+const AGENTS_DIR = process.env.AGENTS_DIR ?? '/Volumes/Repo-Drive/agents';
+const AVATAR_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+for (const [agentKey, agentConfig] of Object.entries(config.agents)) {
+  if (!agentConfig.avatarUrl) {
+    for (const ext of AVATAR_EXTS) {
+      if (fs.existsSync(path.join(AGENTS_DIR, agentKey, `avatar.${ext}`))) {
+        agentConfig.avatarUrl = `/api/agents/${agentKey}/avatar`;
+        break;
+      }
+    }
+  }
+}
+
+// Filter to only agents with a working directory on disk
+for (const agentKey of Object.keys(config.agents)) {
+  if (!fs.existsSync(path.join(AGENTS_DIR, agentKey))) {
+    delete config.agents[agentKey];
+  }
+}
+
+// Pre-populate all agents as idle (no badge) — badges only appear after real activity
+for (const agentKey of Object.keys(config.agents)) {
+  agentStatusBroadcaster.broadcast(agentKey, 'idle');
 }
 
 // Database
@@ -55,6 +85,9 @@ app.use('/api', createVoiceRouter(config));
 app.use('/api', createProjectsRouter(contentRoot));
 app.use('/api/search', createSearchRouter(db));
 app.use('/api/terminal', terminalRouter);
+app.use('/api', createAgentStatusRouter());
+app.use('/api', createAvatarRouter());
+app.use('/api', createCronRouter());
 
 // Serve built client (production)
 const clientDist = path.join(import.meta.dirname, '../../client/dist');

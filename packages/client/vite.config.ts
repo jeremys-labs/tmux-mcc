@@ -35,6 +35,11 @@ export default defineConfig({
         navigateFallback: '/index.html',
         runtimeCaching: [
           {
+            // SSE streams must bypass the service worker entirely
+            urlPattern: /\/api\/agent-status\/stream/,
+            handler: 'NetworkOnly',
+          },
+          {
             urlPattern: /^\/api\//,
             handler: 'NetworkFirst',
             options: { cacheName: 'api-cache', expiration: { maxEntries: 50, maxAgeSeconds: 300 } },
@@ -48,8 +53,8 @@ export default defineConfig({
     port: 3001,
     allowedHosts: ['.ts.net'],
     proxy: {
-      '/api': 'http://localhost:8081',
-      '/ws': { target: 'ws://localhost:8081', ws: true },
+      '/api': 'http://localhost:8083',
+      '/ws': { target: 'ws://localhost:8083', ws: true },
     },
   },
 });
