@@ -3,6 +3,17 @@ import path from 'path';
 import { parse as parseYaml } from 'yaml';
 import type { AppConfig } from './types/config.js';
 
+// Load .env from project root (two levels up from packages/server)
+function loadDotEnv(): void {
+  const envPath = path.join(import.meta.dirname, '../../..', '.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.+)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+  }
+}
+loadDotEnv();
+
 export function resolveContentRoot(): string {
   const raw = process.env.CONTENT_ROOT || '~/.tmux-mcc';
   return raw.startsWith('~') ? raw.replace('~', process.env.HOME || '') : raw;
