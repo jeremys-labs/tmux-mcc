@@ -53,13 +53,6 @@ for (const [agentKey, agentConfig] of Object.entries(config.agents)) {
   }
 }
 
-// Filter to only agents with a working directory on disk
-for (const agentKey of Object.keys(config.agents)) {
-  if (!fs.existsSync(path.join(AGENTS_DIR, agentKey))) {
-    delete config.agents[agentKey];
-  }
-}
-
 // Pre-populate all agents as idle (no badge) — badges only appear after real activity
 for (const agentKey of Object.keys(config.agents)) {
   agentStatusBroadcaster.broadcast(agentKey, 'idle');
