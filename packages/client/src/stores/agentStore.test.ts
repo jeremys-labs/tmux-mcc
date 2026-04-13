@@ -42,7 +42,7 @@ describe('agentStore provider updates', () => {
 
     useAgentStore.getState().updateAgentProvider('zara', 'persistent-harness', {
       adapter: 'claude-code',
-      cwd: '/Volumes/Repo-Drive/src/openclaw-mcc',
+      cwd: '/home/user/my-project',
     });
 
     const state = useAgentStore.getState();

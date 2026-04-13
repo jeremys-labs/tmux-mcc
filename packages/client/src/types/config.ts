@@ -6,14 +6,8 @@ export interface BrandingConfig {
   description?: string;
 }
 
-export interface GatewayConfig {
-  url: string;
-  token: string;
-}
-
 export interface AppConfig {
   branding: BrandingConfig;
-  gateway: GatewayConfig;
   agents: Record<string, AgentConfig>;
   sidecarPort?: number;
 }

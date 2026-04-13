@@ -4,7 +4,6 @@ import { createConfigRouter } from './config.js';
 function makeConfig() {
   return {
     branding: { name: 'Test', shortName: 'Test' },
-    gateway: { url: 'ws://example.test', token: 'secret' },
     sidecarPort: 9099,
     agents: {
       zara: {
@@ -49,7 +48,7 @@ describe('config provider route', () => {
       providerType: 'persistent-harness',
       harnessConfig: {
         adapter: 'claude-code',
-        cwd: '/Volumes/Repo-Drive/src/openclaw-mcc',
+        cwd: '/home/user/my-project',
       },
     });
 
@@ -57,7 +56,7 @@ describe('config provider route', () => {
     expect(res.data.providerType).toBe('persistent-harness');
     expect(res.data.harnessConfig).toEqual({
       adapter: 'claude-code',
-      cwd: '/Volumes/Repo-Drive/src/openclaw-mcc',
+      cwd: '/home/user/my-project',
     });
   });
 
@@ -66,7 +65,7 @@ describe('config provider route', () => {
     config.agents.zara.providerType = 'persistent-harness';
     (config.agents.zara as any).harnessConfig = {
       adapter: 'codex',
-      cwd: '/Volumes/Repo-Drive/src/openclaw-mcc',
+      cwd: '/home/user/my-project',
     };
 
     const res = await invokeProviderRoute(config, 'zara', {

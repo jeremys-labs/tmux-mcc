@@ -15,7 +15,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
     <div className="h-screen w-screen bg-surface text-text-primary flex flex-col overflow-hidden">
       {/* Desktop top nav */}
       <header className="bg-surface-raised border-b border-white/10 hidden md:flex items-center px-4 pt-[env(safe-area-inset-top)] pb-1 shrink-0">
-        <h1 className="text-sm font-semibold">OpenClaw Office</h1>
+        <h1 className="text-sm font-semibold">MCC</h1>
         <nav className="ml-auto flex gap-2">
           <ConnectionStatus />
           {(['office', 'channels', 'files', 'projects'] as const).map((view) => (
@@ -34,7 +34,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
       {/* Mobile top bar - minimal branding + connection status */}
       <header className="bg-surface-raised border-b border-white/10 flex md:hidden items-center px-4 pt-[env(safe-area-inset-top)] pb-1 shrink-0">
-        <h1 className="text-sm font-semibold">OpenClaw Office</h1>
+        <h1 className="text-sm font-semibold">MCC</h1>
         <div className="ml-auto">
           <ConnectionStatus />
         </div>

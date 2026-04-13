@@ -13,9 +13,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'OpenClaw Office',
+        name: 'MCC',
         short_name: 'MCC',
-        description: 'OpenClaw Agent Dashboard',
+        description: 'Terminal agent team dashboard',
         theme_color: '#0ea5e9',
         background_color: '#1a1a2e',
         display: 'standalone',

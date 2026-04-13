@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import type { AppConfig } from './types/config.js';
 
 export function resolveContentRoot(): string {
-  const raw = process.env.CONTENT_ROOT || '~/.openclaw';
+  const raw = process.env.CONTENT_ROOT || '~/.tmux-mcc';
   return raw.startsWith('~') ? raw.replace('~', process.env.HOME || '') : raw;
 }
 

@@ -115,7 +115,7 @@ test.describe('Dashboard - Page Load', () => {
 
   test('page loads without crashing and shows the title', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle('OpenClaw Office');
+    await expect(page).toHaveTitle('MCC');
     // The loading state should resolve once the mock config is returned
     await expect(page.locator('text=Loading...')).not.toBeVisible({ timeout: 5000 });
   });
@@ -309,7 +309,7 @@ test.describe('Dashboard - PWA Manifest', () => {
     expect(response.ok()).toBeTruthy();
 
     const manifest = await response.json();
-    expect(manifest.name).toBe('OpenClaw Office');
+    expect(manifest.name).toBe('MCC');
     expect(manifest.short_name).toBe('MCC');
     expect(manifest.display).toBe('standalone');
     expect(manifest.icons).toBeDefined();

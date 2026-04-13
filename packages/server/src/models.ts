@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-interface OpenClawModelConfig {
+interface ModelConfig {
   defaults?: {
     model?: { primary?: string };
   };
@@ -33,7 +33,7 @@ export function formatModelName(modelId: string): string {
 
 export function resolveAgentModels(
   agentKeys: string[],
-  agentsSection: OpenClawModelConfig
+  agentsSection: ModelConfig
 ): Record<string, string> {
   const globalPrimary = agentsSection.defaults?.model?.primary ?? '';
   const agentList = agentsSection.list ?? [];
@@ -48,11 +48,11 @@ export function resolveAgentModels(
 }
 
 export function loadAgentModels(contentRoot: string, agentKeys: string[]): Record<string, string> {
-  const jsonPath = path.join(contentRoot, 'openclaw.json');
+  const jsonPath = path.join(contentRoot, 'models.json');
   if (!fs.existsSync(jsonPath)) return {};
 
   const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-  const agentsSection = raw.agents as OpenClawModelConfig | undefined;
+  const agentsSection = raw.agents as ModelConfig | undefined;
   if (!agentsSection) return {};
 
   return resolveAgentModels(agentKeys, agentsSection);

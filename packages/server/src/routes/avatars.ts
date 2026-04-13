@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 
-const AGENTS_DIR = process.env.AGENTS_DIR ?? '/Volumes/Repo-Drive/agents';
+const AGENTS_DIR = process.env.AGENTS_DIR ?? path.join(process.env.HOME || '', '.tmux-mcc', 'agents');
 const EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
 
 export function createAvatarRouter(): Router {

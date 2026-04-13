@@ -12,7 +12,7 @@ describe('ProviderSwitch', () => {
         agentKey="zara"
         providerType="llm"
         harnessConfig={undefined}
-        defaultCwd="/Volumes/Repo-Drive/src/openclaw-mcc"
+        defaultCwd="/home/user/my-project"
         onChange={onChange}
       />
     );
@@ -23,7 +23,7 @@ describe('ProviderSwitch', () => {
 
     expect(onChange).toHaveBeenCalledWith('persistent-harness', {
       adapter: 'claude-code',
-      cwd: '/Volumes/Repo-Drive/src/openclaw-mcc',
+      cwd: '/home/user/my-project',
       modelConfig: undefined,
     });
   });

@@ -29,7 +29,7 @@ const contentRoot = resolveContentRoot();
 const config = loadConfig(contentRoot);
 ensureContentDirs(contentRoot);
 
-// Resolve agent models from openclaw.json
+// Resolve agent models from models.json
 const agentModels = loadAgentModels(contentRoot, Object.keys(config.agents));
 
 // Inject model into each agent config
@@ -40,7 +40,7 @@ for (const [key, model] of Object.entries(agentModels)) {
 }
 
 // Inject avatarUrl for agents that have a local avatar file (auto-discovery)
-const AGENTS_DIR = process.env.AGENTS_DIR ?? '/Volumes/Repo-Drive/agents';
+const AGENTS_DIR = process.env.AGENTS_DIR ?? path.join(process.env.HOME || '', '.tmux-mcc', 'agents');
 const AVATAR_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
 for (const [agentKey, agentConfig] of Object.entries(config.agents)) {
   if (!agentConfig.avatarUrl) {

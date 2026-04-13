@@ -1,84 +1,62 @@
-# OpenClaw MCC Dashboard
+# CLAUDE.md — tmux-mcc
 
-## Project Purpose
+A web dashboard for terminal-based AI agent teams. See README.md for user-facing docs.
 
-A modern web dashboard for interacting with OpenClaw AI agents. Provides an isometric pixel-art office view, real-time chat with streaming responses, file browsing, voice communication, and agent status monitoring.
+---
 
 ## Project Structure
 
 ```
-openclaw-mcc/
+tmux-mcc/
 ├── packages/
 │   ├── client/          # Vite + React 19 + Tailwind v4 + PixiJS 8
-│   │   ├── src/
-│   │   │   ├── canvas/         # PixiJS isometric office scene
-│   │   │   ├── components/     # React UI components
-│   │   │   ├── hooks/          # useChat, useSSE, useConfig, useVoice
-│   │   │   ├── stores/         # Zustand stores (agents, chat, UI, voice)
-│   │   │   └── layouts/        # DashboardLayout (responsive)
-│   │   ├── e2e/                # Playwright integration tests
-│   │   └── index.html
+│   │   └── src/
+│   │       ├── canvas/         # PixiJS isometric office scene
+│   │       ├── components/     # React UI components
+│   │       ├── hooks/          # useAgentStatusStream, useTerminal, useChat, useVoice
+│   │       ├── stores/         # Zustand stores (agents, agentStatus, chat, UI, voice)
+│   │       └── layouts/        # DashboardLayout, AppLayout
 │   └── server/          # Express 5 + SQLite + WebSocket
 │       └── src/
-│           ├── gateway/        # WebSocket client to OpenClaw Gateway
-│           ├── services/       # Chat streaming (SSE), voice (TTS/STT)
-│           ├── routes/         # REST API endpoints
-│           ├── db.ts           # SQLite chat persistence
-│           └── index.ts        # Main server entry point
-└── docs/plans/          # Design doc + implementation plan
+│           ├── services/       # TmuxRelay, AgentStatusBroadcaster, voice
+│           ├── routes/         # REST API + SSE endpoints
+│           ├── db.ts           # SQLite chat persistence (WAL mode)
+│           └── index.ts        # Server entry point
+└── scripts/             # start-mcc.sh, stop-mcc.sh
 ```
 
 ## Running
 
 ```bash
-# Development (both client + server)
-npm run dev
-
-# Client only (port 3001)
-npm run dev --workspace=packages/client
-
-# Server only (port 8081)
-npm run dev --workspace=packages/server
-
-# Tests
-npm run test:server          # Vitest unit tests (24 tests)
-npm run test:e2e             # Playwright e2e (run from packages/client)
+npm run dev                          # Both client + server with hot reload
+npm run dev --workspace=packages/client   # Client only (port 3001)
+npm run dev --workspace=packages/server   # Server only (port 8081)
+npm run build                        # Production build
+npm run test:server                  # Vitest unit tests
+npm run test:e2e                     # Playwright e2e tests
 ```
-
-## Production (launchd)
-
-The dashboard runs as a launchd service (`com.openclaw.mcc`) serving both API and client on port 8081. Source changes are **not** picked up automatically — you must rebuild and restart:
-
-```bash
-npm run build && launchctl kickstart -k gui/$(id -u)/com.openclaw.mcc
-```
-
-Dev mode (`npm run dev`) still auto-reloads as usual.
 
 ## Key Dependencies
 
-- **Client:** React 19, Tailwind v4 (`@plugin` syntax in CSS), PixiJS 8, Zustand 5, react-markdown, @tailwindcss/typography
-- **Server:** Express 5, better-sqlite3 (WAL mode), ws (WebSocket), node-edge-tts, yaml
+- **Client:** React 19, Tailwind v4 (`@plugin` syntax in CSS), PixiJS 8, Zustand 5, xterm.js, react-markdown
+- **Server:** Express 5, better-sqlite3 (WAL mode), ws (WebSocket), node-pty, node-edge-tts, yaml
 
 ## External Services
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| OpenClaw Gateway | 18789 | Agent communication (WebSocket) |
-| Whisper Server | 8090 | Speech-to-text |
-| Kokoro TTS | varies | Local text-to-speech |
+| tmux | — | Agent session management |
+| Whisper Server | 8090 | Speech-to-text (optional) |
+| Kokoro TTS | varies | Local text-to-speech (optional) |
 
-Config: `~/.openclaw/agents.yaml` and `~/.openclaw/openclaw.json`
-Content root: `~/.openclaw` (set via `CONTENT_ROOT` env var)
+Config: `~/.tmux-mcc/config.yaml` (or `$CONTENT_ROOT`)
 
 ## Important Patterns
 
-- **Zustand selectors:** Use individual `(s) => s.field` selectors, never destructure whole store. Use `?? STABLE_CONST` not `|| []` (creates new refs → infinite loops).
+- **Zustand selectors:** Use individual `(s) => s.field` selectors, never destructure the whole store. Use `?? STABLE_CONST` not `|| []` (creates new refs → infinite loops).
 - **PixiJS 8 lifecycle:** Never use `resizeTo` (causes crash on destroy). Use explicit dimensions + ResizeObserver. Remove canvas from DOM before `app.destroy()`.
 - **Express 5 file serving:** Use `fs.createReadStream().pipe(res)` not `res.sendFile()` for the docs endpoint.
-- **Gateway protocol:** Frame IDs must be strings. See `packages/server/src/gateway/client.ts` for full protocol details.
-- **Tailwind v4:** Uses `@plugin "@tailwindcss/typography"` in CSS, not a tailwind.config.js file.
-
-## Remaining Work
-
-See the project memory for the prioritized task list.
+- **Tailwind v4:** Uses `@plugin "@tailwindcss/typography"` in CSS, not a tailwind.config.js.
+- **TmuxRelay:** When detaching from a session, broadcast `idle` status (not `awaiting_input`) to clear notification badges in the UI.
+- **Agent status:** Status flows from tmux output parsing → `AgentStatusBroadcaster` → SSE `/api/agent-status` → `useAgentStatusStream` → `agentStatusStore`.
+- **Terminal scrollback:** Pre-load tmux scrollback buffer on WebSocket connect so Claude Code history is immediately available.
