@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useProjectStore, type Project } from '../stores/projectStore';
 import { useUIStore } from '../stores/uiStore';
 
@@ -28,11 +29,12 @@ const COLUMNS: { id: string; label: string; statuses: Project['status'][] }[] = 
 ];
 
 function ProjectCard({ project }: { project: Project }) {
-  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
+  const navigate = useNavigate();
+  const clearView = useUIStore((s) => s.clearView);
 
   return (
     <button
-      onClick={() => setActiveAgent(project.owner)}
+      onClick={() => { navigate(`/agent/${project.owner}`); clearView(); }}
       className="w-full text-left bg-surface-overlay border border-white/10 rounded-lg p-3 hover:border-accent/40 hover:bg-accent/5 transition-colors cursor-pointer"
     >
       <div className="flex items-start gap-2 mb-1.5">

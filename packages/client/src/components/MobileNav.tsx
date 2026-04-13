@@ -1,6 +1,8 @@
+import { useNavigate } from 'react-router-dom';
 import { useAgentStore } from '../stores/agentStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAgentStatusStore } from '../stores/agentStatusStore';
+import { useActiveAgent } from '../hooks/useActiveAgent';
 import { AgentAvatar } from './AgentAvatar';
 
 const VIEW_ICONS: Record<string, string> = {
@@ -11,10 +13,11 @@ const VIEW_ICONS: Record<string, string> = {
 
 export function MobileNav() {
   const agents = useAgentStore((s) => s.agents);
-  const activeAgent = useUIStore((s) => s.activeAgent);
+  const activeAgentKey = useActiveAgent();
   const activeView = useUIStore((s) => s.activeView);
-  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
+  const clearView = useUIStore((s) => s.clearView);
   const setView = useUIStore((s) => s.setView);
+  const navigate = useNavigate();
   const statuses = useAgentStatusStore((s) => s.statuses);
 
   const agentKeys = Object.keys(agents).sort((a, b) => {
@@ -27,12 +30,12 @@ export function MobileNav() {
       <div className="flex items-center gap-2 px-3 py-2 overflow-x-auto">
         {/* Agent avatars */}
         {agentKeys.map((key) => {
-          const isActive = activeAgent === key && !activeView;
+          const isActive = activeAgentKey === key && !activeView;
           const status = statuses[key];
           return (
             <div key={key} className="relative shrink-0">
               <button
-                onClick={() => setActiveAgent(key)}
+                onClick={() => { navigate(`/agent/${key}`); clearView(); }}
                 className={[
                   'rounded-full transition-opacity',
                   isActive ? 'opacity-100 ring-2 ring-accent ring-offset-1 ring-offset-surface-raised' : 'opacity-50',

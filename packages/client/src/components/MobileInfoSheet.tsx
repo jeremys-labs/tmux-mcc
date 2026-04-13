@@ -1,12 +1,13 @@
 import { useUIStore } from '../stores/uiStore';
 import { useAgentStore } from '../stores/agentStore';
+import { useActiveAgent } from '../hooks/useActiveAgent';
 import { AgentAvatar } from './AgentAvatar';
 import { AgentInfoTabs } from './AgentInfoTabs';
 
 export function MobileInfoSheet() {
   const mobileInfoOpen = useUIStore((s) => s.mobileInfoOpen);
   const setMobileInfoOpen = useUIStore((s) => s.setMobileInfoOpen);
-  const activeAgent = useUIStore((s) => s.activeAgent);
+  const activeAgent = useActiveAgent();
   const agent = useAgentStore((s) => (activeAgent ? s.agents[activeAgent] : null));
 
   if (!activeAgent || !agent) return null;

@@ -1,10 +1,10 @@
 import { useAgentStore } from '../stores/agentStore';
-import { useUIStore } from '../stores/uiStore';
+import { useActiveAgent } from '../hooks/useActiveAgent';
 import { AgentInfoTabs } from './AgentInfoTabs';
 import { AgentAvatar } from './AgentAvatar';
 
 export function RightPanel() {
-  const activeAgent = useUIStore((s) => s.activeAgent);
+  const activeAgent = useActiveAgent();
   const agent = useAgentStore((s) => (activeAgent ? s.agents[activeAgent] : null));
 
   if (!activeAgent || !agent) return null;

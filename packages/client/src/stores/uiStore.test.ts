@@ -3,13 +3,12 @@ import { useUIStore } from './uiStore';
 
 describe('uiStore', () => {
   beforeEach(() => {
-    useUIStore.setState({ activeView: null, activeAgent: null, fileSplitOpen: false });
+    useUIStore.setState({ activeView: null, fileSplitOpen: false });
   });
 
-  it('has default state: no view, no agent, file split closed', () => {
+  it('has default state: no view, file split closed', () => {
     const state = useUIStore.getState();
     expect(state.activeView).toBeNull();
-    expect(state.activeAgent).toBeNull();
     expect(state.fileSplitOpen).toBe(false);
   });
 
@@ -18,23 +17,13 @@ describe('uiStore', () => {
       useUIStore.getState().setView('channels');
       expect(useUIStore.getState().activeView).toBe('channels');
     });
-
-    it('does not clear activeAgent', () => {
-      useUIStore.getState().setActiveAgent('marcus');
-      useUIStore.getState().setView('office');
-      expect(useUIStore.getState().activeAgent).toBe('marcus');
-      expect(useUIStore.getState().activeView).toBe('office');
-    });
   });
 
-  describe('setActiveAgent', () => {
-    it('sets the active agent and clears the active view', () => {
+  describe('clearView', () => {
+    it('clears the active view', () => {
       useUIStore.getState().setView('office');
-      useUIStore.getState().setActiveAgent('marcus');
-
-      const state = useUIStore.getState();
-      expect(state.activeAgent).toBe('marcus');
-      expect(state.activeView).toBeNull();
+      useUIStore.getState().clearView();
+      expect(useUIStore.getState().activeView).toBeNull();
     });
   });
 

@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAgentStore } from '../stores/agentStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAgentStatusStore } from '../stores/agentStatusStore';
+import { useActiveAgent } from '../hooks/useActiveAgent';
 import type { AgentStatus } from '../stores/agentStatusStore';
 import { AgentAvatar } from './AgentAvatar';
 
@@ -15,17 +17,18 @@ const STATUS_ORDER: Record<AgentStatus, number> = { awaiting_input: 0, thinking:
 
 function AgentRailButton({ agentKey }: { agentKey: string }) {
   const agent = useAgentStore((s) => s.agents[agentKey]);
-  const activeAgent = useUIStore((s) => s.activeAgent);
-  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
+  const activeAgentKey = useActiveAgent();
+  const clearView = useUIStore((s) => s.clearView);
+  const navigate = useNavigate();
   const status = useAgentStatusStore((s) => s.statuses[agentKey]);
-  const isActive = activeAgent === agentKey;
+  const isActive = activeAgentKey === agentKey;
 
   if (!agent) return null;
 
   return (
     <div className="relative">
       <button
-        onClick={() => setActiveAgent(agentKey)}
+        onClick={() => { navigate(`/agent/${agentKey}`); clearView(); }}
         title={agent.name}
         className={[
           'rounded-full transition-opacity duration-150',

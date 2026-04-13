@@ -15,6 +15,7 @@ const ECHO_SUPPRESS_MS = 200;
 
 interface PtySession {
   agentName: string;
+  mccSessionName: string;
   term: pty.IPty;
   dataDisposable: { dispose(): void };
   quietTimer: ReturnType<typeof setTimeout> | null;
@@ -31,6 +32,9 @@ export class TmuxRelay {
     size: { cols: number; rows: number }
   ): string {
     const session = getSession();
+    const id = randomUUID();
+    // Unique per-client tmux session: short enough to be readable, unique enough not to collide
+    const mccSessionName = `mcc-${id.slice(0, 8)}`;
 
     // Pre-load tmux scrollback history so the user can scroll up through
     // the full Claude Code conversation, not just what arrived after connect.
@@ -40,14 +44,23 @@ export class TmuxRelay {
         ['capture-pane', '-t', `${session}:${agentName}`, '-p', '-e', '-S', '-5000', '-E', '-1'],
         { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
       );
-      if (scrollback.trim()) {
+      if (scrollback.trim() && ws.readyState === WebSocket.OPEN) {
         ws.send(scrollback.replace(/\n/g, '\r\n'));
       }
     } catch {
       // Pane may not exist or have no scrollback yet — continue silently
     }
 
-    const term = pty.spawn('tmux', ['attach-session', '-t', `${session}:${agentName}`], {
+    // Create a per-client grouped session so each web client gets its own
+    // independent current-window pointer. Multiple clients can view different
+    // agents simultaneously without tmux cross-client interference.
+    execFileSync(
+      'tmux',
+      ['new-session', '-d', '-s', mccSessionName, '-t', `${session}:${agentName}`],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+
+    const term = pty.spawn('tmux', ['attach-session', '-t', mccSessionName], {
       name: 'xterm-256color',
       cols: size.cols,
       rows: size.rows,
@@ -55,9 +68,8 @@ export class TmuxRelay {
       env: process.env as Record<string, string>,
     });
 
-    const id = randomUUID();
     const ptySession: PtySession = {
-      agentName, term, dataDisposable: { dispose: () => {} },
+      agentName, mccSessionName, term, dataDisposable: { dispose: () => {} },
       quietTimer: null, echoSuppressTimer: null, suppressEcho: false,
     };
     this.sessions.set(id, ptySession);
@@ -112,8 +124,40 @@ export class TmuxRelay {
       session.dataDisposable.dispose();
       session.term.kill();
       this.sessions.delete(id);
+      // Kill the per-client grouped session so it doesn't accumulate
+      try {
+        execFileSync('tmux', ['kill-session', '-t', session.mccSessionName], { stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch {
+        // Already gone — ignore
+      }
       agentStatusBroadcaster.broadcast(session.agentName, 'idle');
     }
+  }
+}
+
+/**
+ * Kill any leftover mcc-* grouped sessions from a previous server run.
+ * Call once at server startup before accepting connections.
+ */
+export function sweepMccSessions(): void {
+  try {
+    const output = execFileSync(
+      'tmux', ['list-sessions', '-F', '#{session_name}'],
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    const stale = output.split('\n').map((s) => s.trim()).filter((s) => s.startsWith('mcc-'));
+    for (const name of stale) {
+      try {
+        execFileSync('tmux', ['kill-session', '-t', name], { stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch {
+        // Already gone — ignore
+      }
+    }
+    if (stale.length > 0) {
+      console.log(`[server] swept ${stale.length} stale mcc-* session(s)`);
+    }
+  } catch {
+    // No tmux or no sessions — nothing to sweep
   }
 }
 

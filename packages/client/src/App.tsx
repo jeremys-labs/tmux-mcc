@@ -1,4 +1,5 @@
 import { useEffect, lazy, Suspense } from 'react';
+import { Routes, Route, useParams } from 'react-router-dom';
 import { useConfig } from './hooks/useConfig';
 import { useAgentStatusStream } from './hooks/useAgentStatusStream';
 import { useUIStore } from './stores/uiStore';
@@ -18,8 +19,6 @@ const OfficeCanvas = lazy(() => import('./canvas/OfficeCanvas').then(m => ({ def
 export default function App() {
   useConfig();
   useAgentStatusStream();
-  const activeView = useUIStore((s) => s.activeView);
-  const activeAgent = useUIStore((s) => s.activeAgent);
   const loading = useAgentStore((s) => s.loading);
   const error = useAgentStore((s) => s.error);
   const setGatewayStatus = useConnectionStore((s) => s.setGatewayStatus);
@@ -79,20 +78,27 @@ export default function App() {
 
   return (
     <AppLayout>
-      <CenterPane activeView={activeView} activeAgent={activeAgent} />
+      <Routes>
+        <Route path="/agent/:agentKey" element={<AgentCenterPane />} />
+        <Route path="*" element={<CenterPane activeAgent={null} />} />
+      </Routes>
     </AppLayout>
   );
+}
+
+function AgentCenterPane() {
+  const { agentKey } = useParams<{ agentKey: string }>();
+  return <CenterPane activeAgent={agentKey ?? null} />;
 }
 
 type View = 'office' | 'channels' | 'projects';
 
 function CenterPane({
-  activeView,
   activeAgent,
 }: {
-  activeView: View | null;
   activeAgent: string | null;
 }) {
+  const activeView = useUIStore((s) => s.activeView);
   const fileSplitOpen = useUIStore((s) => s.fileSplitOpen);
   const toggleFileSplit = useUIStore((s) => s.toggleFileSplit);
 

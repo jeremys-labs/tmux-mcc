@@ -17,6 +17,7 @@ import { createVoiceRouter, startVoiceHealthChecks, stopVoiceHealthChecks } from
 import { createProjectsRouter } from './routes/projects.js';
 import { createSearchRouter } from './routes/search.js';
 import { terminalRouter, handleUpgrade } from './routes/terminal.js';
+import { sweepMccSessions } from './services/tmux-relay.js';
 import { createAgentStatusRouter } from './routes/agent-status.js';
 import { agentStatusBroadcaster } from './services/agent-status-broadcaster.js';
 import { createAvatarRouter } from './routes/avatars.js';
@@ -125,6 +126,9 @@ const server = createServer(app);
 server.on('upgrade', (request, socket, head) => {
   handleUpgrade(request, socket, head as Buffer);
 });
+
+// Kill any mcc-* sessions left over from a previous server run
+sweepMccSessions();
 
 server.listen(PORT, () => {
   console.log(`[server] listening on :${PORT}`);

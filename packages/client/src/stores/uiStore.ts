@@ -3,23 +3,21 @@ import { create } from 'zustand';
 type View = 'office' | 'channels' | 'projects';
 
 interface UIState {
-  activeView: View | null;   // null = show terminal for activeAgent
-  activeAgent: string | null;
+  activeView: View | null;   // null = show terminal for active agent (from URL)
   fileSplitOpen: boolean;
   mobileInfoOpen: boolean;
   setView: (view: View) => void;
-  setActiveAgent: (agentKey: string) => void;
+  clearView: () => void;
   toggleFileSplit: () => void;
   setMobileInfoOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   activeView: null,
-  activeAgent: null,
   fileSplitOpen: false,
   mobileInfoOpen: false,
   setView: (view) => set({ activeView: view }),
-  setActiveAgent: (agentKey) => set({ activeAgent: agentKey, activeView: null, mobileInfoOpen: false }),
+  clearView: () => set({ activeView: null, mobileInfoOpen: false }),
   toggleFileSplit: () => set((s) => ({ fileSplitOpen: !s.fileSplitOpen })),
   setMobileInfoOpen: (open) => set({ mobileInfoOpen: open }),
 }));

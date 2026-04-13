@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as nodePty from 'node-pty';
+import * as childProcess from 'child_process';
 import { WebSocket } from 'ws';
 import { TmuxRelay } from '../services/tmux-relay.js';
 
@@ -15,6 +16,10 @@ vi.mock('node-pty', () => ({
   spawn: vi.fn(() => mockTerm),
 }));
 
+vi.mock('child_process', () => ({
+  execFileSync: vi.fn(),
+}));
+
 describe('TmuxRelay', () => {
   let relay: TmuxRelay;
 
@@ -28,14 +33,24 @@ describe('TmuxRelay', () => {
     relay = new TmuxRelay();
   });
 
-  it('spawns a PTY attaching to the named tmux window', () => {
+  it('creates a per-client grouped tmux session and spawns a PTY attached to it', () => {
     const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
 
     relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
 
+    const mockExec = vi.mocked(childProcess.execFileSync);
+
+    // Should create a per-client grouped session targeting the agent window
+    expect(mockExec).toHaveBeenCalledWith(
+      'tmux',
+      ['new-session', '-d', '-s', expect.stringMatching(/^mcc-/), '-t', 'agents:marcus'],
+      expect.anything()
+    );
+
+    // PTY should attach to the per-client session, not the shared agents session
     expect(vi.mocked(nodePty.spawn)).toHaveBeenCalledWith(
       'tmux',
-      ['attach-session', '-t', 'agents:marcus'],
+      ['attach-session', '-t', expect.stringMatching(/^mcc-/)],
       expect.objectContaining({ cols: 220, rows: 50, name: 'xterm-256color' })
     );
   });
@@ -66,12 +81,17 @@ describe('TmuxRelay', () => {
     expect(mockTerm.write).toHaveBeenCalledWith('ls -la\n');
   });
 
-  it('kills PTY on detach and removes session from map', () => {
+  it('kills PTY and per-client session on detach', () => {
     const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     const id = relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
     relay.detach(id);
 
     expect(mockTerm.kill).toHaveBeenCalled();
+
+    // Should kill the per-client mcc-* session on disconnect
+    expect(vi.mocked(childProcess.execFileSync)).toHaveBeenCalledWith(
+      'tmux', ['kill-session', '-t', expect.stringMatching(/^mcc-/)], expect.anything()
+    );
 
     // After detach, write and resize should be no-ops
     relay.write(id, 'should not throw');

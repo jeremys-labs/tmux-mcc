@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Application } from 'pixi.js';
 import { IsometricScene } from './IsometricScene';
 import { preloadAllAvatars, destroyAvatarTextures } from './avatars';
@@ -10,7 +11,8 @@ export function OfficeCanvas() {
   const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<IsometricScene | null>(null);
   const agents = useAgentStore((s) => s.agents);
-  const setActiveAgent = useUIStore((s) => s.setActiveAgent);
+  const navigate = useNavigate();
+  const clearView = useUIStore((s) => s.clearView);
   const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,7 +53,8 @@ export function OfficeCanvas() {
         sceneRef.current = scene;
 
         scene.on('agentClick', (agentKey: string) => {
-          setActiveAgent(agentKey);
+          navigate(`/agent/${agentKey}`);
+          clearView();
         });
 
         scene.render();
@@ -106,7 +109,7 @@ export function OfficeCanvas() {
         appRef.current = null;
       }
     };
-  }, [agents, setActiveAgent]);
+  }, [agents, navigate, clearView]);
 
   if (initError) {
     return (

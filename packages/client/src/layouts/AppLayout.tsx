@@ -2,11 +2,11 @@ import { AgentRail } from '../components/AgentRail';
 import { RightPanel } from '../components/RightPanel';
 import { MobileNav } from '../components/MobileNav';
 import { MobileInfoSheet } from '../components/MobileInfoSheet';
-import { useUIStore } from '../stores/uiStore';
+import { useActiveAgent } from '../hooks/useActiveAgent';
 import { ConnectionStatus } from '../components/ConnectionStatus';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const activeAgent = useUIStore((s) => s.activeAgent);
+  const activeAgent = useActiveAgent();
 
   return (
     <div className="h-screen w-screen flex bg-surface text-text-primary overflow-hidden">
