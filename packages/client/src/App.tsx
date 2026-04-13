@@ -91,8 +91,6 @@ function AgentCenterPane() {
   return <CenterPane activeAgent={agentKey ?? null} />;
 }
 
-type View = 'office' | 'channels' | 'projects';
-
 function CenterPane({
   activeAgent,
 }: {

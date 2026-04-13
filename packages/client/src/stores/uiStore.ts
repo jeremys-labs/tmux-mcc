@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-type View = 'office' | 'channels' | 'projects';
+type View = 'office' | 'channels' | 'projects' | 'files';
 
 interface UIState {
   activeView: View | null;   // null = show terminal for active agent (from URL)
