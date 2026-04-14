@@ -8,10 +8,9 @@ interface DirEntry {
   size?: number;
 }
 
-export function createFileRoutes(contentRoot: string): Router {
+export function createFileRoutes(contentRoot: string, docsDir: string): Router {
   const router = Router();
   const filesDir = path.join(contentRoot, 'files');
-  const docsDir = path.join(contentRoot, 'workspace', 'docs');
 
   // List files in review folders (inbox/approved/archive)
   router.get('/files', (_req, res) => {

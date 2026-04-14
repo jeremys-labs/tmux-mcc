@@ -3,7 +3,7 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { createServer } from 'http';
-import { loadConfig, resolveContentRoot } from './config.js';
+import { loadConfig, resolveContentRoot, resolveDocsDir } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { loadAgentModels } from './models.js';
 import { createChatDB } from './db.js';
@@ -27,6 +27,7 @@ const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
 // Load config and ensure directories
 const contentRoot = resolveContentRoot();
+const docsDir = resolveDocsDir(contentRoot);
 const config = loadConfig(contentRoot);
 ensureContentDirs(contentRoot);
 
@@ -78,7 +79,7 @@ app.use(express.json({ limit: '10mb' }));
 // Mount routes
 app.use('/api', createHealthRouter());
 app.use('/api', createConfigRouter(config));
-app.use('/api', createFileRoutes(contentRoot));
+app.use('/api', createFileRoutes(contentRoot, docsDir));
 app.use('/api', createStandupRoutes(contentRoot));
 app.use('/api', createChannelRoutes(contentRoot));
 app.use('/api', createAgentDataRoutes(config, contentRoot));

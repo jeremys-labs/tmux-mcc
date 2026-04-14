@@ -19,6 +19,11 @@ export function resolveContentRoot(): string {
   return raw.startsWith('~') ? raw.replace('~', process.env.HOME || '') : raw;
 }
 
+export function resolveDocsDir(contentRoot: string): string {
+  const raw = process.env.DOCS_DIR || path.join(contentRoot, 'docs');
+  return raw.startsWith('~') ? raw.replace('~', process.env.HOME || '') : raw;
+}
+
 export function loadConfig(contentRoot?: string): AppConfig {
   const root = contentRoot || resolveContentRoot();
   const configPath = path.join(root, 'config.yaml');
