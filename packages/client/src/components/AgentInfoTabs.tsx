@@ -238,9 +238,10 @@ function CronJobCard({ job, onSelect }: { job: CronJobRow; onSelect: (id: string
   const nextRun = job.state?.nextRunAtMs ? formatRelativeMs(job.state.nextRunAtMs) : null;
 
   return (
-    <div
-      className="border border-white/10 rounded-lg p-3 cursor-pointer hover:border-accent/50 hover:bg-accent/5 transition-colors"
+    <button
+      className="w-full text-left border border-white/10 rounded-lg p-3 cursor-pointer hover:border-accent/50 hover:bg-accent/5 transition-colors disabled:cursor-default disabled:opacity-50"
       onClick={() => job.id && onSelect(job.id)}
+      disabled={!job.id}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="text-sm text-text-primary leading-snug">{job.name ?? 'Unnamed job'}</span>
@@ -254,7 +255,7 @@ function CronJobCard({ job, onSelect }: { job: CronJobRow; onSelect: (id: string
         {scheduleLabel && <span>🕐 {scheduleLabel}</span>}
         {nextRun && <span>Next: {nextRun}</span>}
       </div>
-    </div>
+    </button>
   );
 }
 
