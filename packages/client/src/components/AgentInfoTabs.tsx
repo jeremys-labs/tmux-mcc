@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkFrontmatter from 'remark-frontmatter';
 import { CronDetailPanel } from './CronDetailPanel';
+import { formatCronSchedule, formatRelativeMs } from '../utils/cronFormat';
+import type { CronSchedule } from '../utils/cronFormat';
 
 interface Props {
   agentKey: string;
@@ -215,6 +217,59 @@ function ObjectSection({ label, data }: { label: string; data: Record<string, un
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cron job card — clean list item for the Schedule tab
+// ---------------------------------------------------------------------------
+
+interface CronJobRow {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  schedule?: CronSchedule;
+  state?: { nextRunAtMs?: number };
+}
+
+function CronJobCard({ job, onSelect }: { job: CronJobRow; onSelect: (id: string) => void }) {
+  const scheduleLabel = job.schedule ? formatCronSchedule(job.schedule) : null;
+  const nextRun = job.state?.nextRunAtMs ? formatRelativeMs(job.state.nextRunAtMs) : null;
+
+  return (
+    <div
+      className="border border-white/10 rounded-lg p-3 cursor-pointer hover:border-accent/50 hover:bg-accent/5 transition-colors"
+      onClick={() => job.id && onSelect(job.id)}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-sm text-text-primary leading-snug">{job.name ?? 'Unnamed job'}</span>
+        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+          job.enabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
+        }`}>
+          {job.enabled ? 'enabled' : 'disabled'}
+        </span>
+      </div>
+      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-text-secondary">
+        {scheduleLabel && <span>🕐 {scheduleLabel}</span>}
+        {nextRun && <span>Next: {nextRun}</span>}
+      </div>
+    </div>
+  );
+}
+
+function CronJobList({ jobs, onSelect }: { jobs: CronJobRow[]; onSelect: (id: string) => void }) {
+  if (jobs.length === 0) {
+    return (
+      <p className="text-sm text-text-secondary text-center py-8">No scheduled jobs.</p>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-text-secondary px-1 mb-1">Click a job to see details</p>
+      {jobs.map((job, i) => (
+        <CronJobCard key={job.id ?? i} job={job} onSelect={onSelect} />
+      ))}
     </div>
   );
 }
@@ -600,8 +655,10 @@ export function AgentInfoTabs({ agentKey }: Props) {
             </div>
           ) : currentTab?.source === 'file:meeting-action-items.json' && tabData && typeof tabData === 'object' && 'items' in (tabData as object) ? (
             <MeetingActionItems data={tabData as MeetingActionData} agentKey={agentKey} tabId={activeTab!} />
+          ) : isCronTab && Array.isArray(tabData) ? (
+            <CronJobList jobs={tabData as CronJobRow[]} onSelect={setSelectedCronId} />
           ) : (
-            <JsonRenderer data={tabData} onSelect={isCronTab ? setSelectedCronId : undefined} />
+            <JsonRenderer data={tabData} onSelect={undefined} />
           )}
         </div>
       )}
