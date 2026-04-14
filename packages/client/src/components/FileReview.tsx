@@ -116,23 +116,11 @@ export function FileReview() {
       </div>
 
       <div className="flex flex-col md:flex-row flex-1 min-h-0">
-        {/* Sidebar toggle (mobile) */}
-        <button
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="flex items-center gap-2 px-3 py-2 border-b border-white/10 text-xs text-text-secondary hover:text-text-primary shrink-0"
-        >
-          <span className={`transition-transform ${sidebarOpen ? 'rotate-90' : ''}`}>▶</span>
-          {sidebarOpen ? 'Hide file list' : 'Show file list'}
-          {!sidebarOpen && selectedFile && (
-            <span className="ml-auto text-accent truncate max-w-[200px]">{selectedFile.split('/').pop()}</span>
-          )}
-        </button>
-
         {/* File list sidebar */}
         <div className={`${sidebarOpen ? 'flex' : 'hidden'} w-full md:w-64 border-r border-white/10 flex-col shrink-0 ${sidebarOpen ? 'max-h-[40vh] md:max-h-none' : ''}`}>
           {mode === 'docs' && (
             <>
-              {/* Breadcrumb */}
+              {/* Breadcrumb + collapse toggle */}
               <div className="px-2 py-1.5 border-b border-white/5 flex items-center gap-1 text-xs text-text-secondary">
                 <button
                   onClick={() => {
@@ -161,6 +149,13 @@ export function FileReview() {
                       </button>
                     </span>
                   ))}
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="ml-auto pl-2 hover:text-text-primary transition-colors shrink-0"
+                  title="Collapse file tree"
+                >
+                  ◀
+                </button>
               </div>
 
               {/* Directory listing */}
@@ -233,6 +228,15 @@ export function FileReview() {
           {selectedFile && fileUrl ? (
             <div className="flex flex-col h-full">
               <div className="p-3 border-b border-white/10 flex items-center gap-2 flex-wrap">
+                {!sidebarOpen && (
+                  <button
+                    onClick={() => setSidebarOpen(true)}
+                    className="text-text-secondary hover:text-text-primary transition-colors shrink-0 text-xs"
+                    title="Show file tree"
+                  >
+                    ▶
+                  </button>
+                )}
                 <span className="text-sm font-medium truncate min-w-0">
                   {selectedFile.split('/').pop()}
                 </span>
@@ -261,7 +265,15 @@ export function FileReview() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center h-full text-text-secondary text-sm">
+            <div className="flex flex-col items-center justify-center h-full text-text-secondary text-sm gap-3">
+              {!sidebarOpen && (
+                <button
+                  onClick={() => setSidebarOpen(true)}
+                  className="text-xs text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  ▶ Show file list
+                </button>
+              )}
               Select a file to view
             </div>
           )}
