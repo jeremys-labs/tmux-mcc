@@ -4,9 +4,11 @@ import { MobileNav } from '../components/MobileNav';
 import { MobileInfoSheet } from '../components/MobileInfoSheet';
 import { useActiveAgent } from '../hooks/useActiveAgent';
 import { ConnectionStatus } from '../components/ConnectionStatus';
+import { useUIStore } from '../stores/uiStore';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const activeAgent = useActiveAgent();
+  const fileSplitOpen = useUIStore((s) => s.fileSplitOpen);
 
   return (
     <div className="h-screen w-screen flex bg-surface text-text-primary overflow-hidden">
@@ -29,8 +31,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="flex-1 overflow-hidden min-w-0">
             {children}
           </div>
-          {/* Right panel — desktop only */}
-          {activeAgent && (
+          {/* Right panel — desktop only, hidden when file browser is open */}
+          {activeAgent && !fileSplitOpen && (
             <div className="hidden md:flex">
               <RightPanel />
             </div>

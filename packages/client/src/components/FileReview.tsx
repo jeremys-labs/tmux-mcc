@@ -66,8 +66,7 @@ export function FileReview() {
   const selectDocFile = (name: string) => {
     const filePath = dirPath ? `${dirPath}/${name}` : name;
     setSelectedFile(filePath);
-    // Auto-collapse sidebar on mobile when a file is selected
-    if (window.innerWidth < 768) setSidebarOpen(false);
+    setSidebarOpen(false);
   };
 
   const moveFile = async (filename: string, from: string, to: string) => {
@@ -120,7 +119,7 @@ export function FileReview() {
         {/* Sidebar toggle (mobile) */}
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="md:hidden flex items-center gap-2 px-3 py-2 border-b border-white/10 text-xs text-text-secondary hover:text-text-primary shrink-0"
+          className="flex items-center gap-2 px-3 py-2 border-b border-white/10 text-xs text-text-secondary hover:text-text-primary shrink-0"
         >
           <span className={`transition-transform ${sidebarOpen ? 'rotate-90' : ''}`}>▶</span>
           {sidebarOpen ? 'Hide file list' : 'Show file list'}
@@ -130,7 +129,7 @@ export function FileReview() {
         </button>
 
         {/* File list sidebar */}
-        <div className={`${sidebarOpen ? 'flex' : 'hidden'} md:flex w-full md:w-64 border-r border-white/10 flex-col shrink-0 ${sidebarOpen ? 'max-h-[40vh] md:max-h-none' : ''}`}>
+        <div className={`${sidebarOpen ? 'flex' : 'hidden'} w-full md:w-64 border-r border-white/10 flex-col shrink-0 ${sidebarOpen ? 'max-h-[40vh] md:max-h-none' : ''}`}>
           {mode === 'docs' && (
             <>
               {/* Breadcrumb */}
@@ -213,7 +212,7 @@ export function FileReview() {
                   key={filename}
                   onClick={() => {
                     setSelectedFile(filename);
-                    if (window.innerWidth < 768) setSidebarOpen(false);
+                    setSidebarOpen(false);
                   }}
                   className={`w-full text-left px-2 py-1.5 rounded text-sm truncate ${
                     selectedFile === filename ? 'bg-accent/20' : 'hover:bg-surface-overlay'

@@ -140,6 +140,7 @@ function CenterPane({
             left={<TerminalPanel key={activeAgent} agentKey={activeAgent} />}
             right={<FileReview />}
             rightVisible={fileSplitOpen}
+            defaultRightWidth={600}
           />
         </div>
       </div>
