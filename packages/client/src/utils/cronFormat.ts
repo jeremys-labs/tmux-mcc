@@ -1,4 +1,5 @@
 const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function formatTime12(hour: number, minute: number): string {
   const period = hour < 12 ? 'AM' : 'PM';
@@ -34,8 +35,15 @@ export function formatCronExpr(expr: string): string {
   if (dow === '1-5') return `Weekdays at ${timeStr}`;
   if (dow === '0,6' || dow === '6,0') return `Weekends at ${timeStr}`;
 
+  if (dow.includes(',')) {
+    const days = dow.split(',').map((d) => parseInt(d, 10));
+    if (days.every((d) => !isNaN(d) && d >= 0 && d <= 6)) {
+      return `${days.map((d) => DOW_SHORT[d]).join(', ')} at ${timeStr}`;
+    }
+  }
+
   const dowNum = parseInt(dow, 10);
-  if (!isNaN(dowNum) && dowNum >= 0 && dowNum <= 6) {
+  if (!isNaN(dowNum) && dowNum >= 0 && dowNum <= 6 && String(dowNum) === dow) {
     return `${DOW_NAMES[dowNum]}s at ${timeStr}`;
   }
 

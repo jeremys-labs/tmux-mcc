@@ -38,6 +38,12 @@ describe('formatCronExpr', () => {
     expect(formatCronExpr('0 9 * * 5')).toBe('Fridays at 9 AM');
   });
 
+  it('comma-separated days of week', () => {
+    expect(formatCronExpr('0 13 * * 2,6')).toBe('Tue, Sat at 1 PM');
+    expect(formatCronExpr('0 9 * * 1,3,5')).toBe('Mon, Wed, Fri at 9 AM');
+    expect(formatCronExpr('30 8 * * 1,2')).toBe('Mon, Tue at 8:30 AM');
+  });
+
   it('falls back to raw expr for unrecognised patterns', () => {
     expect(formatCronExpr('0 9 1 * *')).toBe('0 9 1 * *');
     expect(formatCronExpr('0 9 * 6 *')).toBe('0 9 * 6 *');
