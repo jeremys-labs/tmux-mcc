@@ -215,19 +215,19 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
         </button>
         <div className="ml-auto flex items-center gap-1">
           <button
-            onClick={() => termRef.current?.scrollLines(-10)}
+            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'up' }))}
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
             ↑
           </button>
           <button
-            onClick={() => termRef.current?.scrollLines(10)}
+            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'down' }))}
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
             ↓
           </button>
           <button
-            onClick={() => { termRef.current?.scrollToBottom(); setScrolledUp(false); }}
+            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'bottom' }))}
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
             ⬇

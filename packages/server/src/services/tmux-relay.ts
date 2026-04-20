@@ -54,9 +54,16 @@ export class TmuxRelay {
     // Create a per-client grouped session so each web client gets its own
     // independent current-window pointer. Multiple clients can view different
     // agents simultaneously without tmux cross-client interference.
+    // Note: new-session -t inherits the source session's current window, so we
+    // must explicitly select-window afterwards to pin the right agent window.
     execFileSync(
       'tmux',
-      ['new-session', '-d', '-s', mccSessionName, '-t', `${session}:${agentName}`],
+      ['new-session', '-d', '-s', mccSessionName, '-t', session],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    execFileSync(
+      'tmux',
+      ['select-window', '-t', `${mccSessionName}:${agentName}`],
       { stdio: ['pipe', 'pipe', 'pipe'] }
     );
 
@@ -114,6 +121,25 @@ export class TmuxRelay {
 
   resize(id: string, cols: number, rows: number): void {
     this.sessions.get(id)?.term.resize(cols, rows);
+  }
+
+  scroll(id: string, direction: 'up' | 'down' | 'bottom'): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const target = `${session.mccSessionName}:${session.agentName}`;
+    try {
+      if (direction === 'bottom') {
+        // Exit copy mode — returns to the live terminal view
+        execFileSync('tmux', ['send-keys', '-t', target, '-X', 'cancel'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      } else {
+        // Enter copy mode (no-op if already in it), then half-page scroll
+        execFileSync('tmux', ['copy-mode', '-t', target], { stdio: ['pipe', 'pipe', 'pipe'] });
+        const action = direction === 'up' ? 'halfpage-up' : 'halfpage-down';
+        execFileSync('tmux', ['send-keys', '-t', target, '-X', action], { stdio: ['pipe', 'pipe', 'pipe'] });
+      }
+    } catch {
+      // Pane may not support copy-mode — ignore
+    }
   }
 
   detach(id: string): void {

@@ -56,6 +56,10 @@ export function handleUpgrade(
           relay.resize(sessionId, parsed.cols, parsed.rows);
           return;
         }
+        if (parsed.type === 'scroll' && (parsed.direction === 'up' || parsed.direction === 'down' || parsed.direction === 'bottom')) {
+          relay.scroll(sessionId, parsed.direction);
+          return;
+        }
       } catch {
         // not JSON — raw keystroke data, fall through to write
       }
