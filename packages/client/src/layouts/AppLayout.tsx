@@ -26,8 +26,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {/* Center + right panel — add bottom padding on mobile for nav bar */}
-        <div className="flex-1 flex overflow-hidden pb-[56px] md:pb-0">
+        {/* Center + right panel */}
+        <div className="flex-1 flex overflow-hidden min-h-0">
           <div className="flex-1 overflow-hidden min-w-0">
             {children}
           </div>
@@ -38,6 +38,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           )}
         </div>
+
+        {/* Mobile nav spacer — reserves height for the fixed bottom nav so flex-1 content
+            area (and its h-full descendants) are correctly bounded above the nav */}
+        <div
+          className="shrink-0 md:hidden"
+          style={{ height: 'calc(53px + env(safe-area-inset-bottom, 0px))' }}
+        />
       </div>
 
       {/* Mobile bottom navigation */}
