@@ -88,5 +88,9 @@ export function useTerminal({ agentWindow, terminal, onStatusChange }: UseTermin
     };
   }, [connect]);
 
-  return { sendResize };
+  const sendData = useCallback((data: string) => {
+    wsRef.current?.send(data);
+  }, []);
+
+  return { sendResize, sendData };
 }

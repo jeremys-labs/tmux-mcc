@@ -12,7 +12,6 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const touchWrapperRef = useRef<HTMLDivElement>(null);
   // termRef: synchronous access for ResizeObserver (avoids stale closures)
   // terminal state: triggers useTerminal re-evaluation when xterm instance becomes available
   const termRef = useRef<Terminal | null>(null);
@@ -78,7 +77,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     };
   }, []); // Only run once on mount
 
-  const { sendResize } = useTerminal({
+  const { sendResize, sendData } = useTerminal({
     agentWindow,
     terminal,
     onStatusChange: setStatus,
@@ -105,10 +104,11 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     return () => observer.disconnect();
   }, [sendResize]);
 
-  // Touch scroll — xterm.js doesn't handle touch natively; translate swipes to scrollLines()
+  // Touch scroll — attach to xterm's own viewport element so events aren't swallowed by xterm
   useEffect(() => {
-    const wrapper = touchWrapperRef.current;
-    if (!wrapper) return;
+    if (!terminal) return;
+    const viewport = terminal.element?.querySelector('.xterm-viewport');
+    if (!viewport) return;
 
     let lastY = 0;
 
@@ -129,13 +129,13 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
       }
     };
 
-    wrapper.addEventListener('touchstart', onTouchStart, { passive: true });
-    wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+    viewport.addEventListener('touchstart', onTouchStart as EventListener, { passive: true });
+    viewport.addEventListener('touchmove', onTouchMove as EventListener, { passive: false });
     return () => {
-      wrapper.removeEventListener('touchstart', onTouchStart);
-      wrapper.removeEventListener('touchmove', onTouchMove);
+      viewport.removeEventListener('touchstart', onTouchStart as EventListener);
+      viewport.removeEventListener('touchmove', onTouchMove as EventListener);
     };
-  }, []);
+  }, [terminal]);
 
   const statusDot = {
     connecting: 'bg-yellow-400 animate-pulse',
@@ -175,7 +175,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
       </div>
 
       {/* Terminal container — relative wrapper gives FitAddon a concrete size to measure */}
-      <div ref={touchWrapperRef} className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
+      <div className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
         <div
           ref={containerRef}
           style={{ position: 'absolute', inset: '4px' }}
@@ -191,6 +191,48 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
             ↓ Jump to bottom
           </button>
         )}
+      </div>
+
+      {/* Mobile control bar — escape sequences + scroll */}
+      <div className="flex items-center gap-1 px-2 py-1.5 border-t border-white/10 shrink-0 bg-[#0d1117]">
+        <button
+          onClick={() => sendData('\x1b')}
+          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+        >
+          ESC
+        </button>
+        <button
+          onClick={() => sendData('\x03')}
+          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+        >
+          Ctrl+C
+        </button>
+        <button
+          onClick={() => sendData('\x04')}
+          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+        >
+          Ctrl+D
+        </button>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => termRef.current?.scrollLines(-10)}
+            className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            ↑
+          </button>
+          <button
+            onClick={() => termRef.current?.scrollLines(10)}
+            className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            ↓
+          </button>
+          <button
+            onClick={() => { termRef.current?.scrollToBottom(); setScrolledUp(false); }}
+            className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            ⬇
+          </button>
+        </div>
       </div>
     </div>
   );
