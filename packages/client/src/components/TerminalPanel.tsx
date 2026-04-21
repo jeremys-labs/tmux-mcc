@@ -193,8 +193,8 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
         )}
       </div>
 
-      {/* Mobile control bar — escape sequences + scroll */}
-      <div className="flex items-center gap-1 px-2 py-1.5 border-t border-white/10 shrink-0 bg-[#0d1117]">
+      {/* Mobile control bar — escape sequences + scroll. Hidden on desktop where physical keys + tmux copy-mode cover these actions. */}
+      <div className="md:hidden flex items-center gap-1 px-2 py-1.5 border-t border-white/10 shrink-0 bg-[#0d1117]">
         <button
           onClick={() => sendData('\x1b')}
           className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
