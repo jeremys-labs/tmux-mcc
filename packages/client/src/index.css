@@ -38,3 +38,9 @@
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
 }
+
+/* Codex uses dim text for the live compose line; boost it slightly so the
+   draft prompt remains legible against its darker input background. */
+.xterm .xterm-rows .xterm-dim {
+  filter: brightness(1.35);
+}

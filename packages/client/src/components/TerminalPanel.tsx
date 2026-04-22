@@ -35,6 +35,9 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
       cursorBlink: true,
       fontSize: 13,
       fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, monospace',
+      // Codex renders the active compose line with dim text on a darker prompt background.
+      // Raise xterm's contrast floor so the draft line stays readable on iPad and desktop.
+      minimumContrastRatio: 5,
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',
