@@ -2,6 +2,9 @@ import fs from 'fs';
 import path from 'path';
 
 const REQUIRED_DIRS = [
+  'bridge',
+  'bridge/inbox',
+  'bridge/runtime-state',
   'data',
   'data/token-usage',
   'files/inbox',

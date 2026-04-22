@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "bridge:codex-discord": "tsx src/codex-bridge.ts",
+    "run:codex-wrapper": "tsx src/codex-wrapper.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run"

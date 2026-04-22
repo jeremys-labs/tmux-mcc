@@ -1,0 +1,25 @@
+{
+  "bindings": [
+    {
+      "name": "marcus",
+      "tokenEnvVar": "DISCORD_BOT_TOKEN_MARCUS",
+      "selfUserId": "123456789012345678",
+      "subscriptions": [
+        {
+          "agentKey": "marcus",
+          "channelId": "1492892431543308439"
+        }
+      ]
+    },
+    {
+      "name": "zara",
+      "tokenEnvVar": "DISCORD_BOT_TOKEN_ZARA",
+      "subscriptions": [
+        {
+          "agentKey": "zara",
+          "channelId": "1492551894214905886"
+        }
+      ]
+    }
+  ]
+}

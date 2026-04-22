@@ -40,10 +40,16 @@ describe('TmuxRelay', () => {
 
     const mockExec = vi.mocked(childProcess.execFileSync);
 
-    // Should create a per-client grouped session targeting the agent window
+    // Should create a per-client grouped session with the agents session
     expect(mockExec).toHaveBeenCalledWith(
       'tmux',
-      ['new-session', '-d', '-s', expect.stringMatching(/^mcc-/), '-t', 'agents:marcus'],
+      ['new-session', '-d', '-s', expect.stringMatching(/^mcc-/), '-t', 'agents'],
+      expect.anything()
+    );
+    // Then explicitly select the target agent's window in the new session
+    expect(mockExec).toHaveBeenCalledWith(
+      'tmux',
+      ['select-window', '-t', expect.stringMatching(/^mcc-.*:marcus$/)],
       expect.anything()
     );
 

@@ -24,16 +24,16 @@ echo "Port:   $SERVER_PORT"
 echo ""
 
 # ─── Agent session ──────────────────────────────────────────────────────────
-# start-agents.sh lives outside the repo (agent-specific config)
-# Default: look in the parent of the MCC repo, or set AGENTS_SCRIPT env var
-AGENTS_SCRIPT="${AGENTS_SCRIPT:-$(dirname "$MCC_DIR")/agents/start-agents.sh}"
+# Default to the repo launcher that respects each agent's launch.sh.
+# Override with AGENTS_SCRIPT if you want a different bootstrap path.
+AGENTS_SCRIPT="${AGENTS_SCRIPT:-$MCC_DIR/scripts/start-agents-from-launchers.sh}"
 
 if $START_AGENTS; then
   if [[ ! -f "$AGENTS_SCRIPT" ]]; then
     echo "WARN: start-agents.sh not found at $AGENTS_SCRIPT — skipping agent session"
     echo "      Set AGENTS_SCRIPT=/path/to/start-agents.sh to override"
   else
-    echo "→ Starting agent session..."
+    echo "→ Starting agent session via $AGENTS_SCRIPT..."
     bash "$AGENTS_SCRIPT"
     echo ""
   fi
