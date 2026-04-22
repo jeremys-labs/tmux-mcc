@@ -19,6 +19,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [scrolledUp, setScrolledUp] = useState(false);
+  const [showTouchControls, setShowTouchControls] = useState(false);
 
   const agent = useAgentStore((s) => s.agents[agentKey]);
   const setMobileInfoOpen = useUIStore((s) => s.setMobileInfoOpen);
@@ -137,6 +138,22 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     };
   }, [terminal]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia?.('(pointer: coarse), (hover: none)');
+    const updateTouchControls = () => {
+      setShowTouchControls(Boolean(mediaQuery?.matches || navigator.maxTouchPoints > 0));
+    };
+
+    updateTouchControls();
+    mediaQuery?.addEventListener?.('change', updateTouchControls);
+
+    return () => {
+      mediaQuery?.removeEventListener?.('change', updateTouchControls);
+    };
+  }, []);
+
   const statusDot = {
     connecting: 'bg-yellow-400 animate-pulse',
     connected: 'bg-green-400',
@@ -193,47 +210,76 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
         )}
       </div>
 
-      {/* Mobile control bar — escape sequences + scroll. Hidden on desktop where physical keys + tmux copy-mode cover these actions. */}
-      <div className="md:hidden flex items-center gap-1 px-2 py-1.5 border-t border-white/10 shrink-0 bg-[#0d1117]">
-        <button
-          onClick={() => sendData('\x1b')}
-          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
-        >
-          ESC
-        </button>
-        <button
-          onClick={() => sendData('\x03')}
-          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
-        >
-          Ctrl+C
-        </button>
-        <button
-          onClick={() => sendData('\x04')}
-          className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
-        >
-          Ctrl+D
-        </button>
-        <div className="ml-auto flex items-center gap-1">
+      {showTouchControls && (
+        <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 border-t border-white/10 shrink-0 bg-[#0d1117]">
           <button
-            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'up' }))}
+            onClick={() => sendData('\x1b')}
+            className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            ESC
+          </button>
+          <button
+            onClick={() => sendData('\x03')}
+            className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            Ctrl+C
+          </button>
+          <button
+            onClick={() => sendData('\x04')}
+            className="px-2.5 py-1 text-xs font-mono rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            Ctrl+D
+          </button>
+          <button
+            onClick={() => sendData('\x1b[A')}
+            aria-label="Arrow up"
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
             ↑
           </button>
           <button
-            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'down' }))}
+            onClick={() => sendData('\x1b[B')}
+            aria-label="Arrow down"
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
             ↓
           </button>
           <button
-            onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'bottom' }))}
+            onClick={() => sendData('\x1b[D')}
+            aria-label="Arrow left"
             className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
           >
-            ⬇
+            ←
           </button>
+          <button
+            onClick={() => sendData('\x1b[C')}
+            aria-label="Arrow right"
+            className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+          >
+            →
+          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'up' }))}
+              className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+            >
+              PgUp
+            </button>
+            <button
+              onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'down' }))}
+              className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+            >
+              PgDn
+            </button>
+            <button
+              onClick={() => sendData(JSON.stringify({ type: 'scroll', direction: 'bottom' }))}
+              className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white/80 active:bg-white/30"
+            >
+              Live
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
