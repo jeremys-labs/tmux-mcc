@@ -18,7 +18,9 @@ interface GatewayPayload {
 export class DiscordGatewayClient {
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private seq: number | null = null;
+  private shouldReconnect = true;
 
   constructor(
     private readonly token: string,
@@ -26,13 +28,20 @@ export class DiscordGatewayClient {
   ) {}
 
   connect(): void {
+    this.clearReconnectTimer();
     this.ws = new WebSocket(GATEWAY_URL);
     this.ws.on('message', (raw) => this.handlePayload(JSON.parse(raw.toString()) as GatewayPayload));
-    this.ws.on('close', () => this.cleanup());
+    this.ws.on('close', () => {
+      this.cleanup();
+      this.ws = null;
+      this.scheduleReconnect();
+    });
     this.ws.on('error', (error) => console.error('[codex-bridge] discord gateway error:', error));
   }
 
   close(): void {
+    this.shouldReconnect = false;
+    this.clearReconnectTimer();
     this.cleanup();
     this.ws?.close();
     this.ws = null;
@@ -43,6 +52,22 @@ export class DiscordGatewayClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      console.log('[codex-bridge] reconnecting Discord gateway');
+      this.connect();
+    }, 5000);
   }
 
   private send(op: number, d: unknown): void {

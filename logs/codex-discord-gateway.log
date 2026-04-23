@@ -1,0 +1,114 @@
+
+> bridge:codex-discord
+> tsx src/codex-bridge.ts
+
+[codex-bridge] connected binding zara
+[codex-bridge] connected binding marcus
+[codex-bridge] [marcus] queued 1496339969445200026 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+
+> bridge:codex-discord
+> tsx src/codex-bridge.ts
+
+[codex-bridge] connected binding zara
+[codex-bridge] connected binding marcus
+[codex-bridge] [marcus] queued 1496340377639194684 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496342929990750239 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496348278940499988 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496348882014179329 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496349007004438609 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+
+> bridge:codex-discord
+> tsx src/codex-bridge.ts
+
+[codex-bridge] connected binding zara
+[codex-bridge] connected binding marcus
+[codex-bridge] [marcus] queued 1496506137334386718 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496506294100820038 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496506494240166010 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [zara] queued 1496506620480323584 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496507025633316986 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496507403452022874 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496507743693963306 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496509505737851000 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [marcus] queued 1496510241368576161 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [zara] queued 1496510477537247282 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [marcus] queued 1496511057173286963 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496512538039554068 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] [marcus] queued 1496513262098055168 for marcus -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/marcus.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496519385526046861 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496528894352691243 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496529225434398824 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496529367772168295 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496534993793450105 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496537422471626996 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496538315753525410 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496538725889605783 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496539615203557416 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496540135876202648 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496545958819926166 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496547513220468989 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496547689427632289 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496548577684754615 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496552152645238964 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496554940393324605 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496560544357027952 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496561423755513970 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496562667228364950 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496563337595588861 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496564313383636992 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496564677780570285 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496564751529152764 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496566627703984158 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496568000977961161 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496568446979411998 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496570442796765346 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496575793520967751 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496577628188971088 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496587292427686019 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496588819250548907 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496590430991810715 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496592056527749241 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496593031887982593 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496594835463864443 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496597430018379957 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496598525377777884 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496603159613804645 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] [zara] queued 1496608507313782935 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] [zara] queued 1496637490201759834 for zara -> /Users/jeremylahners/.tmux-mcc/bridge/inbox/zara.jsonl
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
+[codex-bridge] reconnecting Discord gateway
