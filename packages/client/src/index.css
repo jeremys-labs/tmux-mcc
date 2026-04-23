@@ -39,10 +39,10 @@
   background: rgba(255, 255, 255, 0.4);
 }
 
-/* Codex uses dim text for the live compose line. In MCC that makes the active
-   draft line too faint against the prompt background, so render dim text at
-   full foreground contrast inside the terminal. */
+/* Codex uses dim ANSI styling for placeholder/sample prompt text. Keep it
+   readable, but distinct from real typed input so the two states don't blur. */
 .xterm .xterm-rows .xterm-dim {
-  color: #e6edf3 !important;
+  color: #9fb1c1 !important;
+  opacity: 1 !important;
   filter: none !important;
 }

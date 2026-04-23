@@ -12,10 +12,12 @@ interface TerminalPanelProps {
 
 export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   // termRef: synchronous access for ResizeObserver (avoids stale closures)
   // terminal state: triggers useTerminal re-evaluation when xterm instance becomes available
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const sendResizeRef = useRef<(cols: number, rows: number) => void>(() => {});
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -87,26 +89,61 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
     onStatusChange: setStatus,
   });
 
+  useEffect(() => {
+    sendResizeRef.current = sendResize;
+  }, [sendResize]);
+
   // Resize terminal when container dimensions change
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
 
-    const observer = new ResizeObserver(() => {
+    const fitAndSync = () => {
+      const container = containerRef.current;
       const addon = fitAddonRef.current;
       const term = termRef.current;
-      if (!addon || !term) return;
+      if (!container || !addon || !term) return;
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
+
       try {
         addon.fit();
-        sendResize(term.cols, term.rows);
+        sendResizeRef.current(term.cols, term.rows);
       } catch {
         // fit() can throw if terminal is not yet fully initialized
       }
+    };
+
+    const scheduleFit = () => {
+      requestAnimationFrame(() => fitAndSync());
+    };
+
+    const observer = new ResizeObserver(() => {
+      scheduleFit();
     });
 
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [sendResize]);
+    observer.observe(viewport);
+    scheduleFit();
+
+    const onWindowResize = () => scheduleFit();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') scheduleFit();
+    };
+    const onPageShow = () => scheduleFit();
+
+    window.addEventListener('resize', onWindowResize);
+    window.addEventListener('pageshow', onPageShow);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    const fonts = document.fonts;
+    fonts?.ready.then(() => scheduleFit()).catch(() => {});
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('pageshow', onPageShow);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [terminal]);
 
   // Touch scroll — attach to xterm's own viewport element so events aren't swallowed by xterm
   useEffect(() => {
@@ -195,7 +232,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
       </div>
 
       {/* Terminal container — relative wrapper gives FitAddon a concrete size to measure */}
-      <div className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
+      <div ref={viewportRef} className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>
         <div
           ref={containerRef}
           style={{ position: 'absolute', inset: '4px' }}
