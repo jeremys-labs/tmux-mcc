@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { useTerminal, type ConnectionStatus } from '../hooks/useTerminal.js';
 import { useAgentStore } from '../stores/agentStore.js';
 import { useUIStore } from '../stores/uiStore.js';
+import { AgentSearch } from './AgentSearch.js';
 import '@xterm/xterm/css/xterm.css';
 
 interface TerminalPanelProps {
@@ -22,6 +23,7 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [scrolledUp, setScrolledUp] = useState(false);
   const [showTouchControls, setShowTouchControls] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const agent = useAgentStore((s) => s.agents[agentKey]);
   const setMobileInfoOpen = useUIStore((s) => s.setMobileInfoOpen);
@@ -223,6 +225,14 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
           <span className={`text-xs ${statusText}`}>{status}</span>
           <div className={`w-2 h-2 rounded-full ${statusDot}`} />
           <button
+            onClick={() => setSearchOpen((o) => !o)}
+            aria-label="Search conversation history"
+            title="Search conversation history"
+            className={`text-xs px-2 py-0.5 rounded border transition-colors ${searchOpen ? 'bg-accent/20 text-accent border-accent/40' : 'text-text-secondary border-white/10'}`}
+          >
+            🔍
+          </button>
+          <button
             onClick={() => setMobileInfoOpen(true)}
             className="md:hidden text-xs text-text-secondary px-2 py-0.5 rounded border border-white/10"
           >
@@ -230,6 +240,10 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
           </button>
         </div>
       </div>
+
+      {searchOpen && (
+        <AgentSearch agentKey={agentKey} onClose={() => setSearchOpen(false)} />
+      )}
 
       {/* Terminal container — relative wrapper gives FitAddon a concrete size to measure */}
       <div ref={viewportRef} className="flex-1 overflow-hidden relative" style={{ minHeight: 0 }}>

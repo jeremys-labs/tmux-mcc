@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { formatRelativeTime, formatPreciseTime } from '../utils/formatTime';
 
 interface SearchResult {
   seq: number;
@@ -115,9 +116,16 @@ export function AgentSearch({ agentKey, onClose }: Props) {
               >
                 {r.role}
               </span>
-              <p className="text-[11px] text-text-secondary leading-relaxed min-w-0">
+              <p className="text-[11px] text-text-secondary leading-relaxed flex-1 min-w-0">
                 {r.snippet}
               </p>
+              <time
+                dateTime={new Date(r.timestamp).toISOString()}
+                title={formatPreciseTime(r.timestamp)}
+                className="text-[10px] text-text-secondary/50 shrink-0 mt-0.5"
+              >
+                {formatRelativeTime(r.timestamp)}
+              </time>
             </div>
           ))}
         </div>

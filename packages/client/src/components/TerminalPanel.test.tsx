@@ -79,6 +79,27 @@ afterEach(() => {
   cleanup();
 });
 
+describe('TerminalPanel search', () => {
+  it('opens the search panel when the search button is clicked', () => {
+    render(<TerminalPanel agentKey="marcus" />);
+    expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search conversation history' }));
+
+    expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
+  });
+
+  it('closes the search panel when the AgentSearch close button is clicked', () => {
+    render(<TerminalPanel agentKey="marcus" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search conversation history' }));
+    expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Close search (Esc)'));
+    expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('TerminalPanel touch controls', () => {
   it('shows shortcut keys on touch devices including iPad-sized viewports', () => {
     render(<TerminalPanel agentKey="marcus" />);

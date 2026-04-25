@@ -117,4 +117,18 @@ describe('AgentSearch', () => {
     expect(screen.getByText('assistant')).toBeInTheDocument();
     expect(screen.getByText('user')).toBeInTheDocument();
   });
+
+  it('displays a formatted timestamp for each result', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      json: () => Promise.resolve({ results: mockResults, total: 2 }),
+    } as Response);
+
+    render(<AgentSearch agentKey="isla" onClose={vi.fn()} />);
+    await typeAndSearch(screen.getByPlaceholderText(/search/i), 'machine');
+
+    const timestamps = screen.getAllByRole('time');
+    expect(timestamps).toHaveLength(2);
+    expect(timestamps[0]).toHaveAttribute('dateTime', new Date(mockResults[0].timestamp).toISOString());
+    expect(timestamps[1]).toHaveAttribute('dateTime', new Date(mockResults[1].timestamp).toISOString());
+  });
 });
