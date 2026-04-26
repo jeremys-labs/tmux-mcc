@@ -2,6 +2,7 @@ import process from 'process';
 import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
+import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { ensureRuntimeStateDir, formatInboxEntryForCodex, readPendingInboxEntries } from './services/codex-inbox.js';
@@ -47,6 +48,8 @@ ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 let injectChain = Promise.resolve();
+const mailStore = createAgentMailStore();
+const deliveredMailIds = new Set<string>();
 
 const term = pty.spawn('codex', codexArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -94,11 +97,32 @@ const poller = setInterval(() => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} inject error ${entry.id}: ${String(error)}\n`);
     });
   }
+
+  const pendingMail = mailStore.listInbox({ agent: agentKey, status: 'new' });
+  for (const message of pendingMail) {
+    if (deliveredMailIds.has(message.id)) continue;
+    deliveredMailIds.add(message.id);
+    const prompt = formatAgentMailForRuntime(message);
+    injectChain = injectChain.then(async () => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
+      term.write('\x15');
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      term.write(prompt);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      term.write('\r');
+      mailStore.ackMessage(agentKey, message.id);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} acknowledged mail ${message.id}\n`);
+    }).catch((error) => {
+      deliveredMailIds.delete(message.id);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} mail inject error ${message.id}: ${String(error)}\n`);
+    });
+  }
 }, 2000);
 
 function cleanup(): void {
   clearInterval(poller);
   process.stdout.off('resize', resize);
+  mailStore.close();
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }

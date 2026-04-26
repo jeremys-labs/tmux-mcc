@@ -4,13 +4,17 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "bridge:codex-discord": "tsx src/codex-bridge.ts",
+    "agent-mail": "agent-mail",
+    "bridge:codex-discord": "agent-discord-bridge",
+    "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run"
   },
   "dependencies": {
+    "@agent-comms/discord-bridge": "file:../../../agent-comms/packages/discord-bridge",
+    "@agent-comms/mailbox": "file:../../../agent-comms/packages/mailbox",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
