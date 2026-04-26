@@ -2,6 +2,8 @@ import process from 'process';
 import * as pty from 'node-pty';
 import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
 
+process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
+
 function parseArgs(argv: string[]) {
   const args = [...argv];
   let agentKey = '';

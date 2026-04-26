@@ -7,6 +7,8 @@ import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { ensureRuntimeStateDir, formatInboxEntryForCodex, readPendingInboxEntries } from './services/codex-inbox.js';
 
+process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
+
 function parseArgs(argv: string[]) {
   const args = [...argv];
   let agentKey = '';

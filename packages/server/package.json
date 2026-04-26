@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "agent-mail": "agent-mail",
+    "agent-mail": "AGENT_MAIL_DIR=/Volumes/Repo-Drive/agents/SHARED/agent-mail agent-mail",
     "bridge:codex-discord": "agent-discord-bridge",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
