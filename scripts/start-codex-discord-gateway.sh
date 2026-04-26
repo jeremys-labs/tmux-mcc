@@ -76,7 +76,7 @@ done
 JSON+=']}'
 printf '%s\n' "$JSON" > "$TMP_CONFIG"
 
-export CODEX_BRIDGE_CONFIG="$TMP_CONFIG"
+export DISCORD_BRIDGE_CONFIG="$TMP_CONFIG"
 export CONTENT_ROOT
 
 exec npm run bridge:codex-discord --workspace=@mcc-tmux/server --prefix "$MCC_DIR"
