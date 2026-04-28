@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPromotedContent, reviewedMetadata, type GroomingReviewRow } from './open-brain-grooming-review.js';
+import { buildPromotedContent, classifyRawCapture, reviewedMetadata, type GroomingReviewRow } from './open-brain-grooming-review.js';
 
 describe('open brain grooming review', () => {
   const row: GroomingReviewRow = {
@@ -34,5 +34,47 @@ describe('open brain grooming review', () => {
     expect(metadata.grooming_reviewed_by).toBe('eli');
     expect(metadata.grooming_promoted_scope).toBe('project');
     expect(typeof metadata.grooming_reviewed_at).toBe('string');
+  });
+
+  it('auto-ignores routine acknowledgements', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'Okay',
+      metadata: { ...row.metadata, source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_ignore');
+  });
+
+  it('routes shared-team or source-of-truth content to review', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'Jeremy approved this as shared_team source_of_truth memory.',
+      metadata: { ...row.metadata, source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('needs_review');
+  });
+
+  it('auto-promotes project agent-mail as project context', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'Raw capture candidate.\nFrontDesk project decision text.',
+      metadata: { ...row.metadata, project: 'frontdesk', source_type: 'agent_mail', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_project');
+    expect(classification.scope).toBe('project');
+  });
+
+  it('auto-promotes ordinary non-runtime captures to private context', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'Raw capture candidate.\nEli should remember this local preference.',
+      metadata: { ...row.metadata, project: 'ob1-memory', source_type: 'manual', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.scope).toBe('private_agent');
   });
 });

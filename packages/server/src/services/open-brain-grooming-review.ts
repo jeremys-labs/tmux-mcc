@@ -5,6 +5,7 @@ const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credenti
 
 export type GroomingReviewAction = 'promote' | 'deprecate' | 'ignore';
 export type PromotionScope = 'private_agent' | 'project' | 'shared_team';
+export type GroomingClassificationAction = 'auto_ignore' | 'auto_promote_private' | 'auto_promote_project' | 'needs_review';
 
 export interface GroomingReviewRow {
   id: string;
@@ -19,6 +20,13 @@ export interface GroomingReviewOptions {
   actorAgent: string;
   authority?: 'source_of_truth' | 'context';
   approvedShared?: boolean;
+  content?: string;
+}
+
+export interface GroomingClassification {
+  action: GroomingClassificationAction;
+  reason: string;
+  scope?: PromotionScope;
   content?: string;
 }
 
@@ -66,6 +74,68 @@ export function buildPromotedContent(row: GroomingReviewRow, override?: string):
     .filter((line) => line && !line.startsWith('Raw capture candidate') && !line.startsWith('This is a candidate'))
     .join('\n')
     .trim() || row.content.trim();
+}
+
+function compactText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function metadataString(row: GroomingReviewRow, key: string): string {
+  const value = row.metadata[key];
+  return typeof value === 'string' ? value : '';
+}
+
+export function classifyRawCapture(row: GroomingReviewRow): GroomingClassification {
+  const content = compactText(row.content).toLowerCase();
+  const project = metadataString(row, 'project');
+  const confidence = metadataString(row, 'confidence');
+  const sourceType = metadataString(row, 'source_type');
+
+  if (confidence === 'low') {
+    return { action: 'needs_review', reason: 'low confidence capture' };
+  }
+
+  if (
+    /^(ok|okay|thanks|thank you|great|excellent|agreed|proceed|done|yes|no)[.! ]*$/.test(content) ||
+    /\b(are you online|hey buddy|still in process)\b/.test(content)
+  ) {
+    return { action: 'auto_ignore', reason: 'transient acknowledgement/status message' };
+  }
+
+  if (
+    /\bsource_of_truth\b/.test(content) ||
+    /\bshared[_ -]?team\b/.test(content) ||
+    /\bteam truth\b/.test(content) ||
+    /\bjeremy approved\b/.test(content) ||
+    /\bmemory cross-contamination\b/.test(content) ||
+    /\bdomain boundary\b/.test(content)
+  ) {
+    return { action: 'needs_review', reason: 'shared/team or policy-sensitive memory' };
+  }
+
+  if (project && project !== 'agent-runtime' && sourceType === 'agent_mail') {
+    return {
+      action: 'auto_promote_project',
+      scope: 'project',
+      reason: 'project-scoped agent-mail capture',
+      content: buildPromotedContent(row),
+    };
+  }
+
+  if (sourceType === 'claude_hook') {
+    return { action: 'auto_ignore', reason: 'routine Claude hook heartbeat/tool telemetry' };
+  }
+
+  if (project === 'agent-runtime') {
+    return { action: 'auto_ignore', reason: 'runtime transport/status capture' };
+  }
+
+  return {
+    action: 'auto_promote_private',
+    scope: 'private_agent',
+    reason: 'clear private-agent context with no shared policy signal',
+    content: buildPromotedContent(row),
+  };
 }
 
 export async function fetchRawCaptureBySourceRef(sourceRef: string): Promise<GroomingReviewRow | null> {
@@ -171,4 +241,41 @@ export async function reviewRawCapture(options: GroomingReviewOptions): Promise<
   }));
 
   return `promoted ${options.sourceRef} to ${options.scope}.`;
+}
+
+export async function applyGroomingClassification(
+  row: GroomingReviewRow,
+  classification: GroomingClassification,
+  actorAgent: string,
+): Promise<string> {
+  const sourceRef = metadataString(row, 'source_ref');
+  if (!sourceRef) throw new Error('Raw capture is missing metadata.source_ref');
+
+  if (classification.action === 'needs_review') {
+    await patchThoughtMetadata(row.id, reviewedMetadata(row, 'needs_review', actorAgent, {
+      grooming_review_reason: classification.reason,
+    }));
+    return `needs_review ${sourceRef}: ${classification.reason}`;
+  }
+
+  if (classification.action === 'auto_ignore') {
+    await patchThoughtMetadata(row.id, reviewedMetadata(row, 'auto_ignored', actorAgent, {
+      grooming_review_reason: classification.reason,
+    }));
+    return `auto_ignored ${sourceRef}: ${classification.reason}`;
+  }
+
+  if (classification.action === 'auto_promote_private' || classification.action === 'auto_promote_project') {
+    const scope = classification.scope ?? (classification.action === 'auto_promote_project' ? 'project' : 'private_agent');
+    return reviewRawCapture({
+      action: 'promote',
+      sourceRef,
+      scope,
+      actorAgent,
+      authority: 'context',
+      content: classification.content,
+    });
+  }
+
+  throw new Error(`Unsupported grooming classification: ${classification.action}`);
 }
