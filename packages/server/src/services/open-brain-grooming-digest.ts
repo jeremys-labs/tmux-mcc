@@ -17,6 +17,7 @@ export interface RawCaptureRow {
     source_ref?: string;
     source_type?: string;
     confidence?: string;
+    grooming_status?: string;
     [key: string]: unknown;
   };
 }
@@ -93,6 +94,7 @@ export async function fetchRawCapturesSince(sinceIso: string, limit = 80): Promi
   const url = new URL('/rest/v1/thoughts', config.projectUrl);
   url.searchParams.set('select', 'id,created_at,content,metadata');
   url.searchParams.set('metadata->>scope', 'eq.raw_capture');
+  url.searchParams.set('metadata->>grooming_status', 'is.null');
   url.searchParams.set('created_at', `gte.${sinceIso}`);
   url.searchParams.set('order', 'created_at.asc');
   url.searchParams.set('limit', String(limit));
@@ -165,6 +167,11 @@ export function buildGroomingDigest(rows: RawCaptureRow[], options: GroomingDige
       lines.push(`- ... ${rows.length - limited.length} more raw captures omitted from this digest.`);
     }
     lines.push('');
+    lines.push('Review commands:');
+    lines.push('- promote <source_ref> private_agent|project|shared_team');
+    lines.push('- deprecate <source_ref>');
+    lines.push('- ignore <source_ref>');
+    lines.push('');
     lines.push('No memory was promoted or deprecated automatically.');
   } else {
     lines.push('');
@@ -219,4 +226,3 @@ export async function sendDiscordDigest(text: string, channelId = resolveDigestC
     }
   }
 }
-

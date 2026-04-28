@@ -38,7 +38,7 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('Sources: discord: 1');
     expect(digest).toContain('discord:1498527906287321088 [agent-runtime]');
     expect(digest).toContain('How do we verify the raw_capture?');
+    expect(digest).toContain('promote <source_ref> private_agent|project|shared_team');
     expect(digest).toContain('No memory was promoted or deprecated automatically.');
   });
 });
-
