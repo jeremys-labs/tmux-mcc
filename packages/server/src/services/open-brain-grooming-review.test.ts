@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildPromotedContent, classifyRawCapture, reviewedMetadata, type GroomingReviewRow } from './open-brain-grooming-review.js';
+import {
+  buildPromotedContent,
+  classifyRawCapture,
+  classifyRawCaptureCluster,
+  groupRawCaptures,
+  reviewedMetadata,
+  type GroomingReviewRow,
+} from './open-brain-grooming-review.js';
 
 describe('open brain grooming review', () => {
   const row: GroomingReviewRow = {
@@ -76,5 +83,57 @@ describe('open brain grooming review', () => {
 
     expect(classification.action).toBe('auto_promote_private');
     expect(classification.scope).toBe('private_agent');
+  });
+
+  it('groups related raw captures by owner, project, and source type', () => {
+    const rows = [
+      { ...row, id: '1', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord' } },
+      { ...row, id: '2', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord' } },
+      { ...row, id: '3', metadata: { ...row.metadata, owner_agent: 'isla', project: 'ob1-memory', source_type: 'discord' } },
+    ];
+
+    const groups = groupRawCaptures(rows);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.find((group) => group.key === 'eli|ob1-memory|discord')?.rows).toHaveLength(2);
+  });
+
+  it('skips clusters with fewer than three related captures', () => {
+    const classification = classifyRawCaptureCluster({
+      key: 'eli|ob1-memory|manual',
+      rows: [row, { ...row, id: 'thought-2' }],
+    });
+
+    expect(classification.action).toBe('cluster_skip');
+  });
+
+  it('auto-promotes low-risk project agent-mail clusters', () => {
+    const rows = [1, 2, 3].map((index) => ({
+      ...row,
+      id: `thought-${index}`,
+      content: `Raw capture candidate.\nFrontDesk related project update ${index}.`,
+      metadata: { ...row.metadata, owner_agent: 'eli', project: 'frontdesk', source_type: 'agent_mail', confidence: 'medium', source_ref: `mail:${index}` },
+    }));
+
+    const classification = classifyRawCaptureCluster({ key: 'eli|frontdesk|agent_mail', rows });
+
+    expect(classification.action).toBe('cluster_auto_promote_project');
+    expect(classification.scope).toBe('project');
+    expect(classification.content).toContain('FrontDesk related project update 1');
+  });
+
+  it('escalates clusters that contain policy-sensitive content', () => {
+    const rows = [1, 2, 3].map((index) => ({
+      ...row,
+      id: `thought-${index}`,
+      content: index === 2
+        ? 'Jeremy approved this shared_team source_of_truth memory.'
+        : `Raw capture candidate.\nRoutine related point ${index}.`,
+      metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord', confidence: 'medium', source_ref: `discord:${index}` },
+    }));
+
+    const classification = classifyRawCaptureCluster({ key: 'eli|ob1-memory|discord', rows });
+
+    expect(classification.action).toBe('cluster_needs_review');
   });
 });
