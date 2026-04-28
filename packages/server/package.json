@@ -6,6 +6,8 @@
     "dev": "tsx watch src/index.ts",
     "agent-mail": "AGENT_MAIL_DIR=/Volumes/Repo-Drive/agents/SHARED/agent-mail agent-mail",
     "bridge:codex-discord": "agent-discord-bridge",
+    "open-brain:grooming-digest": "tsx src/open-brain-grooming-digest.ts",
+    "open-brain:hook": "tsx src/open-brain-hook.ts",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
     "build": "tsc",

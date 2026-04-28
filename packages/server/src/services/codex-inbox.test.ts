@@ -40,16 +40,22 @@ describe('codex inbox', () => {
   it('formats inbox entries into a readable Codex prompt', () => {
     const prompt = formatInboxEntryForCodex({
       id: 'm3',
+      bindingName: 'eli',
       agentKey: 'marcus',
       channelId: 'c1',
       threadId: 't1',
       author: 'Jeremy',
+      authorId: 'u1',
       content: 'Can you reply to me?',
       timestamp: '2026-04-13T18:02:00.000Z',
     });
 
     expect(prompt).toContain('[Messaging Gateway]');
-    expect(prompt).toContain('New Discord message from Jeremy');
+    expect(prompt).toContain('<channel source="discord" chat_id="c1" message_id="m3" user="Jeremy"');
+    expect(prompt).toContain('thread_id="t1"');
     expect(prompt).toContain('Can you reply to me?');
+    expect(prompt).toContain('Reply on Discord using `mcp__discord_eli__.reply`.');
+    expect(prompt).toContain('`reply_to: "m3"`');
+    expect(prompt).toContain('Do not answer only in the local relay session.');
   });
 });

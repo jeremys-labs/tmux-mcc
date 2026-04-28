@@ -51,10 +51,34 @@ export function readPendingInboxEntries(contentRoot: string, agentKey: string): 
   return pending;
 }
 
+function resolveDiscordReplyTool(bindingName?: string): string {
+  if (!bindingName) return 'Discord reply tool';
+  const normalized = bindingName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  return `mcp__discord_${normalized}__.reply`;
+}
+
 export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
-  const scope = entry.threadId
-    ? `channel ${entry.channelId}, thread ${entry.threadId}`
-    : `channel ${entry.channelId}`;
   const content = entry.content.replace(/\s+/g, ' ').trim();
-  return `[Messaging Gateway] New Discord message from ${entry.author} in ${scope} at ${entry.timestamp}: ${content}`;
+  const replyTool = resolveDiscordReplyTool(entry.bindingName);
+  const attrs = [
+    'source="discord"',
+    `chat_id="${entry.channelId}"`,
+    `message_id="${entry.id}"`,
+    `user="${entry.author}"`,
+    `ts="${entry.timestamp}"`,
+  ];
+  if (entry.authorId) attrs.push(`user_id="${entry.authorId}"`);
+  if (entry.threadId) attrs.push(`thread_id="${entry.threadId}"`);
+
+  return [
+    `[Messaging Gateway] Discord message routed for ${entry.agentKey}.`,
+    '',
+    `<channel ${attrs.join(' ')}>${content}</channel>`,
+    '',
+    'Routing rule for this turn:',
+    '- This message arrived from Discord via the Messaging Gateway.',
+    `- Reply on Discord using \`${replyTool}\`.`,
+    `- Use \`chat_id: "${entry.channelId}"\` and \`reply_to: "${entry.id}"\`.`,
+    '- Do not answer only in the local relay session.',
+  ].join('\n');
 }

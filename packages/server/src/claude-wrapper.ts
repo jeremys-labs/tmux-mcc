@@ -1,6 +1,14 @@
 import process from 'process';
+import fs from 'fs';
+import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
+import { resolveContentRoot } from './config.js';
+import { ensureContentDirs } from './content.js';
+import {
+  captureAgentMailMessage,
+  resolveOpenBrainRuntimeConfig,
+} from './services/open-brain-runtime.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -31,9 +39,13 @@ function parseArgs(argv: string[]) {
 }
 
 const { agentKey, cwd, claudeArgs } = parseArgs(process.argv.slice(2));
+const contentRoot = resolveContentRoot();
+ensureContentDirs(contentRoot);
+const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
 let injectChain = Promise.resolve();
 const deliveredIds = new Set<string>();
+const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 
 const term = pty.spawn('claude', claudeArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -72,6 +84,14 @@ const poller = setInterval(() => {
     deliveredIds.add(message.id);
     const prompt = formatAgentMailForRuntime(message);
     injectChain = injectChain.then(async () => {
+      if (openBrainConfig) {
+        try {
+          await captureAgentMailMessage(openBrainConfig, message);
+          fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} captured mail ${message.id} to open-brain raw_capture\n`);
+        } catch (error) {
+          fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain mail capture error ${message.id}: ${String(error)}\n`);
+        }
+      }
       term.write('\x15');
       await new Promise((resolve) => setTimeout(resolve, 40));
       term.write(prompt);

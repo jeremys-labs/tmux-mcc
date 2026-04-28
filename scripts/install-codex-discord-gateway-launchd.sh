@@ -6,7 +6,7 @@ MCC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTS=("$@")
 
 if [[ ${#AGENTS[@]} -eq 0 ]]; then
-  AGENTS=(zara marcus)
+  AGENTS=(zara marcus eli)
 fi
 
 LABEL="${LABEL:-com.jeremylahners.codex-discord-gateway}"
