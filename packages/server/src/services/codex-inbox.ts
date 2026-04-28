@@ -78,7 +78,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     'Routing rule for this turn:',
     '- This message arrived from Discord via the Messaging Gateway.',
     `- Reply on Discord using \`${replyTool}\`.`,
-    `- Use \`chat_id: "${entry.channelId}"\` and \`reply_to: "${entry.id}"\`.`,
+    `- Use \`chat_id: "${entry.channelId}"\`.`,
     '- Do not answer only in the local relay session.',
   ].join('\n');
 }
