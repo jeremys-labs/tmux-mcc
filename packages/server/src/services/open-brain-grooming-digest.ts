@@ -27,6 +27,7 @@ export interface GroomingDigestOptions {
   generatedAtIso: string;
   channelId: string;
   maxItems?: number;
+  dryRun?: boolean;
 }
 
 export interface GroomingDigestState {

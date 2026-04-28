@@ -1,12 +1,5 @@
-import {
-  buildGroomingDigest,
-  defaultSinceIso,
-  fetchRawCapturesSince,
-  readDigestState,
-  resolveDigestChannelId,
-  sendDiscordDigest,
-  writeDigestState,
-} from './services/open-brain-grooming-digest.js';
+import { resolveDigestChannelId, sendDiscordDigest, writeDigestState } from './services/open-brain-grooming-digest.js';
+import { runScheduledGrooming } from './services/open-brain-grooming-schedule.js';
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(name);
@@ -21,32 +14,30 @@ function readArg(name: string): string | undefined {
 async function main(): Promise<void> {
   const now = new Date();
   const generatedAtIso = now.toISOString();
-  const state = readDigestState();
-  const sinceIso = readArg('--since') ?? defaultSinceIso(now, state);
+  const sinceIso = readArg('--since');
   const limit = Number(readArg('--limit') ?? '80');
   const maxItems = Number(readArg('--max-items') ?? '12');
   const dryRun = hasFlag('--dry-run');
-
-  const rows = await fetchRawCapturesSince(sinceIso, limit);
-  const digest = buildGroomingDigest(rows, {
+  const result = await runScheduledGrooming({
+    actorAgent: 'eli',
     sinceIso,
     generatedAtIso,
-    channelId: resolveDigestChannelId(),
+    limit,
     maxItems,
+    dryRun,
   });
 
   if (dryRun) {
-    process.stdout.write(`${digest}\n`);
+    process.stdout.write(`${result.digest}\n`);
     return;
   }
 
-  await sendDiscordDigest(digest);
-  writeDigestState({ ...state, lastRunIso: generatedAtIso });
-  process.stdout.write(`Sent OB1 grooming digest for ${rows.length} raw captures since ${sinceIso}.\n`);
+  await sendDiscordDigest(result.digest, resolveDigestChannelId());
+  writeDigestState({ lastRunIso: generatedAtIso });
+  process.stdout.write(`Sent OB1 grooming digest for ${result.rawCaptureCount} raw captures since ${sinceIso ?? 'previous run'}.\n`);
 }
 
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exit(1);
 });
-
