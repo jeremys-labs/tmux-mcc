@@ -76,6 +76,16 @@ function compactText(text: string, maxLength: number): string {
   return `${collapsed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
+function compactContentColumn(text: string, maxLength: number): string {
+  const normalized = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 function extractRowText(row: GroomingReviewRow): string {
   const lines = row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const contentLine = lines.find((line) => (
@@ -126,10 +136,10 @@ function candidateEvidence(rows: GroomingReviewRow[]): string[] {
 
   for (const row of rows) {
     const sourceRef = rowSourceRef(row);
-    const text = compactText(extractRowText(row), 150);
+    const text = compactContentColumn(row.content, 900);
     if (!text) continue;
 
-    const line = `${sourceRef}: ${text}`;
+    const line = `${sourceRef}\ncontent:\n${text}`;
     if (seen.has(line)) continue;
     seen.add(line);
     evidence.push(line);
@@ -270,9 +280,9 @@ export function buildScheduledGroomingDigest(
       lines.push(`  Recommended: ${candidate.recommendedAction}`);
       lines.push(`  Reason: ${candidate.reason}`);
       lines.push(`  Proposed memory: ${candidate.proposedMemory}`);
-      lines.push(`  Evidence:`);
+      lines.push(`  Content column:`);
       for (const evidence of candidate.evidence) {
-        lines.push(`  - ${evidence}`);
+        lines.push(`  - ${evidence.split('\n').join('\n    ')}`);
       }
       lines.push(`  Sources: ${candidate.sourceRef}`);
     }

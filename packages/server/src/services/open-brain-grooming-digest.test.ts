@@ -99,7 +99,7 @@ describe('open brain grooming digest', () => {
         reason: 'shared/team or policy-sensitive memory',
         recommendedAction: 'Promote to project memory unless this is approved team truth; do not promote shared_team from this digest alone.',
         proposedMemory: 'Potentially shared-team item.',
-        evidence: ['discord:1: Potentially shared-team item.'],
+        evidence: ['discord:1\ncontent:\nRaw capture candidate.\nPotentially shared-team item.'],
       }],
     );
 
@@ -110,7 +110,7 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('[item] discord:1 [ob1-memory]');
     expect(digest).toContain('Recommended: Promote to project memory unless this is approved team truth');
     expect(digest).toContain('Proposed memory: Potentially shared-team item.');
-    expect(digest).toContain('Evidence:');
-    expect(digest).toContain('discord:1: Potentially shared-team item.');
+    expect(digest).toContain('Content column:');
+    expect(digest).toContain('discord:1\n    content:\n    Raw capture candidate.\n    Potentially shared-team item.');
   });
 });
