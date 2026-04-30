@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   callOpenBrainTool,
+  captureClaudeHookEvent,
   captureDiscordInboxEntry,
   formatStartupMemoryForCodex,
   resolveOpenBrainRuntimeConfig,
@@ -100,6 +101,55 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.scope).toBe('raw_capture');
     expect(body.params.arguments.authority).toBe('raw_capture');
     expect(body.params.arguments.source_ref).toBe('discord:m1');
-    expect(body.params.arguments.content).toContain('Proceed');
+    expect(body.params.arguments.content).toBe('Proceed');
+    expect(body.params.arguments.content).not.toContain('Raw capture candidate');
+    expect(body.params.arguments.content).not.toContain('This is a candidate');
+  });
+
+  it('captures bounded Claude hook evidence for grooming and validation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        cwd: '/Volumes/Repo-Drive/agents/isla',
+        session_id: 's1',
+        tool_name: 'Write',
+        tool_input: {
+          file_path: '/Volumes/Repo-Drive/agents/isla/memory/MEMORY.md',
+          content: 'ob1-validation-retry3-12345 durable memory write context',
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.agent_id).toBe('isla');
+    expect(body.params.arguments.source_ref).toBe('claude-hook:PostToolUse:s1');
+    expect(body.params.arguments.content).toContain('File: /Volumes/Repo-Drive/agents/isla/memory/MEMORY.md');
+    expect(body.params.arguments.content).toContain('File content excerpt: ob1-validation-retry3-12345');
+    expect(body.params.arguments.content).not.toContain('Raw capture candidate');
+    expect(body.params.arguments.content).not.toContain('Working directory:');
+    expect(body.params.arguments.content).not.toContain('This is a candidate');
+  });
+
+  it('skips Claude lifecycle captures without substantive evidence', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'SessionEnd',
+      {
+        cwd: '/Volumes/Repo-Drive/agents/isla',
+        session_id: 's1',
+      },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

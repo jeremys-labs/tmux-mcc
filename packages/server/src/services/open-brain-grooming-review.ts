@@ -178,7 +178,7 @@ export function groupRawCaptures(rows: GroomingReviewRow[]): GroomingCluster[] {
   return [...groups.entries()].map(([key, groupRows]) => ({ key, rows: groupRows }));
 }
 
-function clusterSummaryContent(cluster: GroomingCluster): string {
+export function clusterSummaryContent(cluster: GroomingCluster): string {
   const [agent, clusterProject, clusterSource] = cluster.key.split('|');
   const refs = cluster.rows
     .map((row) => metadataString(row, 'source_ref'))

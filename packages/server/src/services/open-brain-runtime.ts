@@ -180,6 +180,9 @@ export async function captureDiscordInboxEntry(
   config: OpenBrainRuntimeConfig,
   entry: CodexBridgeInboxEntry,
 ): Promise<void> {
+  const content = entry.content.trim();
+  if (!content) return;
+
   await callOpenBrainTool(config, 'capture_agent_memory', {
     agent_id: config.agentId,
     scope: 'raw_capture',
@@ -189,12 +192,7 @@ export async function captureDiscordInboxEntry(
     confidence: 'medium',
     source_type: 'discord',
     source_ref: `discord:${entry.id}`,
-    content: [
-      `Raw capture candidate for ${entry.agentKey} from Discord.`,
-      `At ${entry.timestamp}, ${entry.author}${entry.authorId ? ` (${entry.authorId})` : ''} wrote in channel ${entry.channelId}${entry.threadId ? ` thread ${entry.threadId}` : ''}:`,
-      entry.content.trim(),
-      'This is a candidate runtime capture for later grooming, not source-of-truth memory.',
-    ].join('\n'),
+    content,
   });
 }
 
@@ -203,9 +201,7 @@ export async function captureClaudeHookEvent(
   eventName: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
-  const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
   const toolInput = payload.tool_input && typeof payload.tool_input === 'object'
     ? payload.tool_input as Record<string, unknown>
     : {};
@@ -214,6 +210,12 @@ export async function captureClaudeHookEvent(
     : typeof toolInput.notebook_path === 'string'
       ? toolInput.notebook_path
       : '';
+  const evidence = formatClaudeHookEvidence(payload, toolInput);
+  const content = [
+    filePath ? `File: ${filePath}` : '',
+    ...evidence,
+  ].filter(Boolean).join('\n');
+  if (!content.trim()) return;
 
   await callOpenBrainTool(config, 'capture_agent_memory', {
     agent_id: config.agentId,
@@ -224,21 +226,57 @@ export async function captureClaudeHookEvent(
     confidence: 'medium',
     source_type: 'claude_hook',
     source_ref: `claude-hook:${eventName}:${sessionId || Date.now()}`,
-    content: [
-      `Raw capture candidate for ${config.agentId} from Claude Code ${eventName} hook.`,
-      cwd ? `Working directory: ${cwd}` : '',
-      sessionId ? `Session: ${sessionId}` : '',
-      toolName ? `Tool: ${toolName}` : '',
-      filePath ? `File: ${filePath}` : '',
-      'This is a candidate runtime capture for later grooming, not source-of-truth memory.',
-    ].filter(Boolean).join('\n'),
+    content,
   });
+}
+
+function compactExcerpt(value: unknown, maxLength = 1200): string {
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else if (value !== undefined && value !== null) {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function formatClaudeHookEvidence(payload: Record<string, unknown>, toolInput: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  const candidates: Array<[string, unknown]> = [
+    ['Command', toolInput.command],
+    ['File content excerpt', toolInput.content],
+    ['Old string excerpt', toolInput.old_string],
+    ['New string excerpt', toolInput.new_string],
+    ['Edit excerpt', toolInput.edits],
+    ['Tool response excerpt', payload.tool_response],
+    ['Tool output excerpt', payload.tool_output],
+  ];
+
+  for (const [label, value] of candidates) {
+    const excerpt = compactExcerpt(value);
+    if (excerpt) lines.push(`${label}: ${excerpt}`);
+  }
+
+  return lines;
 }
 
 export async function captureAgentMailMessage(
   config: OpenBrainRuntimeConfig,
   message: AgentMailMessage,
 ): Promise<void> {
+  const content = [
+    message.subject.trim() ? `Subject: ${message.subject.trim()}` : '',
+    message.bodyMd.trim(),
+  ].filter(Boolean).join('\n\n');
+  if (!content.trim()) return;
+
   await callOpenBrainTool(config, 'capture_agent_memory', {
     agent_id: config.agentId,
     scope: 'raw_capture',
@@ -248,12 +286,6 @@ export async function captureAgentMailMessage(
     confidence: 'medium',
     source_type: 'agent_mail',
     source_ref: `agent-mail:${message.id}`,
-    content: [
-      `Raw capture candidate for ${message.toAgent} from agent-mail.`,
-      `At ${message.createdAt}, ${message.fromAgent} sent ${message.type}/${message.priority} mail "${message.subject}" to ${message.toAgent}.`,
-      `Requires response: ${String(message.requiresResponse)}.`,
-      message.bodyMd.trim(),
-      'This is a candidate runtime capture for later grooming, not source-of-truth memory.',
-    ].join('\n'),
+    content,
   });
 }

@@ -3,6 +3,7 @@ import {
   applyGroomingClusterClassification,
   classifyRawCapture,
   classifyRawCaptureCluster,
+  clusterSummaryContent,
   groupRawCaptures,
   type GroomingClassification,
   type GroomingCluster,
@@ -46,6 +47,9 @@ export interface GroomingScheduledCandidate {
   project: string;
   text: string;
   reason: string;
+  recommendedAction: string;
+  proposedMemory: string;
+  evidence: string[];
 }
 
 export interface GroomingScheduledResult {
@@ -74,7 +78,12 @@ function compactText(text: string, maxLength: number): string {
 
 function extractRowText(row: GroomingReviewRow): string {
   const lines = row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const contentLine = lines.find((line) => !line.startsWith('Raw capture candidate') && !line.startsWith('At ') && !line.startsWith('This is a candidate'));
+  const contentLine = lines.find((line) => (
+    !line.startsWith('Raw capture candidate') &&
+    !line.startsWith('At ') &&
+    !line.startsWith('Requires response:') &&
+    !line.startsWith('This is a candidate')
+  ));
   return contentLine ?? lines[0] ?? '';
 }
 
@@ -95,6 +104,38 @@ function rowClusterKey(row: GroomingReviewRow): string {
   const project = typeof row.metadata.project === 'string' ? row.metadata.project : 'unknown';
   const sourceType = typeof row.metadata.source_type === 'string' ? row.metadata.source_type : 'unknown';
   return [owner, project, sourceType].join('|');
+}
+
+function recommendedAction(kind: 'item' | 'cluster', project: string, reason: string): string {
+  if (reason.includes('shared/team')) {
+    return project && project !== 'agent-runtime'
+      ? `Promote to project memory unless this is approved team truth; do not promote shared_team from this digest alone.`
+      : `Review manually before promoting shared_team; prefer private_agent unless this is approved team truth.`;
+  }
+
+  if (project && project !== 'agent-runtime') {
+    return `Promote ${kind} to project memory.`;
+  }
+
+  return `Promote to private_agent only if durable; otherwise ignore.`;
+}
+
+function candidateEvidence(rows: GroomingReviewRow[]): string[] {
+  const seen = new Set<string>();
+  const evidence: string[] = [];
+
+  for (const row of rows) {
+    const sourceRef = rowSourceRef(row);
+    const text = compactText(extractRowText(row), 150);
+    if (!text) continue;
+
+    const line = `${sourceRef}: ${text}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    evidence.push(line);
+  }
+
+  return evidence.slice(0, 6);
 }
 
 function formatSummary(summary: GroomingActionSummary): string[] {
@@ -138,21 +179,29 @@ function buildReviewCandidates(
       project: rowProject(plan.row),
       text: compactText(extractRowText(plan.row), 170),
       reason: plan.classification.reason,
+      recommendedAction: recommendedAction('item', rowProject(plan.row), plan.classification.reason),
+      proposedMemory: compactText(plan.classification.content ?? extractRowText(plan.row), 700),
+      evidence: candidateEvidence([plan.row]),
     });
   }
 
   for (const plan of clusterPlans) {
     if (plan.classification.action !== 'cluster_needs_review') continue;
+    const project = plan.cluster.key.split('|')[1] ?? 'unknown-project';
+    const proposedMemory = plan.classification.content ?? clusterSummaryContent(plan.cluster);
     candidates.push({
       kind: 'cluster',
       key: plan.cluster.key,
       sourceRef: plan.cluster.rows.map((row) => rowSourceRef(row)).join(', '),
-      project: plan.cluster.key.split('|')[1] ?? 'unknown-project',
+      project,
       text: compactText(
-        plan.classification.content ?? plan.cluster.rows.map((row) => extractRowText(row)).join(' | '),
+        proposedMemory,
         170,
       ),
       reason: plan.classification.reason,
+      recommendedAction: recommendedAction('cluster', project, plan.classification.reason),
+      proposedMemory: compactText(proposedMemory, 1100),
+      evidence: candidateEvidence(plan.cluster.rows),
     });
   }
 
@@ -217,8 +266,15 @@ export function buildScheduledGroomingDigest(
     lines.push('');
     lines.push('Human review candidates:');
     for (const candidate of reviewCandidates.slice(0, options.maxItems ?? 12)) {
-      lines.push(`- [${candidate.kind}] ${candidate.sourceRef} [${candidate.project}]: ${candidate.text}`);
+      lines.push(`- [${candidate.kind}] ${candidate.key} [${candidate.project}]`);
+      lines.push(`  Recommended: ${candidate.recommendedAction}`);
       lines.push(`  Reason: ${candidate.reason}`);
+      lines.push(`  Proposed memory: ${candidate.proposedMemory}`);
+      lines.push(`  Evidence:`);
+      for (const evidence of candidate.evidence) {
+        lines.push(`  - ${evidence}`);
+      }
+      lines.push(`  Sources: ${candidate.sourceRef}`);
     }
     if (reviewCandidates.length > (options.maxItems ?? 12)) {
       lines.push(`- ... ${reviewCandidates.length - (options.maxItems ?? 12)} more candidates omitted from this digest.`);

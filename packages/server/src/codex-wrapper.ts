@@ -6,12 +6,11 @@ import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/ma
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { ensureRuntimeStateDir, formatInboxEntryForCodex, readPendingInboxEntries } from './services/codex-inbox.js';
+import { buildAnswerContext } from './services/answer-context.js';
 import {
   captureAgentMailMessage,
   captureDiscordInboxEntry,
-  formatStartupMemoryForCodex,
   resolveOpenBrainRuntimeConfig,
-  searchStartupMemory,
 } from './services/open-brain-runtime.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
@@ -92,23 +91,7 @@ const resize = () => {
 process.stdout.on('resize', resize);
 
 if (openBrainConfig) {
-  injectChain = injectChain.then(async () => {
-    try {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall started\n`);
-      const memoryText = await searchStartupMemory(openBrainConfig);
-      const prompt = formatStartupMemoryForCodex(agentKey, memoryText);
-      if (!prompt) return;
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting open-brain startup recall\n`);
-      term.write('\x15');
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      term.write(prompt);
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      term.write('\r');
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} submitted open-brain startup recall\n`);
-    } catch (error) {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall error: ${String(error)}\n`);
-    }
-  });
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall delegated to Codex SessionStart hook for ${agentKey}\n`);
 } else {
   fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey}\n`);
 }
@@ -116,7 +99,6 @@ if (openBrainConfig) {
 const poller = setInterval(() => {
   const pending = readPendingInboxEntries(contentRoot, agentKey);
   for (const entry of pending) {
-    const prompt = formatInboxEntryForCodex(entry);
     injectChain = injectChain.then(async () => {
       if (openBrainConfig) {
         try {
@@ -126,6 +108,19 @@ const poller = setInterval(() => {
           fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain discord capture error ${entry.id}: ${String(error)}\n`);
         }
       }
+      const answerContext = await buildAnswerContext({
+        agentKey,
+        source: 'discord',
+        text: entry.content,
+        openBrainConfig,
+      }).catch((error) => {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} answer-context discord error ${entry.id}: ${String(error)}\n`);
+        return '';
+      });
+      if (answerContext) {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} built answer-context for discord ${entry.id}\n`);
+      }
+      const prompt = [answerContext, formatInboxEntryForCodex(entry)].filter(Boolean).join('\n\n');
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting ${entry.id}: ${prompt}\n`);
       term.write('\x15'); // Ctrl+U clears the current input line in common TUI shells
       await new Promise((resolve) => setTimeout(resolve, 40));
@@ -142,7 +137,6 @@ const poller = setInterval(() => {
   for (const message of pendingMail) {
     if (deliveredMailIds.has(message.id)) continue;
     deliveredMailIds.add(message.id);
-    const prompt = formatAgentMailForRuntime(message);
     injectChain = injectChain.then(async () => {
       if (openBrainConfig) {
         try {
@@ -152,6 +146,21 @@ const poller = setInterval(() => {
           fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain mail capture error ${message.id}: ${String(error)}\n`);
         }
       }
+      const answerContext = await buildAnswerContext({
+        agentKey,
+        source: 'agent_mail',
+        subject: message.subject,
+        text: message.bodyMd,
+        project: message.relatedProject,
+        openBrainConfig,
+      }).catch((error) => {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} answer-context mail error ${message.id}: ${String(error)}\n`);
+        return '';
+      });
+      if (answerContext) {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} built answer-context for mail ${message.id}\n`);
+      }
+      const prompt = [answerContext, formatAgentMailForRuntime(message)].filter(Boolean).join('\n\n');
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
       term.write('\x15');
       await new Promise((resolve) => setTimeout(resolve, 40));

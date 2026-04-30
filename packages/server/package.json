@@ -21,6 +21,7 @@
   "dependencies": {
     "@agent-comms/discord-bridge": "file:../../../agent-comms/packages/discord-bridge",
     "@agent-comms/mailbox": "file:../../../agent-comms/packages/mailbox",
+    "@open-brain/agent-harness-hooks": "file:../../../open-brain/integrations/agent-harness-hooks",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",

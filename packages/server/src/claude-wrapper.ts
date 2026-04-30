@@ -5,6 +5,7 @@ import * as pty from 'node-pty';
 import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
+import { buildAnswerContext } from './services/answer-context.js';
 import {
   captureAgentMailMessage,
   resolveOpenBrainRuntimeConfig,
@@ -82,7 +83,6 @@ const poller = setInterval(() => {
   for (const message of pending) {
     if (deliveredIds.has(message.id)) continue;
     deliveredIds.add(message.id);
-    const prompt = formatAgentMailForRuntime(message);
     injectChain = injectChain.then(async () => {
       if (openBrainConfig) {
         try {
@@ -92,6 +92,21 @@ const poller = setInterval(() => {
           fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain mail capture error ${message.id}: ${String(error)}\n`);
         }
       }
+      const answerContext = await buildAnswerContext({
+        agentKey,
+        source: 'agent_mail',
+        subject: message.subject,
+        text: message.bodyMd,
+        project: message.relatedProject,
+        openBrainConfig,
+      }).catch((error) => {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} answer-context mail error ${message.id}: ${String(error)}\n`);
+        return '';
+      });
+      if (answerContext) {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} built answer-context for mail ${message.id}\n`);
+      }
+      const prompt = [answerContext, formatAgentMailForRuntime(message)].filter(Boolean).join('\n\n');
       term.write('\x15');
       await new Promise((resolve) => setTimeout(resolve, 40));
       term.write(prompt);
