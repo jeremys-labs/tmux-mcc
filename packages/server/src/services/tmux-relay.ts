@@ -8,6 +8,14 @@ function getSession(): string {
   return process.env.TMUX_SESSION ?? 'agents';
 }
 
+function getUtf8PtyEnv(): Record<string, string> {
+  return {
+    ...(process.env as Record<string, string>),
+    LANG: process.env.LANG || 'C.UTF-8',
+    LC_CTYPE: process.env.LC_CTYPE || process.env.LC_ALL || 'C.UTF-8',
+  };
+}
+
 const AWAITING_INPUT_TIMEOUT_MS = 2500;
 // How long after user sends input to ignore onData (suppress echo-as-thinking).
 // User input echo arrives in <10ms; real agent output takes hundreds of ms+.
@@ -72,7 +80,7 @@ export class TmuxRelay {
       cols: size.cols,
       rows: size.rows,
       cwd: process.cwd(),
-      env: process.env as Record<string, string>,
+      env: getUtf8PtyEnv(),
     });
 
     const ptySession: PtySession = {

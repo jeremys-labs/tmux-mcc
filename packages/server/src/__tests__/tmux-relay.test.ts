@@ -61,6 +61,23 @@ describe('TmuxRelay', () => {
     );
   });
 
+  it('spawns the browser relay PTY with a UTF-8 locale', () => {
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
+
+    relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
+
+    expect(vi.mocked(nodePty.spawn)).toHaveBeenCalledWith(
+      'tmux',
+      ['attach-session', '-t', expect.stringMatching(/^mcc-/)],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          LANG: expect.stringMatching(/UTF-8/i),
+          LC_CTYPE: expect.stringMatching(/UTF-8/i),
+        }),
+      })
+    );
+  });
+
   it('forwards PTY output to the WebSocket', () => {
     const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
     relay.attach('marcus', mockWs as any, { cols: 220, rows: 50 });
