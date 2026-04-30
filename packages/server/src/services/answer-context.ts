@@ -165,6 +165,7 @@ function buildRemyContext(text: string, agentsRoot: string, now: Date): DomainCo
 function buildLenaContext(text: string, agentsRoot: string): DomainContext | null {
   const lenaRoot = path.join(agentsRoot, 'lena');
   const memoryPath = path.join(lenaRoot, 'memory', 'agents', 'lena.md');
+  const nextWorkout = readFileIfExists(path.join(lenaRoot, 'next-workout.json'), 1200);
   const fullMemory = readFileIfExists(memoryPath, 16000);
   const activeState = matchingLines(fullMemory, [
     /last completed/i,
@@ -183,6 +184,7 @@ function buildLenaContext(text: string, agentsRoot: string): DomainContext | nul
     "select metric_key, value, context, timestamp from metrics where agent_id = 'lena' and metric_key like 'workout%' order by timestamp desc limit 8",
   );
   const sections = [
+    nextWorkout ? `Lena current rotation state:\n${nextWorkout}` : '',
     weightRows.length ? `Recent weigh-ins:\n${formatRows(weightRows)}` : '',
     workoutRows.length ? `Recent workout metrics:\n${formatRows(workoutRows)}` : '',
     activeState ? `Lena active workout state:\n${activeState}` : '',

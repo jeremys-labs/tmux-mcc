@@ -61,6 +61,10 @@ describe('answer context', () => {
       path.join(lenaRoot, 'memory', 'agents', 'lena.md'),
       'Last completed: Lower (Mar 25). Pull attempted Apr 12 but not completed.',
     );
+    fs.writeFileSync(
+      path.join(lenaRoot, 'next-workout.json'),
+      JSON.stringify({ nextWorkout: 'Pull', rotationIndex: 3 }),
+    );
 
     const context = await buildAnswerContext({
       agentKey: 'lena',
@@ -70,6 +74,8 @@ describe('answer context', () => {
     });
 
     expect(context).toContain('<domain_state domain="fitness">');
+    expect(context).toContain('Lena current rotation state');
+    expect(context).toContain('"nextWorkout":"Pull"');
     expect(context).toContain('Last completed: Lower');
     expect(context).toContain('Use this context before answering');
   });
