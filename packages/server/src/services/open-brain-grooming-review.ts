@@ -285,10 +285,14 @@ export function reviewedMetadata(
   };
 }
 
+export function isFinalGroomingStatus(status: unknown): boolean {
+  return Boolean(status && status !== 'needs_review' && status !== 'cluster_needs_review');
+}
+
 export async function reviewRawCapture(options: GroomingReviewOptions): Promise<string> {
   const row = await fetchRawCaptureBySourceRef(options.sourceRef);
   if (!row) throw new Error(`No raw_capture found for source_ref ${options.sourceRef}`);
-  if (row.metadata.grooming_status) {
+  if (isFinalGroomingStatus(row.metadata.grooming_status)) {
     return `${options.sourceRef} already reviewed as ${String(row.metadata.grooming_status)}.`;
   }
 

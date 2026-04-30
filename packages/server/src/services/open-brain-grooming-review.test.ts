@@ -4,6 +4,7 @@ import {
   classifyRawCapture,
   classifyRawCaptureCluster,
   groupRawCaptures,
+  isFinalGroomingStatus,
   reviewedMetadata,
   type GroomingReviewRow,
 } from './open-brain-grooming-review.js';
@@ -41,6 +42,14 @@ describe('open brain grooming review', () => {
     expect(metadata.grooming_reviewed_by).toBe('eli');
     expect(metadata.grooming_promoted_scope).toBe('project');
     expect(typeof metadata.grooming_reviewed_at).toBe('string');
+  });
+
+  it('allows manual decisions to resolve needs-review statuses', () => {
+    expect(isFinalGroomingStatus(undefined)).toBe(false);
+    expect(isFinalGroomingStatus('needs_review')).toBe(false);
+    expect(isFinalGroomingStatus('cluster_needs_review')).toBe(false);
+    expect(isFinalGroomingStatus('promoted')).toBe(true);
+    expect(isFinalGroomingStatus('ignored')).toBe(true);
   });
 
   it('auto-ignores routine acknowledgements', () => {
