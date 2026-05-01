@@ -56,6 +56,7 @@ describe('codex inbox', () => {
     expect(prompt).toContain('Can you reply to me?');
     expect(prompt).toContain('Reply on Discord using `mcp__discord_eli__.reply`.');
     expect(prompt).toContain('`chat_id: "c1"`');
+    expect(prompt).toContain('Do not pass `reply_to` unless Jeremy explicitly asks for a threaded reply.');
     expect(prompt).toContain('Do not answer only in the local relay session.');
   });
 });

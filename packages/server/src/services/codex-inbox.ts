@@ -79,6 +79,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     '- This message arrived from Discord via the Messaging Gateway.',
     `- Reply on Discord using \`${replyTool}\`.`,
     `- Use \`chat_id: "${entry.channelId}"\`.`,
+    '- Do not pass `reply_to` unless Jeremy explicitly asks for a threaded reply.',
     '- Do not answer only in the local relay session.',
   ].join('\n');
 }
