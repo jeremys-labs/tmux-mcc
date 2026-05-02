@@ -123,7 +123,7 @@ describe('open brain runtime', () => {
         tool_name: 'Write',
         tool_input: {
           file_path: '/Volumes/Repo-Drive/agents/isla/memory/MEMORY.md',
-          content: 'ob1-validation-retry3-12345 durable memory write context',
+          content: '<channel source="plugin:discord:discord" chat_id="c1">ob1-validation-retry3-12345 durable memory write context</channel>',
         },
       },
     );
@@ -133,6 +133,7 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.source_ref).toBe('claude-hook:PostToolUse:s1');
     expect(body.params.arguments.content).toContain('File: /Volumes/Repo-Drive/agents/isla/memory/MEMORY.md');
     expect(body.params.arguments.content).toContain('File content excerpt: ob1-validation-retry3-12345');
+    expect(body.params.arguments.content).not.toContain('<channel source=');
     expect(body.params.arguments.content).not.toContain('Raw capture candidate');
     expect(body.params.arguments.content).not.toContain('Working directory:');
     expect(body.params.arguments.content).not.toContain('This is a candidate');
@@ -159,7 +160,8 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.scope).toBe('raw_capture');
     expect(body.params.arguments.source_type).toBe('claude_prompt');
     expect(body.params.arguments.source_ref).toBe('claude-prompt:s1:p1');
-    expect(body.params.arguments.content).toContain('Ship it');
+    expect(body.params.arguments.content).toBe('Ship it');
+    expect(body.params.arguments.content).not.toContain('<channel source=');
   });
 
   it('captures Discord reply tool text from Claude PostToolUse payloads', async () => {

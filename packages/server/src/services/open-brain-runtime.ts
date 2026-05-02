@@ -199,6 +199,17 @@ export async function captureDiscordInboxEntry(
   });
 }
 
+function stripChannelEnvelope(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^<channel\b[^>]*>([\s\S]*?)<\/channel>$/i);
+  if (!match) return trimmed;
+  return match[1].trim();
+}
+
+function normalizeCapturedText(value: string): string {
+  return stripChannelEnvelope(value);
+}
+
 export async function captureClaudeHookEvent(
   config: OpenBrainRuntimeConfig,
   eventName: string,
@@ -239,7 +250,7 @@ export async function captureClaudePromptEvent(
   promptText: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const content = promptText.trim();
+  const content = normalizeCapturedText(promptText);
   if (!content) return;
   const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
   const promptId = typeof payload.prompt_id === 'string'
@@ -264,7 +275,7 @@ export async function captureClaudePromptEvent(
 function compactExcerpt(value: unknown, maxLength = 1200): string {
   let text = '';
   if (typeof value === 'string') {
-    text = value;
+    text = normalizeCapturedText(value);
   } else if (value !== undefined && value !== null) {
     try {
       text = JSON.stringify(value);
