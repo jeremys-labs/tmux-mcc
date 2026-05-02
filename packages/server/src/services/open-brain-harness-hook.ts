@@ -13,6 +13,7 @@ import {
 import { buildAnswerContext } from './answer-context.js';
 import {
   captureClaudeHookEvent,
+  captureClaudePromptEvent,
   formatStartupMemoryForClaude,
   formatStartupMemoryForCodex,
   resolveOpenBrainRuntimeConfig,
@@ -42,8 +43,13 @@ export async function runOpenBrainHarnessHook(input: RunOpenBrainHookInput): Pro
         : formatStartupMemoryForClaude(agentKey, memoryText);
     },
 
-    async resolveAnswerContext(agentKey, promptText) {
+    async resolveAnswerContext(agentKey, promptText, payload) {
       const config = resolveOpenBrainRuntimeConfig(agentKey);
+      if (config) {
+        await captureClaudePromptEvent(config, promptText, payload).catch((error) => {
+          process.stderr.write(`[open-brain-hook] prompt capture failed: ${String(error)}\n`);
+        });
+      }
       return buildAnswerContext({
         agentKey,
         source: 'claude_prompt',

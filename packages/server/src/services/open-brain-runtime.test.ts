@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   callOpenBrainTool,
   captureClaudeHookEvent,
+  captureClaudePromptEvent,
   captureDiscordInboxEntry,
   formatStartupMemoryForCodex,
   resolveOpenBrainRuntimeConfig,
@@ -135,6 +136,93 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.content).not.toContain('Raw capture candidate');
     expect(body.params.arguments.content).not.toContain('Working directory:');
     expect(body.params.arguments.content).not.toContain('This is a candidate');
+  });
+
+  it('captures Claude user prompts as raw capture candidates', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudePromptEvent(
+      { agentId: 'marcus', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      '<channel source="discord" chat_id="c1">Ship it</channel>',
+      {
+        session_id: 's1',
+        prompt_id: 'p1',
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.agent_id).toBe('marcus');
+    expect(body.params.arguments.scope).toBe('raw_capture');
+    expect(body.params.arguments.source_type).toBe('claude_prompt');
+    expect(body.params.arguments.source_ref).toBe('claude-prompt:s1:p1');
+    expect(body.params.arguments.content).toContain('Ship it');
+  });
+
+  it('captures Discord reply tool text from Claude PostToolUse payloads', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'marcus', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        session_id: 's1',
+        tool_name: 'mcp__plugin_discord_discord__reply',
+        tool_input: {
+          chat_id: '1491979880747765810',
+          text: 'Done. I shipped the title update.',
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.source_type).toBe('discord_reply');
+    expect(body.params.arguments.content).toContain('Tool name: mcp__plugin_discord_discord__reply');
+    expect(body.params.arguments.content).toContain('Chat ID: 1491979880747765810');
+    expect(body.params.arguments.content).toContain('Discord text excerpt: Done. I shipped the title update.');
+  });
+
+  it('captures successful Codex Discord replies as outbound raw captures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        invocation: {
+          server: 'discord-eli',
+          tool: 'reply',
+          arguments: {
+            chat_id: '1491979880747765810',
+            text: 'Patch is verified.',
+          },
+        },
+        result: {
+          Ok: {
+            content: [{ type: 'text', text: 'sent (id: 1499966336564986067)' }],
+          },
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.source_type).toBe('discord_reply');
+    expect(body.params.arguments.source_ref).toBe('discord-reply:1499966336564986067');
+    expect(body.params.arguments.content).toContain('Codex MCP server: discord-eli');
+    expect(body.params.arguments.content).toContain('Codex MCP tool: reply');
+    expect(body.params.arguments.content).toContain('Codex chat ID: 1491979880747765810');
+    expect(body.params.arguments.content).toContain('Codex Discord text excerpt: Patch is verified.');
   });
 
   it('skips Claude lifecycle captures without substantive evidence', async () => {

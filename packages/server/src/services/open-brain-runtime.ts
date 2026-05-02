@@ -219,6 +219,7 @@ export async function captureClaudeHookEvent(
     ...evidence,
   ].filter(Boolean).join('\n');
   if (!content.trim()) return;
+  const discordReply = extractDiscordReplyCapture(payload, toolInput);
 
   await callOpenBrainTool(config, 'capture_agent_memory', {
     agent_id: config.agentId,
@@ -227,8 +228,35 @@ export async function captureClaudeHookEvent(
     audience: [config.agentId],
     authority: 'raw_capture',
     confidence: 'medium',
-    source_type: 'claude_hook',
-    source_ref: `claude-hook:${eventName}:${sessionId || Date.now()}`,
+    source_type: discordReply ? 'discord_reply' : 'claude_hook',
+    source_ref: discordReply?.sourceRef ?? `claude-hook:${eventName}:${sessionId || Date.now()}`,
+    content,
+  });
+}
+
+export async function captureClaudePromptEvent(
+  config: OpenBrainRuntimeConfig,
+  promptText: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const content = promptText.trim();
+  if (!content) return;
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const promptId = typeof payload.prompt_id === 'string'
+    ? payload.prompt_id
+    : typeof payload.promptId === 'string'
+      ? payload.promptId
+      : '';
+
+  await callOpenBrainTool(config, 'capture_agent_memory', {
+    agent_id: config.agentId,
+    scope: 'raw_capture',
+    project: 'agent-runtime',
+    audience: [config.agentId],
+    authority: 'raw_capture',
+    confidence: 'medium',
+    source_type: 'claude_prompt',
+    source_ref: `claude-prompt:${sessionId || 'unknown'}:${promptId || Date.now()}`,
     content,
   });
 }
@@ -252,14 +280,29 @@ function compactExcerpt(value: unknown, maxLength = 1200): string {
 
 function formatClaudeHookEvidence(payload: Record<string, unknown>, toolInput: Record<string, unknown>): string[] {
   const lines: string[] = [];
+  const invocation = payload.invocation && typeof payload.invocation === 'object'
+    ? payload.invocation as Record<string, unknown>
+    : {};
+  const invocationArgs = invocation.arguments && typeof invocation.arguments === 'object'
+    ? invocation.arguments as Record<string, unknown>
+    : {};
   const candidates: Array<[string, unknown]> = [
+    ['Tool name', payload.tool_name],
+    ['Codex MCP server', invocation.server],
+    ['Codex MCP tool', invocation.tool],
     ['Command', toolInput.command],
+    ['Chat ID', toolInput.chat_id],
+    ['Codex chat ID', invocationArgs.chat_id],
+    ['Discord text excerpt', toolInput.text],
+    ['Codex Discord text excerpt', invocationArgs.text],
+    ['Message excerpt', toolInput.message],
     ['File content excerpt', toolInput.content],
     ['Old string excerpt', toolInput.old_string],
     ['New string excerpt', toolInput.new_string],
     ['Edit excerpt', toolInput.edits],
     ['Tool response excerpt', payload.tool_response],
     ['Tool output excerpt', payload.tool_output],
+    ['Codex tool result excerpt', payload.result],
   ];
 
   for (const [label, value] of candidates) {
@@ -268,6 +311,36 @@ function formatClaudeHookEvidence(payload: Record<string, unknown>, toolInput: R
   }
 
   return lines;
+}
+
+function extractDiscordReplyCapture(
+  payload: Record<string, unknown>,
+  toolInput: Record<string, unknown>,
+): { sourceRef: string } | null {
+  const invocation = payload.invocation && typeof payload.invocation === 'object'
+    ? payload.invocation as Record<string, unknown>
+    : {};
+  const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+  const codexServer = typeof invocation.server === 'string' ? invocation.server : '';
+  const codexTool = typeof invocation.tool === 'string' ? invocation.tool : '';
+  const isDiscordReply =
+    toolName === 'mcp__plugin_discord_discord__reply' ||
+    /^mcp__discord_.*__reply$/.test(toolName) ||
+    (codexServer.startsWith('discord-') && codexTool === 'reply');
+  if (!isDiscordReply) return null;
+
+  const resultText = compactExcerpt(payload.result ?? payload.tool_response ?? payload.tool_output, 2000);
+  const sentIdMatch = resultText.match(/\bsent \(id: ([0-9]+)\)/)
+    ?? resultText.match(/\bids: ([0-9, ]+)/);
+  const firstSentId = sentIdMatch?.[1]?.split(',')[0]?.trim();
+  if (firstSentId) return { sourceRef: `discord-reply:${firstSentId}` };
+
+  const chatId = typeof toolInput.chat_id === 'string'
+    ? toolInput.chat_id
+    : invocation.arguments && typeof invocation.arguments === 'object'
+      ? (invocation.arguments as Record<string, unknown>).chat_id
+      : '';
+  return { sourceRef: `discord-reply:${typeof chatId === 'string' && chatId ? chatId : Date.now()}` };
 }
 
 export async function captureAgentMailMessage(
