@@ -22,6 +22,7 @@ vi.mock('@xterm/xterm', () => {
     onScroll() {
       return { dispose() {} };
     }
+    attachCustomKeyEventHandler() {}
   }
 
   return { Terminal: MockTerminal };
@@ -96,6 +97,34 @@ describe('TerminalPanel search', () => {
     expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle('Close search (Esc)'));
+    expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
+  });
+
+  it('opens the search panel when Ctrl+F is pressed', () => {
+    render(<TerminalPanel agentKey="marcus" />);
+    expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
+
+    expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
+  });
+
+  it('opens the search panel when Cmd+F is pressed (Mac)', () => {
+    render(<TerminalPanel agentKey="marcus" />);
+    expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'f', metaKey: true });
+
+    expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
+  });
+
+  it('closes the search panel when Ctrl+F is pressed while open', () => {
+    render(<TerminalPanel agentKey="marcus" />);
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
+    expect(screen.getByPlaceholderText(/search conversation/i)).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
     expect(screen.queryByPlaceholderText(/search conversation/i)).not.toBeInTheDocument();
   });
 });

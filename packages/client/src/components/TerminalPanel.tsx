@@ -73,6 +73,15 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
       setScrolledUp(buf.viewportY < buf.baseY);
     });
 
+    // Intercept Ctrl+F / Cmd+F inside xterm before it reaches the PTY
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && e.type === 'keydown') {
+        setSearchOpen((prev) => !prev);
+        return false;
+      }
+      return true;
+    });
+
     termRef.current = term;
     fitAddonRef.current = fitAddon;
     setTerminal(term);
@@ -94,6 +103,18 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
   useEffect(() => {
     sendResizeRef.current = sendResize;
   }, [sendResize]);
+
+  // Ctrl+F / Cmd+F opens/closes search when xterm is not focused
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   // Resize terminal when container dimensions change
   useEffect(() => {
