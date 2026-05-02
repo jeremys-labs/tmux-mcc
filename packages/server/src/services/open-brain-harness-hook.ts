@@ -9,7 +9,7 @@ import {
   type OpenBrainHookCommand,
   type OpenBrainHookOutputFormat,
   type RunOpenBrainHookInput,
-} from '@open-brain/agent-harness-hooks';
+} from './open-brain-hook-helpers.js';
 import { buildAnswerContext } from './answer-context.js';
 import {
   captureClaudeHookEvent,
