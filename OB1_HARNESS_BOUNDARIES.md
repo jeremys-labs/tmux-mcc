@@ -67,6 +67,10 @@ The pilot currently uses these `mcc-tmux` files:
 
 The wrapper integrations are intentionally `mcc-tmux` specific. The hook runner and answer-context contract are candidates for extraction after the Eli/Isla pilot and Remy/Lena domain pilots are verified.
 
+### Vendored harness helpers
+
+`packages/server/src/services/open-brain-hook-helpers.ts` is currently a vendored copy of `@open-brain/agent-harness-hooks` (the stateless helper module: arg parsing, payload redaction, runtime envelope formatting, and the fail-open hook runner). It was vendored to make Open Brain optional for MCC adopters who do not have the `open-brain` repo cloned as a sibling — a `file:` package dep would break `npm install` for them. When `@open-brain/agent-harness-hooks` is published to a registry or extracted to a shared harness repo, swap the local import in `open-brain-harness-hook.ts` back to the package and delete the vendored file.
+
 ## Migration Rule
 
 Before migrating another agent, define:

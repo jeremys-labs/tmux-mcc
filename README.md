@@ -303,13 +303,17 @@ MCC ships with optional integration for [Open Brain](https://github.com/jeremys-
 
 **MCC works without Open Brain.** With no Open Brain credentials present, the harness hook returns empty output and the dashboard runs normally — there is no install-time or runtime dependency on the Open Brain repo or service.
 
-To enable, place credentials at:
-- `/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env` (or override with `OPEN_BRAIN_ENV_PATH`)
-- `/Volumes/Repo-Drive/src/open-brain/credentials/mcp-access-key.txt` (or override with `OPEN_BRAIN_ACCESS_KEY_PATH`)
+To enable, point MCC at your Open Brain credentials via these environment variables:
 
-And per-agent memory keys at `/Volumes/Repo-Drive/agents/<name>/.open-brain/memory.env`.
+| Variable | Purpose |
+|----------|---------|
+| `OPEN_BRAIN_ENV_PATH` | Path to the OB1 endpoint env file (defines `OPEN_BRAIN_ENDPOINT_URL` etc.) |
+| `OPEN_BRAIN_ACCESS_KEY_PATH` | Path to the MCP access key file |
+| `OPEN_BRAIN_RUNTIME_DISABLED` | Set to `1` to force-disable even when credentials are present |
 
-To explicitly disable even when credentials are present, set `OPEN_BRAIN_RUNTIME_DISABLED=1`.
+Per-agent memory keys are read from `<agent-dir>/.open-brain/memory.env` relative to your agents root.
+
+> The defaults baked into the code (`/Volumes/Repo-Drive/src/open-brain/credentials/...`) are this repo author's local convention — external adopters should set the env vars above to point at their own paths.
 
 ---
 
