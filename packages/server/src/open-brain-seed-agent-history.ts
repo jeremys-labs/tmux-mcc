@@ -17,6 +17,16 @@ const agentsRoot = '/Volumes/Repo-Drive/agents';
 const oldOpenClawRoot = '/Users/jeremylahners/.openclaw';
 const claudeMemDb = '/Volumes/Repo-Drive/claude-mem/claude-mem.db';
 const maxContentLength = 7000;
+const supportedAgents = new Set([
+  'eli',
+  'isla',
+  'lena',
+  'marcus',
+  'nova',
+  'remy',
+  'val',
+  'zara',
+]);
 
 function readArg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -365,8 +375,8 @@ function buildItems(agent: string): ImportItem[] {
 
 async function main(): Promise<void> {
   const agent = readArg('--agent');
-  if (agent !== 'eli' && agent !== 'isla') {
-    throw new Error('Usage: open-brain-seed-agent-history --agent eli|isla [--dry-run]');
+  if (!agent || !supportedAgents.has(agent)) {
+    throw new Error(`Usage: open-brain-seed-agent-history --agent ${[...supportedAgents].sort().join('|')} [--dry-run]`);
   }
 
   const dryRun = hasFlag('--dry-run');

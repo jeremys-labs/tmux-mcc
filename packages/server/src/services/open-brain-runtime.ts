@@ -136,14 +136,17 @@ export async function searchStartupMemory(config: OpenBrainRuntimeConfig): Promi
   const result = await callOpenBrainTool(config, 'search_agent_memory', {
     agent_id: config.agentId,
     query: [
+      `${config.agentId} current agent memory`,
+      `${config.agentId} CLAUDE.md BOOTSTRAP memory/agents/${config.agentId}.md`,
       'startup restart current agent context',
+      'role domain responsibilities current status active projects',
       'active architecture decisions',
       'Discord routing',
       'agent memory OB1 runtime hooks',
       'current project state',
     ].join(' '),
     limit: 8,
-    threshold: 0.2,
+    threshold: 0.1,
   });
   return result.text;
 }
