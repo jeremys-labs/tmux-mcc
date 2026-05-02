@@ -64,8 +64,9 @@ describe('AgentSearch', () => {
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining('/api/search?agent=isla&q=machine')
     );
-    expect(screen.getByText(/machine learning is a subset/i)).toBeInTheDocument();
-    expect(screen.getByText(/tell me about machine learning/i)).toBeInTheDocument();
+    // Text is split across a <mark> element — match via textContent of the <p>
+    expect(screen.getByText((_, el) => el?.tagName === 'P' && /machine learning is a subset/i.test(el.textContent ?? ''))).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.tagName === 'P' && /tell me about machine learning/i.test(el.textContent ?? ''))).toBeInTheDocument();
   });
 
   it('shows a result count when results are returned', async () => {
@@ -130,5 +131,21 @@ describe('AgentSearch', () => {
     expect(timestamps).toHaveLength(2);
     expect(timestamps[0]).toHaveAttribute('dateTime', new Date(mockResults[0].timestamp).toISOString());
     expect(timestamps[1]).toHaveAttribute('dateTime', new Date(mockResults[1].timestamp).toISOString());
+  });
+
+  it('highlights the matched query term inside each result snippet', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      json: () => Promise.resolve({ results: mockResults, total: 2 }),
+    } as Response);
+
+    render(<AgentSearch agentKey="isla" onClose={vi.fn()} />);
+    await typeAndSearch(screen.getByPlaceholderText(/search/i), 'machine');
+
+    // Every result snippet should contain a <mark> wrapping the matched term
+    const marks = document.querySelectorAll('mark');
+    expect(marks.length).toBeGreaterThanOrEqual(2);
+    marks.forEach((m) => {
+      expect(m.textContent?.toLowerCase()).toBe('machine');
+    });
   });
 });

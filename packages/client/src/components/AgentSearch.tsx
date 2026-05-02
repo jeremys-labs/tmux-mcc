@@ -8,6 +8,20 @@ interface SearchResult {
   timestamp: number;
 }
 
+/** Split snippet into before/match/after segments for highlighting. */
+function splitOnMatch(text: string, query: string): [string, string, string] | null {
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return null;
+  return [text.slice(0, idx), text.slice(idx, idx + query.length), text.slice(idx + query.length)];
+}
+
+function HighlightedSnippet({ text, query }: { text: string; query: string }) {
+  const parts = splitOnMatch(text, query);
+  if (!parts) return <>{text}</>;
+  const [before, match, after] = parts;
+  return <>{before}<mark className="bg-accent/30 text-accent rounded-sm px-px">{match}</mark>{after}</>;
+}
+
 interface Props {
   agentKey: string;
   onClose: () => void;
@@ -117,7 +131,7 @@ export function AgentSearch({ agentKey, onClose }: Props) {
                 {r.role}
               </span>
               <p className="text-[11px] text-text-secondary leading-relaxed flex-1 min-w-0">
-                {r.snippet}
+                <HighlightedSnippet text={r.snippet} query={query.trim()} />
               </p>
               <time
                 dateTime={new Date(r.timestamp).toISOString()}

@@ -228,9 +228,10 @@ export function TerminalPanel({ agentKey }: TerminalPanelProps) {
             onClick={() => setSearchOpen((o) => !o)}
             aria-label="Search conversation history"
             title="Search conversation history"
-            className={`text-xs px-2 py-0.5 rounded border transition-colors ${searchOpen ? 'bg-accent/20 text-accent border-accent/40' : 'text-text-secondary border-white/10'}`}
+            className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors ${searchOpen ? 'bg-accent/20 text-accent border-accent/40' : 'text-text-secondary border-white/10'}`}
           >
-            🔍
+            <span aria-hidden="true">🔍</span>
+            <span>Search</span>
           </button>
           <button
             onClick={() => setMobileInfoOpen(true)}
