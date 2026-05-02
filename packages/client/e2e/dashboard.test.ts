@@ -115,7 +115,7 @@ test.describe('Dashboard - Page Load', () => {
 
   test('page loads without crashing and shows the title', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle('MCC');
+    await expect(page).toHaveTitle('Mission Control');
     // The loading state should resolve once the mock config is returned
     await expect(page.locator('text=Loading...')).not.toBeVisible({ timeout: 5000 });
   });
