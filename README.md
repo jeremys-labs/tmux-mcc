@@ -297,6 +297,22 @@ tmux-mcc/
 
 ---
 
+## Open Brain Memory (Optional)
+
+MCC ships with optional integration for [Open Brain](https://github.com/jeremys-labs/open-brain), a governed agent-memory layer. When enabled, agents get startup memory recall and answer-time context injection through Claude/Codex hooks.
+
+**MCC works without Open Brain.** With no Open Brain credentials present, the harness hook returns empty output and the dashboard runs normally — there is no install-time or runtime dependency on the Open Brain repo or service.
+
+To enable, place credentials at:
+- `/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env` (or override with `OPEN_BRAIN_ENV_PATH`)
+- `/Volumes/Repo-Drive/src/open-brain/credentials/mcp-access-key.txt` (or override with `OPEN_BRAIN_ACCESS_KEY_PATH`)
+
+And per-agent memory keys at `/Volumes/Repo-Drive/agents/<name>/.open-brain/memory.env`.
+
+To explicitly disable even when credentials are present, set `OPEN_BRAIN_RUNTIME_DISABLED=1`.
+
+---
+
 ## Voice Services (Optional)
 
 **Speech-to-text** — one of:
