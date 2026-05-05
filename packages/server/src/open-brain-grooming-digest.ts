@@ -18,6 +18,7 @@ async function main(): Promise<void> {
   const limit = Number(readArg('--limit') ?? '80');
   const maxItems = Number(readArg('--max-items') ?? '12');
   const dryRun = hasFlag('--dry-run');
+  const silentWhenClean = hasFlag('--silent-when-clean');
   const result = await runScheduledGrooming({
     actorAgent: 'eli',
     sinceIso,
@@ -32,9 +33,29 @@ async function main(): Promise<void> {
     return;
   }
 
+  const needsReviewCount =
+    result.summary.itemNeedsReview + result.summary.clusterNeedsReview;
+  const hasAnyActivity = result.rawCaptureCount > 0;
+
+  if (silentWhenClean && needsReviewCount === 0) {
+    writeDigestState({ lastRunIso: generatedAtIso });
+    process.stdout.write(
+      `Groomed ${result.rawCaptureCount} raw captures silently (no human review needed).\n`,
+    );
+    return;
+  }
+
+  if (!hasAnyActivity) {
+    writeDigestState({ lastRunIso: generatedAtIso });
+    process.stdout.write('No raw captures since previous run; skipping Discord digest.\n');
+    return;
+  }
+
   await sendDiscordDigest(result.digest, resolveDigestChannelId());
   writeDigestState({ lastRunIso: generatedAtIso });
-  process.stdout.write(`Sent OB1 grooming digest for ${result.rawCaptureCount} raw captures since ${sinceIso ?? 'previous run'}.\n`);
+  process.stdout.write(
+    `Sent OB1 grooming digest for ${result.rawCaptureCount} raw captures since ${sinceIso ?? 'previous run'}.\n`,
+  );
 }
 
 main().catch((error) => {

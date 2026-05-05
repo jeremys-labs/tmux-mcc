@@ -83,6 +83,48 @@ describe('open brain grooming review', () => {
     expect(classification.scope).toBe('project');
   });
 
+  it('auto-promotes own-agent claude_prompt captures to private context', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'What tire sizes are on a 2019 Honda Insight Touring?',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_prompt', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.scope).toBe('private_agent');
+  });
+
+  it('auto-promotes own-agent discord_reply captures to private context', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: '2019 Honda Insight Touring runs 215/50R17 on 17x7 alloys.',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'discord_reply', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.scope).toBe('private_agent');
+  });
+
+  it('strips injected answer-context boilerplate before classification', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: '<answer_context><governed_memory>Result 1: shared_team source_of_truth memory body</governed_memory></answer_context>\n\nWhat tire sizes are on a 2019 Honda Insight Touring?',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_prompt', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_private');
+  });
+
+  it('auto-ignores ordinary claude_hook tool telemetry', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'File: /tmp/foo.ts\nTool name: Edit',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_hook', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_ignore');
+  });
+
   it('auto-promotes ordinary non-runtime captures to private context', () => {
     const classification = classifyRawCapture({
       ...row,

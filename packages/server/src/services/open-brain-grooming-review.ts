@@ -93,6 +93,19 @@ function compactText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+// Strip injected Open Brain answer-context / governed-memory blocks before
+// classification. Their boilerplate often contains tokens like "shared_team"
+// or "source_of_truth" that come from upstream memory rows, not the actual
+// user/agent payload, and would otherwise misroute the classifier.
+function stripInjectedContext(text: string): string {
+  let stripped = text;
+  stripped = stripped.replace(/<answer_context>[\s\S]*?<\/answer_context>/gi, ' ');
+  stripped = stripped.replace(/<governed_memory>[\s\S]*?<\/governed_memory>/gi, ' ');
+  stripped = stripped.replace(/\[Answer Context\][\s\S]*?(?=(?:<channel\b|<command-name>|$))/gi, ' ');
+  stripped = stripped.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, ' ');
+  return stripped.trim();
+}
+
 function metadataString(row: GroomingReviewRow, key: string): string {
   const value = row.metadata[key];
   return typeof value === 'string' ? value : '';
@@ -111,7 +124,8 @@ function project(row: GroomingReviewRow): string {
 }
 
 export function classifyRawCapture(row: GroomingReviewRow): GroomingClassification {
-  const content = compactText(row.content).toLowerCase();
+  const rawContent = compactText(row.content).toLowerCase();
+  const content = compactText(stripInjectedContext(row.content)).toLowerCase();
   const project = metadataString(row, 'project');
   const confidence = metadataString(row, 'confidence');
   const sourceType = metadataString(row, 'source_type');
@@ -121,6 +135,7 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
   }
 
   if (
+    !content ||
     /^(ok|okay|thanks|thank you|great|excellent|agreed|proceed|done|yes|no)[.! ]*$/.test(content) ||
     /\b(are you online|hey buddy|still in process)\b/.test(content)
   ) {
@@ -147,6 +162,20 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
     };
   }
 
+  // Own-agent conversation lanes: Jeremy's prompts to this agent and the
+  // agent's outbound Discord replies are the single highest-value private
+  // context this agent will ever capture. Promote them by default — without
+  // this, the runtime hooks fill raw_capture but nothing ever surfaces in
+  // search_agent_memory.
+  if (sourceType === 'claude_prompt' || sourceType === 'discord_reply') {
+    return {
+      action: 'auto_promote_private',
+      scope: 'private_agent',
+      reason: `${sourceType} — own-agent conversation context`,
+      content: buildPromotedContent(row),
+    };
+  }
+
   if (sourceType === 'claude_hook') {
     return { action: 'auto_ignore', reason: 'routine Claude hook heartbeat/tool telemetry' };
   }
@@ -154,6 +183,9 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
   if (project === 'agent-runtime') {
     return { action: 'auto_ignore', reason: 'runtime transport/status capture' };
   }
+
+  // rawContent retained for future heuristics; reference to keep linters happy.
+  void rawContent;
 
   return {
     action: 'auto_promote_private',
@@ -227,6 +259,22 @@ export function classifyRawCaptureCluster(cluster: GroomingCluster): GroomingClu
       action: 'cluster_auto_promote_private',
       scope: 'private_agent',
       reason: 'related captures form private-agent context',
+      content,
+    };
+  }
+
+  // Own-agent conversation clusters live under project=agent-runtime by
+  // construction (the runtime hooks tag every prompt/reply with that project).
+  // Treat them as private context for the owning agent.
+  if (
+    agent !== 'unknown' &&
+    clusterProject === 'agent-runtime' &&
+    (clusterSource === 'claude_prompt' || clusterSource === 'discord_reply')
+  ) {
+    return {
+      action: 'cluster_auto_promote_private',
+      scope: 'private_agent',
+      reason: `${clusterSource} cluster — own-agent conversation context`,
       content,
     };
   }

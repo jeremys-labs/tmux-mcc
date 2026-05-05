@@ -213,6 +213,20 @@ function chunkDiscordMessage(text: string, maxLength = 1900): string[] {
 export async function sendDiscordDigest(text: string, channelId = resolveDigestChannelId()): Promise<void> {
   const token = resolveDiscordToken();
   for (const chunk of chunkDiscordMessage(text)) {
+    await sendDiscordChunkWithRetry(channelId, token, chunk);
+  }
+}
+
+async function sendDiscordChunkWithRetry(
+  channelId: string,
+  token: string,
+  chunk: string,
+  maxAttempts = 5,
+): Promise<void> {
+  let attempt = 0;
+  let lastError = '';
+  while (attempt < maxAttempts) {
+    attempt += 1;
     const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
       method: 'POST',
       headers: {
@@ -222,8 +236,25 @@ export async function sendDiscordDigest(text: string, channelId = resolveDigestC
       body: JSON.stringify({ content: `\`\`\`text\n${chunk}\n\`\`\`` }),
     });
     const body = await response.text();
-    if (!response.ok) {
-      throw new Error(`Discord digest send failed: ${response.status} ${body}`);
+    if (response.ok) return;
+    lastError = `${response.status} ${body}`;
+
+    let delayMs = Math.min(2000 * 2 ** (attempt - 1), 15000);
+    if (response.status === 429) {
+      try {
+        const parsed = JSON.parse(body) as { retry_after?: number };
+        if (typeof parsed.retry_after === 'number' && parsed.retry_after >= 0) {
+          delayMs = Math.max(Math.ceil(parsed.retry_after * 1000), 250) + 100;
+        }
+      } catch {
+        // fall through to backoff default
+      }
+    } else if (response.status < 500 && response.status !== 429) {
+      // non-retryable client error
+      throw new Error(`Discord digest send failed: ${lastError}`);
     }
+
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
+  throw new Error(`Discord digest send failed after ${maxAttempts} attempts: ${lastError}`);
 }
