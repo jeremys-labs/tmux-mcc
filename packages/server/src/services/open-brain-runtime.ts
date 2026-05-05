@@ -206,8 +206,46 @@ function stripChannelEnvelope(value: string): string {
   return match[1].trim();
 }
 
+function stripInjectedContext(text: string): string {
+  let stripped = text;
+  stripped = stripped.replace(/<answer_context>[\s\S]*?<\/answer_context>/gi, ' ');
+  stripped = stripped.replace(/<governed_memory>[\s\S]*?<\/governed_memory>/gi, ' ');
+  stripped = stripped.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, ' ');
+  stripped = stripped.replace(/\[Answer Context\][\s\S]*?(?=(?:<channel\b|<command-name>|$))/gi, ' ');
+  return stripped.replace(/\s{3,}/g, '\n\n').trim();
+}
+
 function normalizeCapturedText(value: string): string {
   return stripChannelEnvelope(value);
+}
+
+function resolveProjectFromCwd(payload: Record<string, unknown>): string {
+  const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
+  if (!cwd) return 'agent-runtime';
+
+  const repoMatch = cwd.match(/^\/Volumes\/Repo-Drive\/src\/([^/]+)/);
+  if (repoMatch) return repoMatch[1];
+
+  const agentMatch = cwd.match(/^\/Volumes\/Repo-Drive\/agents\/([^/]+)/);
+  if (agentMatch) return `agent:${agentMatch[1]}`;
+
+  return 'agent-runtime';
+}
+
+const OWN_AGENT_CONFIDENCE = 0.7;
+
+async function safeCapture(
+  config: OpenBrainRuntimeConfig,
+  args: Record<string, unknown>,
+  label: string,
+): Promise<void> {
+  // Capture failures must never block the agent turn. Log to stderr and
+  // swallow — the runtime hook is fire-and-forget from Claude's perspective.
+  try {
+    await callOpenBrainTool(config, 'capture_agent_memory', args);
+  } catch (error) {
+    process.stderr.write(`[open-brain-runtime] ${label} capture failed (non-blocking): ${String(error)}\n`);
+  }
 }
 
 export async function captureClaudeHookEvent(
@@ -232,17 +270,45 @@ export async function captureClaudeHookEvent(
   if (!content.trim()) return;
   const discordReply = extractDiscordReplyCapture(payload, toolInput);
 
-  await callOpenBrainTool(config, 'capture_agent_memory', {
-    agent_id: config.agentId,
-    scope: 'raw_capture',
-    project: 'agent-runtime',
-    audience: [config.agentId],
-    authority: 'raw_capture',
-    confidence: 'medium',
-    source_type: discordReply ? 'discord_reply' : 'claude_hook',
-    source_ref: discordReply?.sourceRef ?? `claude-hook:${eventName}:${sessionId || Date.now()}`,
-    content,
-  });
+  // OB Phase 2 item 1 (Sprint 1 step 3): own-agent Discord replies are
+  // private context by definition — write directly to private_agent/context
+  // with numeric confidence rather than buffering in raw_capture for the
+  // grooming round-trip. Other claude_hook telemetry (file edits, tool
+  // metadata) keeps the legacy raw_capture path.
+  if (discordReply) {
+    await safeCapture(
+      config,
+      {
+        agent_id: config.agentId,
+        scope: 'private_agent',
+        project: resolveProjectFromCwd(payload),
+        audience: [config.agentId],
+        authority: 'context',
+        confidence: OWN_AGENT_CONFIDENCE,
+        source_type: 'discord_reply',
+        source_ref: discordReply.sourceRef,
+        content,
+      },
+      'discord_reply',
+    );
+    return;
+  }
+
+  await safeCapture(
+    config,
+    {
+      agent_id: config.agentId,
+      scope: 'raw_capture',
+      project: 'agent-runtime',
+      audience: [config.agentId],
+      authority: 'raw_capture',
+      confidence: 'medium',
+      source_type: 'claude_hook',
+      source_ref: `claude-hook:${eventName}:${sessionId || Date.now()}`,
+      content,
+    },
+    'claude_hook',
+  );
 }
 
 export async function captureClaudePromptEvent(
@@ -250,8 +316,8 @@ export async function captureClaudePromptEvent(
   promptText: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const content = normalizeCapturedText(promptText);
-  if (!content) return;
+  const cleaned = stripInjectedContext(normalizeCapturedText(promptText));
+  if (!cleaned) return;
   const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
   const promptId = typeof payload.prompt_id === 'string'
     ? payload.prompt_id
@@ -259,17 +325,25 @@ export async function captureClaudePromptEvent(
       ? payload.promptId
       : '';
 
-  await callOpenBrainTool(config, 'capture_agent_memory', {
-    agent_id: config.agentId,
-    scope: 'raw_capture',
-    project: 'agent-runtime',
-    audience: [config.agentId],
-    authority: 'raw_capture',
-    confidence: 'medium',
-    source_type: 'claude_prompt',
-    source_ref: `claude-prompt:${sessionId || 'unknown'}:${promptId || Date.now()}`,
-    content,
-  });
+  // OB Phase 2 item 1 (Sprint 1 step 3): user prompts to this agent ARE
+  // this agent's private context. Skip the raw_capture buffer and write
+  // directly to private_agent/context. source_ref is stable+idempotent
+  // (sessionId + promptId) so retries don't create duplicates.
+  await safeCapture(
+    config,
+    {
+      agent_id: config.agentId,
+      scope: 'private_agent',
+      project: resolveProjectFromCwd(payload),
+      audience: [config.agentId],
+      authority: 'context',
+      confidence: OWN_AGENT_CONFIDENCE,
+      source_type: 'claude_prompt',
+      source_ref: `claude-prompt:${sessionId || 'unknown'}:${promptId || Date.now()}`,
+      content: cleaned,
+    },
+    'claude_prompt',
+  );
 }
 
 function compactExcerpt(value: unknown, maxLength = 1200): string {
