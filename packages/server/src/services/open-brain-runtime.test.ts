@@ -187,8 +187,10 @@ describe('open brain runtime', () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
     expect(body.params.arguments.content).not.toContain('<answer_context>');
+    expect(body.params.arguments.content).not.toContain('<channel');
     expect(body.params.arguments.content).not.toContain('shared_team');
     expect(body.params.arguments.content).not.toContain('source_of_truth');
+    expect(body.params.arguments.content).toBe('What tire size on a Honda Insight?');
     expect(body.params.arguments.content).toContain('Honda Insight');
     expect(body.params.arguments.project).toBe('agent:isla');
   });
@@ -249,6 +251,26 @@ describe('open brain runtime', () => {
     const secondBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
     expect(firstBody.params.arguments.source_ref).toBe(secondBody.params.arguments.source_ref);
     expect(firstBody.params.arguments.source_ref).toBe('claude-prompt:sess-abc:prompt-xyz');
+  });
+
+  it('uses a stable content-derived source_ref when prompt_id is missing', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const config = { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' };
+    const payload = { session_id: 'sess-no-prompt-id', cwd: '/Volumes/Repo-Drive/agents/isla' };
+    const promptText = '<channel>same content without prompt id</channel>';
+
+    await captureClaudePromptEvent(config, promptText, payload);
+    await captureClaudePromptEvent(config, promptText, payload);
+
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+    expect(firstBody.params.arguments.source_ref).toBe(secondBody.params.arguments.source_ref);
+    expect(firstBody.params.arguments.source_ref).toMatch(/^claude-prompt:sess-no-prompt-id:sha256-[a-f0-9]{16}$/);
   });
 
   it('captures Discord reply tool text directly to private_agent context', async () => {

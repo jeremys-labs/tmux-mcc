@@ -1,4 +1,5 @@
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import type { AgentMailMessage } from '@agent-comms/mailbox';
 import type { CodexBridgeInboxEntry } from '../types/codex-bridge.js';
@@ -219,6 +220,12 @@ function normalizeCapturedText(value: string): string {
   return stripChannelEnvelope(value);
 }
 
+function stablePromptSourceRef(sessionId: string, promptId: string, content: string): string {
+  if (promptId) return `claude-prompt:${sessionId || 'unknown'}:${promptId}`;
+  const digest = crypto.createHash('sha256').update(`${sessionId}\n${content}`).digest('hex').slice(0, 16);
+  return `claude-prompt:${sessionId || 'unknown'}:sha256-${digest}`;
+}
+
 function resolveProjectFromCwd(payload: Record<string, unknown>): string {
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   if (!cwd) return 'agent-runtime';
@@ -316,7 +323,7 @@ export async function captureClaudePromptEvent(
   promptText: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const cleaned = stripInjectedContext(normalizeCapturedText(promptText));
+  const cleaned = normalizeCapturedText(stripInjectedContext(normalizeCapturedText(promptText)));
   if (!cleaned) return;
   const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
   const promptId = typeof payload.prompt_id === 'string'
@@ -339,7 +346,7 @@ export async function captureClaudePromptEvent(
       authority: 'context',
       confidence: OWN_AGENT_CONFIDENCE,
       source_type: 'claude_prompt',
-      source_ref: `claude-prompt:${sessionId || 'unknown'}:${promptId || Date.now()}`,
+      source_ref: stablePromptSourceRef(sessionId, promptId, cleaned),
       content: cleaned,
     },
     'claude_prompt',
