@@ -1,10 +1,29 @@
 # Open Brain Runtime — Phase 2 Improvements Spec
 
-**Author:** Isla
-**Date:** 2026-05-04
-**Status:** DRAFT — pending Eli review and joint approval before implementation
+**Authors:** Isla (draft) + Eli (review)
+**Date:** 2026-05-04, revised after Eli sign-off (mailbox `msg_icgps6a8`)
+**Status:** APPROVED for implementation, pending Jeremy's go-ahead on phasing
 **Owner of implementation:** Eli
 **Related commit (Phase 1, already shipped):** `01a1757` on `jeremys-labs/tmux-mcc` main
+
+---
+
+## Eli's revisions (incorporated)
+
+- **Item 1:** keep the existing `claude_prompt` / `discord_reply` grooming branches as legacy compat for one full grooming cycle, then delete. Full replace, no double-write.
+- **Item 2:** regex stays for clearly-noise auto_ignore **only**. All promotion decisions must come from the model + thresholds once Item 2 lands. Haiku 4.5, fleet-wide prompt v1.
+- **Item 4:** eviction's durable home is behind an OB1 maintenance endpoint, NOT a long-running mcc-tmux script with service-role keys. A temporary report-only dry-run script in mcc-tmux is OK.
+- **Item 5:** store the topic in row metadata too (not only in the cluster key) so retrieval/debugging can explain why rows grouped.
+- **Item 6 — BLOCKER for Sprint 1:** OB1 currently has `confidence: z.enum(["high","medium","low"])` in `capture_agent_memory`. Sprint 1 cannot emit numeric `0.7` until OB1 accepts numbers. **Decision: patch OB1 schema first** (small change: `z.union([z.number().min(0).max(1), z.enum([...])])` preserving `deriveQualityScore`) to avoid a second capture-writer migration later.
+- **Item 7:** definitely an OB1 schema change. Current `canAgentRead` doesn't permit raw_capture reads even via `x-agent-memory-key`, so the path can't replace direct Supabase REST without an OB1-scoped grooming-actor surface. Eviction (Item 4) lives behind the same boundary.
+- **Item 8:** `fetchRawCapturesSince` already filters `grooming_status IS NULL`. Repeat-cluster of closed mail means skipped/unmarked rows, not just missing-filter. Durable fix: on mailbox `close`, patch the corresponding raw_capture metadata with both `agent_mail_closed_at` AND a terminal `grooming_status` like `'mail_closed'`. Add the closed_at filter as defense-in-depth.
+
+## Additional acceptance criteria (added by Eli)
+
+- Test that OB1 `capture_agent_memory` accepts numeric confidence **before** mcc-tmux emits it.
+- Cross-agent isolation canary: direct `private_agent` prompt capture readable by owner only.
+- Idempotent `source_ref`: same source_ref must not create duplicate private context if a hook retries.
+- Failure behavior: if direct `private_agent` capture fails, runtime logs and continues — must NOT block the agent turn.
 
 ---
 
@@ -318,33 +337,32 @@ And update `captureAgentMailMessage` (or a new `closeAgentMailMessage` hook) to 
 
 ---
 
-## Phasing Recommendation
+## Phasing (final, post-Eli review)
 
-**Sprint 1 (this week):** Items 1, 3, 6
-- These are tightly coupled (own-agent direct write + project derivation + numeric confidence)
-- Highest user impact (memory becomes searchable in seconds)
-- Mostly mcc-tmux runtime changes; no OB1 schema changes
+**Sprint 1 (this week) — runtime + minimal OB1 schema patch:**
+1. **OB1 patch first:** widen `capture_agent_memory.confidence` to `z.union([z.number().min(0).max(1), z.enum(["high","medium","low"])])`, preserve `deriveQualityScore` and string-read compat. Ship + verify with a canary.
+2. **mcc-tmux Item 1:** direct-write `claude_prompt` + `discord_reply` to `private_agent/context` with numeric confidence 0.7. Keep legacy grooming branches compiled in but unreachable for new captures (delete after one grooming cycle).
+3. **mcc-tmux Item 3:** derive `project` from cwd; new rows only.
+4. **mcc-tmux Item 6:** migrate writers to numeric confidence per the table in Item 6 below.
 
-**Sprint 2 (next week):** Items 2, 5
-- Classifier upgrade unlocks Item 5 (topic-based cluster keys)
-- Validates the new own-agent-direct path (less depends on classifier accuracy now)
+**Sprint 2 (next week) — classifier + cluster keys:**
+- **Item 2:** two-tier classifier (regex auto_ignore only; Haiku 4.5 owns all promotion decisions) with labeled eval set.
+- **Item 5:** topic dimension on cluster keys (from classifier) with 2-hour-bucket fallback; topic also stored in metadata.
 
-**Sprint 3:** Items 4, 7, 8
-- Plumbing/security: eviction, scoped keys, mailbox close filter
-- Lower urgency but bounded-system requirements
+**Sprint 3 — OB1 maintenance surface + mcc-tmux migration:**
+- **Item 7:** OB1 grooming-actor scoped key + maintenance tool surface, mcc-tmux client migrated off service-role key.
+- **Item 4:** eviction behind that maintenance surface (two-stage: groomed→delete at 30d, ungroomed→`expired_unreviewed` at 30d, delete at 60d).
+- **Item 8:** mailbox `close` patches raw_capture grooming_status to `'mail_closed'`; add `agent_mail_closed_at` filter as defense-in-depth.
 
 ---
 
-## Joint Approval Checklist
+## Joint Approval
 
-Eli — please review and reply on the agent-mail thread with:
+- **Isla:** drafted the spec ✅
+- **Eli:** reviewed end-to-end and signed off with corrections (mailbox `msg_icgps6a8`) ✅
+- **Jeremy:** pending green-light on phasing.
 
-1. Sign-off / pushback on each item (1–8) individually
-2. Counter-proposals for any open question I flagged
-3. Disagreement on phasing if you see a different ordering
-4. Anything I missed (you've been deeper in OB1 than I have)
-
-Once we both sign off, this becomes the implementation spec. Jeremy wants us aligned before code starts.
+Once Jeremy approves the phasing, Eli starts Sprint 1 (OB1 schema patch first, then mcc-tmux Items 1/3/6).
 
 ---
 
