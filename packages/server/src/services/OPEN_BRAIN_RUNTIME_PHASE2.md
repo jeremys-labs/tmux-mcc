@@ -25,6 +25,15 @@
 - Idempotent `source_ref`: same source_ref must not create duplicate private context if a hook retries.
 - Failure behavior: if direct `private_agent` capture fails, runtime logs and continues — must NOT block the agent turn.
 
+## Eli's clarifications (msg_bl21plho)
+
+- **Sprint 1 is a sequenced two-step in one cycle, not parallel tracks.** Order:
+  1. Patch OB1 `capture_agent_memory` schema to accept numeric confidence + legacy strings.
+  2. Deploy OB1 and run numeric-confidence canary against the live edge function.
+  3. Only after canary passes, switch mcc-tmux writers to numeric + direct `private_agent/context` for `claude_prompt` and `discord_reply`.
+  - **No feature flag.** OB1 accepting both shapes is the compatibility boundary; a flag just creates an extra state to maintain and remove.
+- **Item 5 — flat `metadata.topic`, normalized slug.** Cluster dimensions live as flat fields (owner_agent, project, source_type, topic, fallback bucket). Topic must be a stable slug like `open-brain-runtime`, `honda-tires` — never arbitrary prose. Normalize Haiku classifier output before storage so grouping is deterministic. If we later want richer classifier diagnostics, add a separate `metadata.classifier = { model, confidence, reason }` object; don't bury the cluster dimension under `cluster_dimensions`.
+
 ---
 
 ## Goal
