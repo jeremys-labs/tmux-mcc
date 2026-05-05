@@ -139,7 +139,7 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.content).not.toContain('This is a candidate');
   });
 
-  it('captures Claude user prompts as raw capture candidates', async () => {
+  it('captures Claude user prompts directly as private_agent context', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
@@ -152,19 +152,128 @@ describe('open brain runtime', () => {
       {
         session_id: 's1',
         prompt_id: 'p1',
+        cwd: '/Volumes/Repo-Drive/src/frontdesk',
       },
     );
 
     const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
     expect(body.params.arguments.agent_id).toBe('marcus');
-    expect(body.params.arguments.scope).toBe('raw_capture');
+    expect(body.params.arguments.scope).toBe('private_agent');
+    expect(body.params.arguments.authority).toBe('context');
+    expect(body.params.arguments.confidence).toBe(0.7);
+    expect(body.params.arguments.project).toBe('frontdesk');
     expect(body.params.arguments.source_type).toBe('claude_prompt');
     expect(body.params.arguments.source_ref).toBe('claude-prompt:s1:p1');
     expect(body.params.arguments.content).toBe('Ship it');
     expect(body.params.arguments.content).not.toContain('<channel source=');
   });
 
-  it('captures Discord reply tool text from Claude PostToolUse payloads', async () => {
+  it('strips injected answer-context envelopes before capturing prompts', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudePromptEvent(
+      { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      '<answer_context><governed_memory>previous: shared_team source_of_truth</governed_memory></answer_context>\n\n<channel source="discord">What tire size on a Honda Insight?</channel>',
+      {
+        session_id: 's2',
+        prompt_id: 'p2',
+        cwd: '/Volumes/Repo-Drive/agents/isla',
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.content).not.toContain('<answer_context>');
+    expect(body.params.arguments.content).not.toContain('<channel');
+    expect(body.params.arguments.content).not.toContain('shared_team');
+    expect(body.params.arguments.content).not.toContain('source_of_truth');
+    expect(body.params.arguments.content).toBe('What tire size on a Honda Insight?');
+    expect(body.params.arguments.content).toContain('Honda Insight');
+    expect(body.params.arguments.project).toBe('agent:isla');
+  });
+
+  it('falls back to agent-runtime project when cwd is unknown', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudePromptEvent(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      '<channel>routine</channel>',
+      { session_id: 's3', prompt_id: 'p3' }, // no cwd
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.project).toBe('agent-runtime');
+  });
+
+  it('does not throw when capture_agent_memory fails (non-blocking)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'edge function error',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await expect(
+      captureClaudePromptEvent(
+        { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+        '<channel>capture-must-not-block-turn</channel>',
+        { session_id: 's4', prompt_id: 'p4', cwd: '/Volumes/Repo-Drive/agents/isla' },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(stderrSpy).toHaveBeenCalled();
+    stderrSpy.mockRestore();
+  });
+
+  it('uses idempotent source_ref so retries do not duplicate captures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const config = { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' };
+    const payload = { session_id: 'sess-abc', prompt_id: 'prompt-xyz', cwd: '/Volumes/Repo-Drive/agents/isla' };
+    const promptText = '<channel>same content twice</channel>';
+
+    await captureClaudePromptEvent(config, promptText, payload);
+    await captureClaudePromptEvent(config, promptText, payload);
+
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+    expect(firstBody.params.arguments.source_ref).toBe(secondBody.params.arguments.source_ref);
+    expect(firstBody.params.arguments.source_ref).toBe('claude-prompt:sess-abc:prompt-xyz');
+  });
+
+  it('uses a stable content-derived source_ref when prompt_id is missing', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const config = { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' };
+    const payload = { session_id: 'sess-no-prompt-id', cwd: '/Volumes/Repo-Drive/agents/isla' };
+    const promptText = '<channel>same content without prompt id</channel>';
+
+    await captureClaudePromptEvent(config, promptText, payload);
+    await captureClaudePromptEvent(config, promptText, payload);
+
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+    expect(firstBody.params.arguments.source_ref).toBe(secondBody.params.arguments.source_ref);
+    expect(firstBody.params.arguments.source_ref).toMatch(/^claude-prompt:sess-no-prompt-id:sha256-[a-f0-9]{16}$/);
+  });
+
+  it('captures Discord reply tool text directly to private_agent context', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
@@ -176,6 +285,7 @@ describe('open brain runtime', () => {
       'PostToolUse',
       {
         session_id: 's1',
+        cwd: '/Volumes/Repo-Drive/src/mcc-tmux',
         tool_name: 'mcp__plugin_discord_discord__reply',
         tool_input: {
           chat_id: '1491979880747765810',
@@ -185,10 +295,44 @@ describe('open brain runtime', () => {
     );
 
     const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.scope).toBe('private_agent');
+    expect(body.params.arguments.authority).toBe('context');
+    expect(body.params.arguments.confidence).toBe(0.7);
+    expect(body.params.arguments.project).toBe('mcc-tmux');
     expect(body.params.arguments.source_type).toBe('discord_reply');
     expect(body.params.arguments.content).toContain('Tool name: mcp__plugin_discord_discord__reply');
     expect(body.params.arguments.content).toContain('Chat ID: 1491979880747765810');
     expect(body.params.arguments.content).toContain('Discord text excerpt: Done. I shipped the title update.');
+  });
+
+  it('keeps non-Discord claude_hook telemetry in raw_capture', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'isla', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        session_id: 'edit-session',
+        cwd: '/Volumes/Repo-Drive/src/mcc-tmux',
+        tool_name: 'Edit',
+        tool_input: {
+          file_path: '/Volumes/Repo-Drive/src/mcc-tmux/foo.ts',
+          old_string: 'old',
+          new_string: 'new',
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.scope).toBe('raw_capture');
+    expect(body.params.arguments.authority).toBe('raw_capture');
+    expect(body.params.arguments.source_type).toBe('claude_hook');
+    expect(body.params.arguments.confidence).toBe('medium');
+    expect(body.params.arguments.project).toBe('agent-runtime');
   });
 
   it('captures successful Codex Discord replies as outbound raw captures', async () => {
