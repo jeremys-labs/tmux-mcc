@@ -189,4 +189,62 @@ describe('Search Router', () => {
     expect(res.status).toBe(400);
     expect(res.data.error).toMatch(/q parameter required/i);
   });
+
+  it('should respect the limit parameter and report truncated', async () => {
+    const res = await new Promise<any>((resolve) => {
+      const mockRes = {
+        json: (data: any) => resolve({ status: 200, data }),
+        status: (code: number) => ({ json: (data: any) => resolve({ status: code, data }) }),
+      };
+      const mockReq = {
+        query: { agent: 'alice', q: 'learning', limit: '2' },
+      };
+      const router = createSearchRouter(db);
+      const handler = router.stack.find((r) => r.route?.path === '/')?.route?.stack[0].handle;
+      if (handler) handler(mockReq, mockRes, () => {});
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data.results).toHaveLength(2);
+    expect(res.data.total).toBe(4);
+    expect(res.data.truncated).toBe(true);
+  });
+
+  it('should set truncated false when results fit within limit', async () => {
+    const res = await new Promise<any>((resolve) => {
+      const mockRes = {
+        json: (data: any) => resolve({ status: 200, data }),
+        status: (code: number) => ({ json: (data: any) => resolve({ status: code, data }) }),
+      };
+      const mockReq = {
+        query: { agent: 'alice', q: 'learning', limit: '10' },
+      };
+      const router = createSearchRouter(db);
+      const handler = router.stack.find((r) => r.route?.path === '/')?.route?.stack[0].handle;
+      if (handler) handler(mockReq, mockRes, () => {});
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data.results).toHaveLength(4);
+    expect(res.data.total).toBe(4);
+    expect(res.data.truncated).toBe(false);
+  });
+
+  it('should default to limit 50 and not truncate small result sets', async () => {
+    const res = await new Promise<any>((resolve) => {
+      const mockRes = {
+        json: (data: any) => resolve({ status: 200, data }),
+        status: (code: number) => ({ json: (data: any) => resolve({ status: code, data }) }),
+      };
+      const mockReq = {
+        query: { agent: 'alice', q: 'learning' },
+      };
+      const router = createSearchRouter(db);
+      const handler = router.stack.find((r) => r.route?.path === '/')?.route?.stack[0].handle;
+      if (handler) handler(mockReq, mockRes, () => {});
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.data.truncated).toBe(false);
+  });
 });

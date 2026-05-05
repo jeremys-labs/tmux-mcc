@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { ChatDB } from '../db.js';
 
 const SNIPPET_RADIUS = 48;
+const DEFAULT_LIMIT = 50;
 
 function countMatches(content: string, queryLower: string): number {
   return content.toLowerCase().split(queryLower).length - 1;
@@ -29,6 +30,8 @@ export function createSearchRouter(db: ChatDB): Router {
     const agent = req.query.agent as string;
     const rawQuery = req.query.q as string;
     const query = rawQuery?.trim();
+    const rawLimit = req.query.limit as string | undefined;
+    const limit = rawLimit ? Math.max(1, parseInt(rawLimit, 10) || DEFAULT_LIMIT) : DEFAULT_LIMIT;
 
     if (!agent) {
       res.status(400).json({ error: 'agent parameter required' });
@@ -69,11 +72,15 @@ export function createSearchRouter(db: ChatDB): Router {
         return b.timestamp - a.timestamp;
       });
 
+    const total = results.length;
+    const truncated = total > limit;
+
     res.json({
       agent,
       query,
-      total: results.length,
-      results,
+      total,
+      truncated,
+      results: truncated ? results.slice(0, limit) : results,
     });
   });
 

@@ -33,6 +33,7 @@ export function AgentSearch({ agentKey, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,9 +59,11 @@ export function AgentSearch({ agentKey, onClose }: Props) {
         const data = await res.json();
         setResults(data.results ?? []);
         setTotal(data.total ?? 0);
+        setTruncated(data.truncated ?? false);
       } catch {
         setResults([]);
         setTotal(0);
+        setTruncated(false);
       } finally {
         setLoading(false);
       }
@@ -104,7 +107,11 @@ export function AgentSearch({ agentKey, onClose }: Props) {
         )}
         {results !== null && !loading && (
           <span className="text-[10px] text-text-secondary">
-            {total === 0 ? 'No results' : `${total} result${total === 1 ? '' : 's'}`}
+            {total === 0
+              ? 'No results'
+              : truncated
+                ? `Top ${results.length} of ${total}`
+                : `${total} result${total === 1 ? '' : 's'}`}
           </span>
         )}
         <button
