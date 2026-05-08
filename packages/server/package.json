@@ -10,6 +10,7 @@
     "open-brain:grooming-classify": "tsx src/open-brain-grooming-classify.ts",
     "open-brain:grooming-cluster": "tsx src/open-brain-grooming-cluster.ts",
     "open-brain:grooming-review": "tsx src/open-brain-grooming-review.ts",
+    "open-brain:runtime-health": "tsx src/open-brain-runtime-health.ts",
     "open-brain:hook": "tsx src/open-brain-hook.ts",
     "open-brain:canary": "tsx src/open-brain-canary.ts",
     "open-brain:seed-agent-history": "tsx src/open-brain-seed-agent-history.ts",
