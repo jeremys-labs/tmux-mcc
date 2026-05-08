@@ -73,6 +73,27 @@ export function resolveOpenBrainRuntimeConfig(agentKey: string): OpenBrainRuntim
   return { agentId, endpointUrl: url.toString(), agentMemoryKey };
 }
 
+export function resolveOpenBrainGroomingConfig(): OpenBrainRuntimeConfig | null {
+  if (process.env.OPEN_BRAIN_RUNTIME_DISABLED === '1') return null;
+
+  const openBrainEnvPath = process.env.OPEN_BRAIN_ENV_PATH ?? DEFAULT_OPEN_BRAIN_ENV_PATH;
+  const accessKeyPath = process.env.OPEN_BRAIN_ACCESS_KEY_PATH ?? DEFAULT_OPEN_BRAIN_ACCESS_KEY_PATH;
+  const openBrainEnv = readEnvFile(openBrainEnvPath);
+  if (!openBrainEnv) return null;
+
+  const projectUrl = openBrainEnv.SUPABASE_PROJECT_URL;
+  const mcpAccessKey = process.env.OPEN_BRAIN_MCP_ACCESS_KEY ?? readTrimmedFile(accessKeyPath);
+  const agentId = process.env.OPEN_BRAIN_GROOMING_AGENT_ID ?? 'grooming-bot';
+  const agentMemoryKey = process.env.OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY
+    ?? readEnvFile(resolveAgentMemoryEnvPath(agentId))?.AGENT_MEMORY_KEY;
+  if (!projectUrl || !mcpAccessKey || !agentId || !agentMemoryKey) return null;
+
+  const url = new URL('/functions/v1/open-brain-mcp', projectUrl);
+  url.searchParams.set('key', mcpAccessKey);
+  url.searchParams.set('agent_key', agentMemoryKey);
+  return { agentId, endpointUrl: url.toString(), agentMemoryKey };
+}
+
 function parseMcpResponse(raw: string): ToolCallResult {
   const dataLines = raw
     .split(/\r?\n/)

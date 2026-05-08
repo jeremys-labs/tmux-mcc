@@ -8,6 +8,7 @@ import {
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
+const DEFAULT_SCHEDULED_DISCORD_OUTBOX_PATH = '/Volumes/Repo-Drive/agents/SHARED/scheduled-discord-outbox.jsonl';
 
 export type InboundTurnSource = 'discord' | 'agent_mail' | 'claude_prompt';
 
@@ -25,6 +26,15 @@ export interface BuildAnswerContextInput {
 interface DomainContext {
   domain: string;
   content: string;
+}
+
+interface ScheduledDiscordOutboxRecord {
+  timestamp?: string;
+  job_id?: string;
+  label?: string;
+  agent?: string;
+  chat_ids?: string[];
+  prompt_excerpt?: string;
 }
 
 interface OpenBrainRestConfig {
@@ -64,6 +74,60 @@ function safeJsonFile(filePath: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+function parseDiscordChatId(text: string): string {
+  const channelMatch = text.match(/<channel\b[^>]*\bchat_id="([^"]+)"/);
+  if (channelMatch) return channelMatch[1];
+  const explicitMatch = text.match(/\bChat ID:\s*(\d{10,25})\b/i);
+  return explicitMatch?.[1] ?? '';
+}
+
+function readScheduledDiscordOutbox(
+  agentKey: string,
+  chatId: string,
+  now: Date,
+  filePath = process.env.SCHEDULED_DISCORD_OUTBOX_PATH ?? DEFAULT_SCHEDULED_DISCORD_OUTBOX_PATH,
+): ScheduledDiscordOutboxRecord[] {
+  if (!chatId) return [];
+  let text = '';
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+
+  const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
+  return text
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as ScheduledDiscordOutboxRecord;
+      } catch {
+        return null;
+      }
+    })
+    .filter((record): record is ScheduledDiscordOutboxRecord => Boolean(record))
+    .filter((record) => record.agent === agentKey)
+    .filter((record) => Array.isArray(record.chat_ids) && record.chat_ids.includes(chatId))
+    .filter((record) => {
+      if (!record.timestamp) return false;
+      const ts = new Date(record.timestamp).getTime();
+      return Number.isFinite(ts) && now.getTime() - ts <= maxAgeMs;
+    })
+    .slice(-5)
+    .reverse();
+}
+
+function formatScheduledDiscordOutbox(records: ScheduledDiscordOutboxRecord[]): string {
+  if (records.length === 0) return '';
+  return records.map((record) => [
+    `time=${record.timestamp ?? 'unknown'}`,
+    `job=${record.label ?? record.job_id ?? 'unknown'}`,
+    `job_id=${record.job_id ?? 'unknown'}`,
+    `scheduled_prompt=${compactText(record.prompt_excerpt ?? '', 900)}`,
+  ].join('\n')).join('\n\n');
 }
 
 function parseEnvFile(text: string): Record<string, string> {
@@ -474,6 +538,10 @@ export function formatAnswerContext(input: {
 export async function buildAnswerContext(input: BuildAnswerContextInput): Promise<string> {
   const agentsRoot = input.agentsRoot ?? process.env.AGENTS_ROOT ?? DEFAULT_AGENTS_ROOT;
   const now = input.now ?? new Date();
+  const chatId = input.source === 'discord' ? parseDiscordChatId(input.text) : '';
+  const scheduledDiscordOutbox = formatScheduledDiscordOutbox(
+    readScheduledDiscordOutbox(input.agentKey, chatId, now),
+  );
   const [memoryText, domainContexts] = await Promise.all([
     searchAnswerMemory(input),
     buildDomainContexts(input.agentKey, input.text, agentsRoot, now),
@@ -482,6 +550,12 @@ export async function buildAnswerContext(input: BuildAnswerContextInput): Promis
     agentKey: input.agentKey,
     source: input.source,
     memoryText,
-    domainContexts,
+    domainContexts: [
+      ...(scheduledDiscordOutbox ? [{
+        domain: 'scheduled_discord_outbox',
+        content: scheduledDiscordOutbox,
+      }] : []),
+      ...domainContexts,
+    ],
   });
 }

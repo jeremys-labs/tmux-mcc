@@ -2,6 +2,7 @@ import {
   applyGroomingClassification,
   applyGroomingClusterClassification,
   classifyRawCapture,
+  classifyRawCaptureWithOpenBrain,
   classifyRawCaptureCluster,
   clusterSummaryContent,
   groupRawCaptures,
@@ -12,6 +13,7 @@ import {
 } from './open-brain-grooming-review.js';
 import {
   defaultSinceIso,
+  fetchRawCapturesBySourceRefs,
   fetchRawCapturesSince,
   readDigestState,
   type GroomingDigestOptions,
@@ -59,6 +61,8 @@ export interface GroomingScheduledResult {
   clusterPlans: GroomingClusterPlan[];
   summary: GroomingActionSummary;
   reviewCandidates: GroomingScheduledCandidate[];
+  classifierFailureCount: number;
+  classifierFailureCycles: number;
 }
 
 export interface GroomingScheduleOptions {
@@ -84,6 +88,63 @@ function compactContentColumn(text: string, maxLength: number): string {
     .trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function stripInjectedContext(text: string): string {
+  let stripped = text;
+  stripped = stripped.replace(/<answer_context>[\s\S]*?<\/answer_context>/gi, ' ');
+  stripped = stripped.replace(/<governed_memory>[\s\S]*?<\/governed_memory>/gi, ' ');
+  stripped = stripped.replace(/\[Answer Context\][\s\S]*?(?=(?:<channel\b|<command-name>|$))/gi, ' ');
+  stripped = stripped.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, ' ');
+  return stripped.trim();
+}
+
+function summarizeForReview(text: string): string {
+  const cleaned = stripInjectedContext(text);
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => (
+      !line.startsWith('Raw capture candidate') &&
+      !line.startsWith('At ') &&
+      !line.startsWith('Requires response:') &&
+      !line.startsWith('This is a candidate') &&
+      !line.startsWith('Groomed summary for ') &&
+      !line.startsWith('Sources:')
+    ));
+
+  const usefulLines = lines
+    .map((line) => line.replace(/^- /, ''))
+    .filter((line) => !/^[-\w]+:(?:[\w-]+:)?[\w.,:+-]+$/.test(line));
+
+  return compactText(usefulLines.join(' '), 520);
+}
+
+function evidenceText(candidate: GroomingScheduledCandidate): string {
+  return candidate.evidence
+    .slice(0, 2)
+    .map((entry) => entry.replace(/^[^\n]+\ncontent:\n/, ''))
+    .map((entry) => summarizeForReview(entry))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isWeakReviewSummary(summary: string): boolean {
+  return (
+    !summary ||
+    /^File: \S+$/i.test(summary) ||
+    /^Discord outbound reply$/i.test(summary)
+  );
+}
+
+function reviewSummary(candidate: GroomingScheduledCandidate): { review: string; content?: string } {
+  const review = summarizeForReview(candidate.proposedMemory || candidate.text);
+  const evidence = evidenceText(candidate);
+  if (isWeakReviewSummary(review) && evidence) {
+    return { review, content: compactText(evidence, 700) };
+  }
+  return { review: review || compactText(evidence, 520) || 'No reviewable content captured; use debug refs to inspect manually.' };
 }
 
 function extractRowText(row: GroomingReviewRow): string {
@@ -148,6 +209,10 @@ function candidateEvidence(rows: GroomingReviewRow[]): string[] {
   return evidence.slice(0, 6);
 }
 
+function compactSourceRefs(sourceRef: string, maxLength = 260): string {
+  return compactText(sourceRef, maxLength);
+}
+
 function formatSummary(summary: GroomingActionSummary): string[] {
   return [
     `Item auto-ignored: ${summary.itemAutoIgnored}`,
@@ -160,6 +225,62 @@ function formatSummary(summary: GroomingActionSummary): string[] {
     `Cluster auto-promoted project: ${summary.clusterAutoPromotedProject}`,
     `Cluster needs review: ${summary.clusterNeedsReview}`,
   ];
+}
+
+function candidateId(candidate: GroomingScheduledCandidate): string {
+  return [candidate.kind, candidate.key, candidate.sourceRef].join('|');
+}
+
+export function mergeReviewCandidates(
+  existing: unknown[] | undefined,
+  incoming: GroomingScheduledCandidate[],
+): GroomingScheduledCandidate[] {
+  const merged = new Map<string, GroomingScheduledCandidate>();
+  for (const candidate of existing ?? []) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const typed = candidate as GroomingScheduledCandidate;
+    if (!typed.kind || !typed.key || !typed.sourceRef) continue;
+    merged.set(candidateId(typed), typed);
+  }
+  for (const candidate of incoming) {
+    merged.set(candidateId(candidate), candidate);
+  }
+  return [...merged.values()];
+}
+
+function candidateSourceRefs(candidate: GroomingScheduledCandidate): string[] {
+  return candidate.sourceRef.split(',').map((ref) => ref.trim()).filter(Boolean);
+}
+
+function isPendingReviewStatus(status: unknown): boolean {
+  return status === undefined || status === null || status === 'needs_review' || status === 'cluster_needs_review';
+}
+
+export async function pruneResolvedReviewCandidates(
+  candidates: GroomingScheduledCandidate[],
+): Promise<GroomingScheduledCandidate[]> {
+  const rows = await fetchRawCapturesBySourceRefs(candidates.flatMap(candidateSourceRefs));
+  const statusByRef = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const ref = typeof row.metadata?.source_ref === 'string' ? row.metadata.source_ref : '';
+    if (!ref) continue;
+    const statuses = statusByRef.get(ref) ?? [];
+    statuses.push(row.metadata?.grooming_status);
+    statusByRef.set(ref, statuses);
+  }
+
+  return candidates.filter((candidate) => {
+    const refs = candidateSourceRefs(candidate);
+    if (refs.length === 0) return true;
+    let foundAnyRef = false;
+    for (const ref of refs) {
+      const statuses = statusByRef.get(ref);
+      if (!statuses) continue;
+      foundAnyRef = true;
+      if (statuses.some(isPendingReviewStatus)) return true;
+    }
+    return !foundAnyRef;
+  });
 }
 
 function clusterHandled(plan: GroomingClusterPlan): boolean {
@@ -218,6 +339,10 @@ function buildReviewCandidates(
   return candidates;
 }
 
+function openBrainClassifierEnabled(): boolean {
+  return process.env.OPEN_BRAIN_GROOMING_CLASSIFIER_ENABLED === '1';
+}
+
 function buildExecutedSummary(
   itemPlans: GroomingItemPlan[],
   clusterPlans: GroomingClusterPlan[],
@@ -261,6 +386,7 @@ export function buildScheduledGroomingDigest(
   options: GroomingDigestOptions,
   summary: GroomingActionSummary,
   reviewCandidates: GroomingScheduledCandidate[],
+  classifierFailureCycles = 0,
 ): string {
   const lines = [
     `OB1 memory grooming digest - ${options.generatedAtIso.slice(0, 10)}`,
@@ -272,19 +398,22 @@ export function buildScheduledGroomingDigest(
     ...formatSummary(summary).map((line) => `- ${line}`),
   ];
 
+  if (classifierFailureCycles >= 3) {
+    lines.push('');
+    lines.push(`Classifier alert: OB1 classifier failed ${classifierFailureCycles} consecutive grooming cycles. Rows are staying in raw_capture and will retry.`);
+  }
+
   if (reviewCandidates.length > 0) {
     lines.push('');
-    lines.push('Human review candidates:');
+    lines.push('Needs your decision:');
     for (const candidate of reviewCandidates.slice(0, options.maxItems ?? 12)) {
-      lines.push(`- [${candidate.kind}] ${candidate.key} [${candidate.project}]`);
+      const summary = reviewSummary(candidate);
+      lines.push(`- Review: ${summary.review}`);
+      if (summary.content) lines.push(`  Content: ${summary.content}`);
       lines.push(`  Recommended: ${candidate.recommendedAction}`);
-      lines.push(`  Reason: ${candidate.reason}`);
-      lines.push(`  Proposed memory: ${candidate.proposedMemory}`);
-      lines.push(`  Content column:`);
-      for (const evidence of candidate.evidence) {
-        lines.push(`  - ${evidence.split('\n').join('\n    ')}`);
-      }
-      lines.push(`  Sources: ${candidate.sourceRef}`);
+      lines.push(`  Why shown: ${candidate.reason}`);
+      lines.push(`  Scope/project: ${candidate.project}`);
+      lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
     }
     if (reviewCandidates.length > (options.maxItems ?? 12)) {
       lines.push(`- ... ${reviewCandidates.length - (options.maxItems ?? 12)} more candidates omitted from this digest.`);
@@ -304,6 +433,47 @@ export function buildScheduledGroomingDigest(
   return lines.join('\n');
 }
 
+export function buildPendingReviewDigest(
+  reviewCandidates: GroomingScheduledCandidate[],
+  generatedAtIso: string,
+  maxItems = 12,
+): string {
+  const lines = [
+    `OB1 memory decision digest - ${generatedAtIso.slice(0, 10)}`,
+    '',
+    `Pending decisions: ${reviewCandidates.length}`,
+  ];
+
+  if (reviewCandidates.length > 0) {
+    lines.push('');
+    lines.push('Needs your decision:');
+    for (const candidate of reviewCandidates.slice(0, maxItems)) {
+      const summary = reviewSummary(candidate);
+      lines.push(`- Review: ${summary.review}`);
+      if (summary.content) lines.push(`  Content: ${summary.content}`);
+      lines.push(`  Recommended: ${candidate.recommendedAction}`);
+      lines.push(`  Why shown: ${candidate.reason}`);
+      lines.push(`  Scope/project: ${candidate.project}`);
+      lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
+    }
+    if (reviewCandidates.length > maxItems) {
+      lines.push(`- ... ${reviewCandidates.length - maxItems} more candidates omitted from this digest.`);
+    }
+    lines.push('');
+    lines.push('Review commands:');
+    lines.push('- promote <source_ref> private_agent|project|shared_team');
+    lines.push('- deprecate <source_ref>');
+    lines.push('- ignore <source_ref>');
+  } else {
+    lines.push('');
+    lines.push('No human review candidates are waiting.');
+  }
+
+  lines.push('');
+  lines.push('Hourly grooming continues silently; this decision summary is sent once per day.');
+  return lines.join('\n');
+}
+
 export async function runScheduledGrooming(
   options: GroomingScheduleOptions,
 ): Promise<GroomingScheduledResult> {
@@ -312,18 +482,31 @@ export async function runScheduledGrooming(
   const state = readDigestState();
   const sinceIso = options.sinceIso ?? defaultSinceIso(now, state);
   const rawCaptureRows = await fetchRawCapturesSince(sinceIso, options.limit ?? 80);
-  const rows = rawCaptureRows
+  const rows: GroomingReviewRow[] = rawCaptureRows
     .map((row) => ({
       id: row.id ?? '',
       content: row.content,
-      metadata: row.metadata ?? {},
+      metadata: { ...(row.metadata ?? {}), created_at: row.created_at },
     }))
-    .filter((row): row is GroomingReviewRow => Boolean(row.id));
+    .filter((row) => Boolean(row.id));
 
-  const itemPlans: GroomingItemPlan[] = rows.map((row) => ({
-    row,
-    classification: classifyRawCapture(row),
-  }));
+  const itemPlans: GroomingItemPlan[] = [];
+  let classifierFailureCount = 0;
+  for (const row of rows) {
+    let classification: GroomingClassification;
+    try {
+      classification = options.dryRun || !openBrainClassifierEnabled()
+        ? classifyRawCapture(row)
+        : await classifyRawCaptureWithOpenBrain(row);
+    } catch (error) {
+      classifierFailureCount += 1;
+      process.stderr.write(`[open-brain-grooming] classifier failed for ${String(row.metadata.source_ref ?? row.id)}: ${String(error)}\n`);
+      continue;
+    }
+    if (classification.topic) row.metadata.topic = classification.topic;
+    if (classification.classifier) row.metadata.classifier = classification.classifier;
+    itemPlans.push({ row, classification });
+  }
   const clusterPlans: GroomingClusterPlan[] = groupRawCaptures(rows).map((cluster) => ({
     cluster,
     classification: classifyRawCaptureCluster(cluster),
@@ -331,6 +514,9 @@ export async function runScheduledGrooming(
 
   const summary = buildExecutedSummary(itemPlans, clusterPlans);
   const reviewCandidates = buildReviewCandidates(itemPlans, clusterPlans);
+  const classifierFailureCycles = classifierFailureCount > 0
+    ? (state.classifierFailureCycles ?? 0) + 1
+    : 0;
 
   if (!options.dryRun) {
     const clusterPlansByKey = new Map(clusterPlans.map((plan) => [plan.cluster.key, plan] as const));
@@ -357,6 +543,7 @@ export async function runScheduledGrooming(
     },
     summary,
     reviewCandidates,
+    classifierFailureCycles,
   );
 
   return {
@@ -366,5 +553,7 @@ export async function runScheduledGrooming(
     clusterPlans,
     summary,
     reviewCandidates,
+    classifierFailureCount,
+    classifierFailureCycles,
   };
 }

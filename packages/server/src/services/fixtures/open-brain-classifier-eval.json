@@ -1,0 +1,102 @@
+[
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: OB Phase 2 review\n\nOB1 should own classifier credentials and mcc-tmux should only trigger and observe grooming.",
+    "expected": { "action": "auto_promote_project", "scope": "project", "topic": "open-brain-runtime" }
+  },
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: Shared team policy\n\nJeremy approved this as shared_team source_of_truth for all agents.",
+    "expected": { "action": "needs_review", "scope": "shared_team", "topic": "team-memory-policy" }
+  },
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: Credentials\n\nWe need to rotate the Coinbase API key and update every agent environment.",
+    "expected": { "action": "needs_review", "scope": "project", "topic": "credentials" }
+  },
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: FrontDesk architecture\n\nKeep the VPS-per-customer isolation model; it is intentional for customer isolation.",
+    "expected": { "action": "auto_promote_project", "scope": "project", "topic": "frontdesk-architecture" }
+  },
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: Ping\n\nAre you online?",
+    "expected": { "action": "auto_ignore", "scope": "private_agent", "topic": "status-ping" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "Okay",
+    "expected": { "action": "auto_ignore", "scope": "private_agent", "topic": "acknowledgement" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "Remember that MHC is local-first and we should not introduce backend SQL for health data.",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "mhc-local-first" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "Summarize what you want me to approve. Identifiers alone do not help me decide.",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "review-digest-ux" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "<answer_context><governed_memory>shared_team source_of_truth</governed_memory></answer_context>\n\nWhat is the next step on Sprint 2?",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "open-brain-sprint-2" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "Jeremy approved this as source_of_truth across the team.",
+    "expected": { "action": "needs_review", "scope": "shared_team", "topic": "team-truth" }
+  },
+  {
+    "source_type": "claude_prompt",
+    "content": "thanks",
+    "expected": { "action": "auto_ignore", "scope": "private_agent", "topic": "acknowledgement" }
+  },
+  {
+    "source_type": "discord_reply",
+    "content": "Done. I promoted the concise Phase 2 decision to project memory and kept raw source IDs as debug refs only.",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "open-brain-runtime" }
+  },
+  {
+    "source_type": "discord_reply",
+    "content": "sent (id: 1501183414856978533)",
+    "expected": { "action": "auto_ignore", "scope": "private_agent", "topic": "transport-noise" }
+  },
+  {
+    "source_type": "discord_reply",
+    "content": "I changed the grooming digest to show Review, Recommended, Why shown, Scope/project, and Debug refs.",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "grooming-digest-ux" }
+  },
+  {
+    "source_type": "discord_reply",
+    "content": "The shared_team promotion still requires explicit Jeremy approval before it can become source_of_truth.",
+    "expected": { "action": "needs_review", "scope": "shared_team", "topic": "memory-governance" }
+  },
+  {
+    "source_type": "discord",
+    "content": "Approved",
+    "expected": { "action": "needs_review", "scope": "project", "topic": "approval" }
+  },
+  {
+    "source_type": "discord",
+    "content": "Proceed until you are both happy with setup.",
+    "expected": { "action": "needs_review", "scope": "project", "topic": "project-authorization" }
+  },
+  {
+    "source_type": "discord",
+    "content": "Can you review Issue 256 comments and give me your thoughts?",
+    "expected": { "action": "auto_promote_private", "scope": "private_agent", "topic": "issue-review" }
+  },
+  {
+    "source_type": "claude_hook",
+    "content": "File: /tmp/foo.ts\nTool name: Edit\nTool response excerpt: success",
+    "expected": { "action": "auto_ignore", "scope": "private_agent", "topic": "tool-telemetry" }
+  },
+  {
+    "source_type": "agent_mail",
+    "content": "Subject: Sprint 3 backlog\n\nGrooming-actor scoped key, raw_capture eviction, and mailbox-close patch all touch OB1 schema.",
+    "expected": { "action": "auto_promote_project", "scope": "project", "topic": "open-brain-sprint-3" }
+  }
+]

@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { callOpenBrainTool, resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
+import { callOpenBrainTool, resolveOpenBrainGroomingConfig, resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
 
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 
@@ -29,6 +29,8 @@ export interface GroomingClassification {
   reason: string;
   scope?: PromotionScope;
   content?: string;
+  topic?: string;
+  classifier?: Record<string, unknown>;
 }
 
 export interface GroomingCluster {
@@ -123,6 +125,90 @@ function project(row: GroomingReviewRow): string {
   return metadataString(row, 'project') || 'unknown';
 }
 
+function normalizeTopicSlug(value: unknown): string {
+  const raw = typeof value === 'string' ? value : '';
+  const slug = raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48)
+    .replace(/-$/g, '');
+  return slug || '';
+}
+
+function twoHourBucket(row: GroomingReviewRow): string {
+  const createdAt = metadataString(row, 'created_at');
+  const date = createdAt ? new Date(createdAt) : new Date(0);
+  if (Number.isNaN(date.getTime())) return 'bucket-unknown';
+  date.setUTCMinutes(0, 0, 0);
+  date.setUTCHours(Math.floor(date.getUTCHours() / 2) * 2);
+  return `bucket-${date.toISOString().slice(0, 13)}`;
+}
+
+function rowTopic(row: GroomingReviewRow): string {
+  const flatTopic = normalizeTopicSlug(row.metadata.topic);
+  if (flatTopic) return flatTopic;
+  const topics = row.metadata.topics;
+  if (Array.isArray(topics)) {
+    const firstTopic = topics.map(normalizeTopicSlug).find(Boolean);
+    if (firstTopic) return firstTopic;
+  }
+  return twoHourBucket(row);
+}
+
+function applyClassifierPolicy(classification: GroomingClassification): GroomingClassification {
+  const confidence = typeof classification.classifier?.confidence === 'number'
+    ? classification.classifier.confidence
+    : undefined;
+  if (classification.scope === 'shared_team') {
+    return { ...classification, action: 'needs_review', reason: classification.reason || 'shared/team classifier recommendation requires review' };
+  }
+  if (
+    (classification.action === 'auto_promote_private' || classification.action === 'auto_promote_project') &&
+    (confidence === undefined || confidence < 0.7)
+  ) {
+    return { ...classification, action: 'needs_review', reason: `classifier confidence below promotion threshold: ${classification.reason}` };
+  }
+  return classification;
+}
+
+export async function classifyRawCaptureWithOpenBrain(row: GroomingReviewRow): Promise<GroomingClassification> {
+  const fastPath = classifyRawCapture(row);
+  if (fastPath.action === 'auto_ignore' || fastPath.action === 'needs_review') return fastPath;
+
+  const owner = ownerAgent(row);
+  const config = resolveOpenBrainRuntimeConfig(owner);
+  if (!config) throw new Error(`No Open Brain runtime config for owner agent ${owner}`);
+
+  const result = await callOpenBrainTool(config, 'classify_agent_raw_capture', {
+    agent_id: owner,
+    content: row.content,
+    metadata: row.metadata,
+  });
+  const parsed = JSON.parse(result.text) as {
+    action?: GroomingClassificationAction;
+    scope?: PromotionScope;
+    confidence?: number;
+    topic?: string;
+    reason?: string;
+    classifier?: Record<string, unknown>;
+  };
+  const classifier = parsed.classifier ?? {
+    confidence: parsed.confidence,
+    reason: parsed.reason,
+  };
+  return applyClassifierPolicy({
+    action: parsed.action ?? 'needs_review',
+    scope: parsed.scope,
+    reason: parsed.reason ?? 'OB1 classifier returned no reason.',
+    content: buildPromotedContent(row),
+    topic: parsed.topic,
+    classifier,
+  });
+}
+
 export function classifyRawCapture(row: GroomingReviewRow): GroomingClassification {
   const rawContent = compactText(row.content).toLowerCase();
   const content = compactText(stripInjectedContext(row.content)).toLowerCase();
@@ -162,20 +248,6 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
     };
   }
 
-  // Own-agent conversation lanes: Jeremy's prompts to this agent and the
-  // agent's outbound Discord replies are the single highest-value private
-  // context this agent will ever capture. Promote them by default — without
-  // this, the runtime hooks fill raw_capture but nothing ever surfaces in
-  // search_agent_memory.
-  if (sourceType === 'claude_prompt' || sourceType === 'discord_reply') {
-    return {
-      action: 'auto_promote_private',
-      scope: 'private_agent',
-      reason: `${sourceType} — own-agent conversation context`,
-      content: buildPromotedContent(row),
-    };
-  }
-
   if (sourceType === 'claude_hook') {
     return { action: 'auto_ignore', reason: 'routine Claude hook heartbeat/tool telemetry' };
   }
@@ -196,7 +268,7 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
 }
 
 function clusterKey(row: GroomingReviewRow): string {
-  return [ownerAgent(row), project(row), sourceType(row)].join('|');
+  return [ownerAgent(row), project(row), sourceType(row), rowTopic(row)].join('|');
 }
 
 export function groupRawCaptures(rows: GroomingReviewRow[]): GroomingCluster[] {
@@ -211,7 +283,7 @@ export function groupRawCaptures(rows: GroomingReviewRow[]): GroomingCluster[] {
 }
 
 export function clusterSummaryContent(cluster: GroomingCluster): string {
-  const [agent, clusterProject, clusterSource] = cluster.key.split('|');
+  const [agent, clusterProject, clusterSource, clusterTopic] = cluster.key.split('|');
   const refs = cluster.rows
     .map((row) => metadataString(row, 'source_ref'))
     .filter(Boolean)
@@ -223,6 +295,7 @@ export function clusterSummaryContent(cluster: GroomingCluster): string {
 
   return [
     `Groomed summary for ${agent} in ${clusterProject} from ${clusterSource} raw captures.`,
+    clusterTopic ? `Topic: ${clusterTopic}` : '',
     refs ? `Sources: ${refs}` : '',
     ...points,
   ].filter(Boolean).join('\n');
@@ -263,26 +336,22 @@ export function classifyRawCaptureCluster(cluster: GroomingCluster): GroomingClu
     };
   }
 
-  // Own-agent conversation clusters live under project=agent-runtime by
-  // construction (the runtime hooks tag every prompt/reply with that project).
-  // Treat them as private context for the owning agent.
-  if (
-    agent !== 'unknown' &&
-    clusterProject === 'agent-runtime' &&
-    (clusterSource === 'claude_prompt' || clusterSource === 'discord_reply')
-  ) {
-    return {
-      action: 'cluster_auto_promote_private',
-      scope: 'private_agent',
-      reason: `${clusterSource} cluster — own-agent conversation context`,
-      content,
-    };
-  }
-
   return { action: 'cluster_ignore', reason: 'runtime/status cluster has no durable value' };
 }
 
 export async function fetchRawCaptureBySourceRef(sourceRef: string): Promise<GroomingReviewRow | null> {
+  if (process.env.OPEN_BRAIN_GROOMING_MAINTENANCE_ENABLED === '1') {
+    const groomingConfig = resolveOpenBrainGroomingConfig();
+    if (!groomingConfig) {
+      throw new Error('Open Brain grooming maintenance path enabled but grooming-bot config is missing. Set OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY.');
+    }
+    const result = await callOpenBrainTool(groomingConfig, 'get_agent_raw_capture', {
+      agent_id: groomingConfig.agentId,
+      source_ref: sourceRef,
+    });
+    return JSON.parse(result.text) as GroomingReviewRow | null;
+  }
+
   const config = resolveOpenBrainRestConfig();
   const url = new URL('/rest/v1/thoughts', config.projectUrl);
   url.searchParams.set('select', 'id,content,metadata');
@@ -300,6 +369,21 @@ export async function fetchRawCaptureBySourceRef(sourceRef: string): Promise<Gro
 }
 
 export async function patchThoughtMetadata(id: string, metadata: Record<string, unknown>): Promise<void> {
+  if (process.env.OPEN_BRAIN_GROOMING_MAINTENANCE_ENABLED === '1') {
+    const groomingConfig = resolveOpenBrainGroomingConfig();
+    if (!groomingConfig) {
+      throw new Error('Open Brain grooming maintenance path enabled but grooming-bot config is missing. Set OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY.');
+    }
+    const sourceRef = typeof metadata.source_ref === 'string' ? metadata.source_ref : '';
+    if (!sourceRef) throw new Error(`Cannot patch raw_capture ${id}: missing metadata.source_ref`);
+    await callOpenBrainTool(groomingConfig, 'patch_agent_raw_capture_metadata', {
+      agent_id: groomingConfig.agentId,
+      source_ref: sourceRef,
+      metadata_patch: metadata,
+    });
+    return;
+  }
+
   const config = resolveOpenBrainRestConfig();
   const url = new URL('/rest/v1/thoughts', config.projectUrl);
   url.searchParams.set('id', `eq.${id}`);

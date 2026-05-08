@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import classifierEval from './fixtures/open-brain-classifier-eval.json' with { type: 'json' };
 import {
   buildPromotedContent,
   classifyRawCapture,
@@ -83,36 +84,34 @@ describe('open brain grooming review', () => {
     expect(classification.scope).toBe('project');
   });
 
-  it('auto-promotes own-agent claude_prompt captures to private context', () => {
+  it('ignores legacy own-agent claude_prompt raw captures after direct capture rollout', () => {
     const classification = classifyRawCapture({
       ...row,
       content: 'What tire sizes are on a 2019 Honda Insight Touring?',
       metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_prompt', confidence: 'medium' },
     });
 
-    expect(classification.action).toBe('auto_promote_private');
-    expect(classification.scope).toBe('private_agent');
+    expect(classification.action).toBe('auto_ignore');
   });
 
-  it('auto-promotes own-agent discord_reply captures to private context', () => {
+  it('ignores legacy own-agent discord_reply raw captures after direct capture rollout', () => {
     const classification = classifyRawCapture({
       ...row,
       content: '2019 Honda Insight Touring runs 215/50R17 on 17x7 alloys.',
       metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'discord_reply', confidence: 'medium' },
     });
 
-    expect(classification.action).toBe('auto_promote_private');
-    expect(classification.scope).toBe('private_agent');
+    expect(classification.action).toBe('auto_ignore');
   });
 
   it('strips injected answer-context boilerplate before classification', () => {
     const classification = classifyRawCapture({
       ...row,
-      content: '<answer_context><governed_memory>Result 1: shared_team source_of_truth memory body</governed_memory></answer_context>\n\nWhat tire sizes are on a 2019 Honda Insight Touring?',
-      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_prompt', confidence: 'medium' },
+      content: '<answer_context><governed_memory>Result 1: shared_team source_of_truth memory body</governed_memory></answer_context>\n\nOkay',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'discord', confidence: 'medium' },
     });
 
-    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.action).toBe('auto_ignore');
   });
 
   it('auto-ignores ordinary claude_hook tool telemetry', () => {
@@ -136,17 +135,17 @@ describe('open brain grooming review', () => {
     expect(classification.scope).toBe('private_agent');
   });
 
-  it('groups related raw captures by owner, project, and source type', () => {
+  it('groups related raw captures by owner, project, source type, and topic', () => {
     const rows = [
-      { ...row, id: '1', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord' } },
-      { ...row, id: '2', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord' } },
-      { ...row, id: '3', metadata: { ...row.metadata, owner_agent: 'isla', project: 'ob1-memory', source_type: 'discord' } },
+      { ...row, id: '1', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord', topic: 'open-brain-runtime' } },
+      { ...row, id: '2', metadata: { ...row.metadata, owner_agent: 'eli', project: 'ob1-memory', source_type: 'discord', topic: 'open brain runtime' } },
+      { ...row, id: '3', metadata: { ...row.metadata, owner_agent: 'isla', project: 'ob1-memory', source_type: 'discord', topic: 'open-brain-runtime' } },
     ];
 
     const groups = groupRawCaptures(rows);
 
     expect(groups).toHaveLength(2);
-    expect(groups.find((group) => group.key === 'eli|ob1-memory|discord')?.rows).toHaveLength(2);
+    expect(groups.find((group) => group.key === 'eli|ob1-memory|discord|open-brain-runtime')?.rows).toHaveLength(2);
   });
 
   it('skips clusters with fewer than three related captures', () => {
@@ -186,5 +185,16 @@ describe('open brain grooming review', () => {
     const classification = classifyRawCaptureCluster({ key: 'eli|ob1-memory|discord', rows });
 
     expect(classification.action).toBe('cluster_needs_review');
+  });
+
+  it('commits the minimum Sprint 2 classifier eval fixture coverage', () => {
+    expect(classifierEval.length).toBeGreaterThanOrEqual(20);
+    const actions = new Set(classifierEval.map((item) => item.expected.action));
+    expect(actions).toEqual(new Set(['auto_promote_project', 'needs_review', 'auto_ignore', 'auto_promote_private']));
+    const sourceTypes = new Set(classifierEval.map((item) => item.source_type));
+    expect(sourceTypes.has('agent_mail')).toBe(true);
+    expect(sourceTypes.has('claude_prompt')).toBe(true);
+    expect(sourceTypes.has('discord_reply')).toBe(true);
+    expect(sourceTypes.size).toBeGreaterThanOrEqual(3);
   });
 });

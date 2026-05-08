@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildGroomingDigest, defaultSinceIso, type RawCaptureRow } from './open-brain-grooming-digest.js';
 import {
+  buildPendingReviewDigest,
   buildScheduledGroomingDigest,
+  mergeReviewCandidates,
   type GroomingActionSummary,
   type GroomingClusterPlan,
   type GroomingItemPlan,
@@ -106,11 +108,98 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('Action summary:');
     expect(digest).toContain('Item needs review: 1');
     expect(digest).toContain('Cluster needs review: 1');
-    expect(digest).toContain('Human review candidates:');
-    expect(digest).toContain('[item] discord:1 [ob1-memory]');
+    expect(digest).toContain('Needs your decision:');
+    expect(digest).toContain('Review: Potentially shared-team item.');
     expect(digest).toContain('Recommended: Promote to project memory unless this is approved team truth');
-    expect(digest).toContain('Proposed memory: Potentially shared-team item.');
-    expect(digest).toContain('Content column:');
-    expect(digest).toContain('discord:1\n    content:\n    Raw capture candidate.\n    Potentially shared-team item.');
+    expect(digest).toContain('Why shown: shared/team or policy-sensitive memory');
+    expect(digest).toContain('Scope/project: ob1-memory');
+    expect(digest).toContain('Debug refs: discord:1');
+    expect(digest).not.toContain('Content column:');
+    expect(digest).not.toContain('Raw capture candidate.');
+  });
+
+  it('alerts after repeated classifier failure cycles', () => {
+    const summary: GroomingActionSummary = {
+      itemAutoIgnored: 0,
+      itemAutoPromotedPrivate: 0,
+      itemAutoPromotedProject: 0,
+      itemNeedsReview: 0,
+      clusterIgnored: 0,
+      clusterSkipped: 0,
+      clusterAutoPromotedPrivate: 0,
+      clusterAutoPromotedProject: 0,
+      clusterNeedsReview: 0,
+    };
+
+    const digest = buildScheduledGroomingDigest(
+      [],
+      [],
+      [],
+      {
+        sinceIso: '2026-04-28T00:00:00.000Z',
+        generatedAtIso: '2026-04-28T04:00:00.000Z',
+        channelId: 'c1',
+      },
+      summary,
+      [],
+      3,
+    );
+
+    expect(digest).toContain('Classifier alert: OB1 classifier failed 3 consecutive grooming cycles');
+  });
+
+  it('formats pending review candidates for a daily decision digest', () => {
+    const digest = buildPendingReviewDigest([{
+      kind: 'item',
+      key: 'agent-mail:1',
+      sourceRef: 'agent-mail:1',
+      project: 'agent-mail',
+      text: 'Sprint review approval.',
+      reason: 'shared/team or policy-sensitive memory',
+      recommendedAction: 'Promote to project memory unless this is approved team truth; do not promote shared_team from this digest alone.',
+      proposedMemory: 'Sprint review approval.',
+      evidence: [],
+    }], '2026-05-05T10:00:00.000Z');
+
+    expect(digest).toContain('OB1 memory decision digest - 2026-05-05');
+    expect(digest).toContain('Pending decisions: 1');
+    expect(digest).toContain('Review: Sprint review approval.');
+    expect(digest).toContain('Hourly grooming continues silently');
+  });
+
+  it('includes evidence when the review summary is only a file label', () => {
+    const digest = buildPendingReviewDigest([{
+      kind: 'item',
+      key: 'claude-hook:1',
+      sourceRef: 'claude-hook:1',
+      project: 'agent-runtime',
+      text: 'File: /tmp/MEMORY.md',
+      reason: 'shared/team or policy-sensitive memory',
+      recommendedAction: 'Review manually before promoting shared_team; prefer private_agent unless this is approved team truth.',
+      proposedMemory: 'File: /tmp/MEMORY.md',
+      evidence: [
+        'claude-hook:1\ncontent:\nFile: /tmp/MEMORY.md\nTool name: Edit\nNew string excerpt: Jeremy approved the daily digest should show actual decision content, not source IDs.',
+      ],
+    }], '2026-05-05T10:00:00.000Z');
+
+    expect(digest).toContain('Review: File: /tmp/MEMORY.md');
+    expect(digest).toContain('Content: File: /tmp/MEMORY.md Tool name: Edit New string excerpt: Jeremy approved the daily digest should show actual decision content, not source IDs.');
+  });
+
+  it('dedupes pending review candidates accumulated across hourly runs', () => {
+    const first = {
+      kind: 'item' as const,
+      key: 'agent-mail:1',
+      sourceRef: 'agent-mail:1',
+      project: 'agent-mail',
+      text: 'Old text.',
+      reason: 'old reason',
+      recommendedAction: 'Old action.',
+      proposedMemory: 'Old text.',
+      evidence: [],
+    };
+    const second = { ...first, text: 'New text.', proposedMemory: 'New text.' };
+
+    expect(mergeReviewCandidates([first], [second])).toEqual([second]);
   });
 });

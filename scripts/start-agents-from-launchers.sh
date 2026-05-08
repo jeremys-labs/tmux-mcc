@@ -47,6 +47,26 @@ launch_cmd_for() {
   printf 'claude --dangerously-skip-permissions'
 }
 
+runtime_for() {
+  local work_dir="$1"
+  local launcher="$work_dir/launch.sh"
+
+  if [[ -f "$launcher" ]]; then
+    local default_runtime
+    default_runtime="$(
+      grep -oE 'LAUNCH_RUNTIME="\$\{LAUNCH_RUNTIME:-([^"]+)\}"' "$launcher" \
+        | sed -E 's/.*:-([^"}]+).*/\1/' \
+        | head -n 1
+    )"
+    if [[ "$default_runtime" == "claude" || "$default_runtime" == "codex" ]]; then
+      printf '%s\n' "$default_runtime"
+      return
+    fi
+  fi
+
+  printf 'claude\n'
+}
+
 FIRST=true
 for agent in "${AGENTS[@]}"; do
   work_dir="${AGENTS_DIR}/${agent}"
@@ -57,6 +77,8 @@ for agent in "${AGENTS[@]}"; do
   fi
 
   launch_cmd="$(launch_cmd_for "$work_dir")"
+  runtime="$(runtime_for "$work_dir")"
+  printf '%s\n' "$runtime" > "$work_dir/.runtime"
 
   if $FIRST; then
     tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -n "$agent" -c "$work_dir"

@@ -50,6 +50,33 @@ function parseArgs(argv: string[]) {
   return { agentKey, cwd, codexArgs };
 }
 
+function runtimeHandoffPath(cwd: string): string {
+  return path.join(cwd, '.runtime-handoff.md');
+}
+
+function consumeRuntimeHandoff(cwd: string): string {
+  const filePath = runtimeHandoffPath(cwd);
+  try {
+    const text = fs.readFileSync(filePath, 'utf8').trim();
+    fs.unlinkSync(filePath);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+function injectRuntimeHandoff(term: pty.IPty, handoff: string): void {
+  const trimmed = handoff.trim();
+  if (!trimmed) return;
+  term.write('\x15');
+  setTimeout(() => {
+    term.write(`[Runtime Handoff]\n\n${trimmed}\n`);
+    setTimeout(() => {
+      term.write('\r');
+    }, 80);
+  }, 40);
+}
+
 const { agentKey, cwd, codexArgs } = parseArgs(process.argv.slice(2));
 const contentRoot = resolveContentRoot();
 ensureContentDirs(contentRoot);
@@ -59,6 +86,7 @@ let injectChain = Promise.resolve();
 const mailStore = createAgentMailStore();
 const deliveredMailIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
+const runtimeHandoff = consumeRuntimeHandoff(cwd);
 
 const term = pty.spawn('codex', codexArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -95,6 +123,8 @@ if (openBrainConfig) {
 } else {
   fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey}\n`);
 }
+
+injectRuntimeHandoff(term, runtimeHandoff);
 
 const poller = setInterval(() => {
   const pending = readPendingInboxEntries(contentRoot, agentKey);

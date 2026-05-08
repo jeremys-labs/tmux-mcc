@@ -9,12 +9,14 @@ describe('answer context', () => {
   const originalExtensionDisabled = process.env.OPEN_BRAIN_EXTENSION_CONTEXT_DISABLED;
   const originalProjectUrl = process.env.SUPABASE_PROJECT_URL;
   const originalSecretKey = process.env.SUPABASE_SECRET_KEY;
+  const originalScheduledOutboxPath = process.env.SCHEDULED_DISCORD_OUTBOX_PATH;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'answer-context-'));
     process.env.OPEN_BRAIN_EXTENSION_CONTEXT_DISABLED = '1';
     delete process.env.SUPABASE_PROJECT_URL;
     delete process.env.SUPABASE_SECRET_KEY;
+    process.env.SCHEDULED_DISCORD_OUTBOX_PATH = path.join(tmpDir, 'scheduled-discord-outbox.jsonl');
   });
 
   afterEach(() => {
@@ -34,6 +36,11 @@ describe('answer context', () => {
       delete process.env.SUPABASE_SECRET_KEY;
     } else {
       process.env.SUPABASE_SECRET_KEY = originalSecretKey;
+    }
+    if (originalScheduledOutboxPath === undefined) {
+      delete process.env.SCHEDULED_DISCORD_OUTBOX_PATH;
+    } else {
+      process.env.SCHEDULED_DISCORD_OUTBOX_PATH = originalScheduledOutboxPath;
     }
   });
 
@@ -99,6 +106,37 @@ describe('answer context', () => {
     expect(context).toContain('"nextWorkout":"Pull"');
     expect(context).toContain('Last completed: Lower');
     expect(context).toContain('Use this context before answering');
+  });
+
+  it('loads recent scheduled Discord outbox context for replies in the same chat', async () => {
+    fs.writeFileSync(process.env.SCHEDULED_DISCORD_OUTBOX_PATH!, `${JSON.stringify({
+      timestamp: '2026-05-05T11:30:00.000Z',
+      job_id: 'weigh-in-job',
+      label: 'Daily 7:30am weigh-in prompt',
+      agent: 'lena',
+      chat_ids: ['1492537718876672130'],
+      prompt_excerpt: 'Send a Discord message to chat_id 1492537718876672130 asking Jeremy for his morning weigh-in.',
+    })}\n${JSON.stringify({
+      timestamp: '2026-05-05T11:30:00.000Z',
+      job_id: 'other-chat-job',
+      label: 'Other chat',
+      agent: 'lena',
+      chat_ids: ['111111111111111111'],
+      prompt_excerpt: 'Do not include this.',
+    })}\n`);
+
+    const context = await buildAnswerContext({
+      agentKey: 'lena',
+      source: 'discord',
+      text: '<channel source="discord" chat_id="1492537718876672130" message_id="m1">218.6</channel>',
+      agentsRoot: tmpDir,
+      now: new Date('2026-05-05T12:00:00.000Z'),
+    });
+
+    expect(context).toContain('<domain_state domain="scheduled_discord_outbox">');
+    expect(context).toContain('Daily 7:30am weigh-in prompt');
+    expect(context).toContain('asking Jeremy for his morning weigh-in');
+    expect(context).not.toContain('Do not include this.');
   });
 
   it('prefers Remy meal-planning extension rows over local files', async () => {
