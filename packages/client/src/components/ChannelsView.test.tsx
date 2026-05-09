@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { ChannelsView } from './ChannelsView';
 
 const mockChannelStore = vi.fn();
@@ -13,6 +13,30 @@ describe('ChannelsView', () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('polls for new interactions every 30 seconds', () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({ interactions: [], loading: false, fetch: fetchMock })
+    );
+
+    render(<ChannelsView />);
+
+    // Called once on mount
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('renders recent agent interactions and supports filtering by agent name', () => {

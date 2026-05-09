@@ -10,6 +10,8 @@ export function ChannelsView() {
 
   useEffect(() => {
     void fetchInteractions();
+    const interval = setInterval(() => void fetchInteractions(), 30_000);
+    return () => clearInterval(interval);
   }, [fetchInteractions]);
 
   const filteredInteractions = useMemo(() => {
