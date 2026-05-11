@@ -44,11 +44,26 @@ export function readPendingInboxEntries(contentRoot: string, agentKey: string): 
     .map((line) => line.trim())
     .filter(Boolean);
   const cursor = readInboxCursor(contentRoot, agentKey);
-  const pending = lines.slice(cursor.lineCount).map((line) => JSON.parse(line) as CodexBridgeInboxEntry);
-  if (pending.length > 0) {
-    writeInboxCursor(contentRoot, agentKey, { lineCount: lines.length });
-  }
-  return pending;
+  return lines.slice(cursor.lineCount).map((line) => JSON.parse(line) as CodexBridgeInboxEntry);
+}
+
+export function markInboxEntryDelivered(contentRoot: string, agentKey: string, entry: CodexBridgeInboxEntry): boolean {
+  const filePath = inboxPath(contentRoot, agentKey);
+  if (!fs.existsSync(filePath)) return false;
+
+  const lines = fs.readFileSync(filePath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const cursor = readInboxCursor(contentRoot, agentKey);
+  const currentLine = lines[cursor.lineCount];
+  if (!currentLine) return false;
+
+  const current = JSON.parse(currentLine) as CodexBridgeInboxEntry;
+  if (current.id !== entry.id) return false;
+
+  writeInboxCursor(contentRoot, agentKey, { lineCount: cursor.lineCount + 1 });
+  return true;
 }
 
 function resolveDiscordReplyTool(bindingName?: string): string {

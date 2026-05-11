@@ -10,6 +10,10 @@ import {
   captureAgentMailMessage,
   resolveOpenBrainRuntimeConfig,
 } from './services/open-brain-runtime.js';
+import {
+  loadPendingRuntimeHandoff,
+  markRuntimeHandoffConsumed,
+} from './services/runtime-handoff.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -39,22 +43,7 @@ function parseArgs(argv: string[]) {
   return { agentKey, cwd, claudeArgs };
 }
 
-function runtimeHandoffPath(cwd: string): string {
-  return path.join(cwd, '.runtime-handoff.md');
-}
-
-function consumeRuntimeHandoff(cwd: string): string {
-  const filePath = runtimeHandoffPath(cwd);
-  try {
-    const text = fs.readFileSync(filePath, 'utf8').trim();
-    fs.unlinkSync(filePath);
-    return text;
-  } catch {
-    return '';
-  }
-}
-
-function injectRuntimeHandoff(term: pty.IPty, handoff: string): void {
+function injectRuntimeHandoff(term: pty.IPty, cwd: string, handoff: string): void {
   const trimmed = handoff.trim();
   if (!trimmed) return;
   term.write('\x15');
@@ -62,6 +51,11 @@ function injectRuntimeHandoff(term: pty.IPty, handoff: string): void {
     term.write(`[Runtime Handoff]\n\n${trimmed}\n`);
     setTimeout(() => {
       term.write('\r');
+      try {
+        markRuntimeHandoffConsumed(cwd);
+      } catch {
+        // Leave the handoff file in place rather than crashing the wrapper.
+      }
     }, 80);
   }, 40);
 }
@@ -74,7 +68,7 @@ const store = createAgentMailStore();
 let injectChain = Promise.resolve();
 const deliveredIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
-const runtimeHandoff = consumeRuntimeHandoff(cwd);
+const runtimeHandoff = loadPendingRuntimeHandoff(cwd);
 
 const term = pty.spawn('claude', claudeArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -106,7 +100,7 @@ const resize = () => {
 };
 process.stdout.on('resize', resize);
 
-injectRuntimeHandoff(term, runtimeHandoff);
+injectRuntimeHandoff(term, cwd, runtimeHandoff?.injectableText ?? '');
 
 const poller = setInterval(() => {
   const pending = store.listInbox({ agent: agentKey, status: 'new' });

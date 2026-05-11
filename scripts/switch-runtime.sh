@@ -37,6 +37,7 @@ launcher="${agent_dir}/launch.sh"
 handoff_file="${agent_dir}/.runtime-handoff.md"
 runtime_file="${agent_dir}/.runtime"
 tmux_target="${SESSION}:${agent}"
+repo_root="${MCC_TMUX_ROOT:-/Volumes/Repo-Drive/src/mcc-tmux}"
 
 if [[ ! -d "$agent_dir" ]]; then
   echo "Agent directory not found: $agent_dir" >&2
@@ -67,10 +68,6 @@ if [[ "$current_runtime" == "$target" ]]; then
   exit 0
 fi
 
-if [[ -f "$handoff_file" ]]; then
-  echo "Using handoff: $handoff_file"
-fi
-
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "tmux session not found: $SESSION" >&2
   exit 1
@@ -82,6 +79,21 @@ if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
 fi
 
 echo "Switching $agent to $target via $tmux_target"
+
+handoff_path="$(
+  npm run runtime-handoff \
+    --workspace=@mcc-tmux/server \
+    --prefix "$repo_root" \
+    -- \
+    create \
+    --agent "$agent" \
+    --from-runtime "$current_runtime" \
+    --to-runtime "$target" \
+    --workspace "$agent_dir" \
+    --reason "$reason" \
+    | tail -n 1
+)"
+echo "Prepared handoff: $handoff_path"
 
 # Keep the pane alive after the current runtime exits so we can respawn it.
 tmux set-option -p -t "$tmux_target" remain-on-exit on

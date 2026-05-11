@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   formatInboxEntryForCodex,
+  markInboxEntryDelivered,
   readInboxCursor,
   readPendingInboxEntries,
   writeInboxCursor,
@@ -21,7 +22,7 @@ describe('codex inbox', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('reads only unread inbox entries based on cursor state', () => {
+  it('reads unread inbox entries without advancing the cursor before delivery ack', () => {
     const inboxPath = path.join(tmpDir, 'bridge', 'inbox', 'marcus.jsonl');
     fs.writeFileSync(inboxPath, [
       JSON.stringify({ id: 'm1', agentKey: 'marcus', channelId: 'c1', author: 'Jeremy', content: 'first', timestamp: '2026-04-13T18:00:00.000Z' }),
@@ -34,7 +35,37 @@ describe('codex inbox', () => {
 
     expect(pending).toHaveLength(1);
     expect(pending[0]?.id).toBe('m2');
+    expect(readInboxCursor(tmpDir, 'marcus').lineCount).toBe(1);
+  });
+
+  it('advances the cursor only after the next pending entry is marked delivered', () => {
+    const inboxPath = path.join(tmpDir, 'bridge', 'inbox', 'marcus.jsonl');
+    fs.writeFileSync(inboxPath, [
+      JSON.stringify({ id: 'm1', agentKey: 'marcus', channelId: 'c1', author: 'Jeremy', content: 'first', timestamp: '2026-04-13T18:00:00.000Z' }),
+      JSON.stringify({ id: 'm2', agentKey: 'marcus', channelId: 'c1', author: 'Jeremy', content: 'second', timestamp: '2026-04-13T18:01:00.000Z' }),
+      '',
+    ].join('\n'));
+
+    const [first, second] = readPendingInboxEntries(tmpDir, 'marcus');
+
+    expect(markInboxEntryDelivered(tmpDir, 'marcus', second!)).toBe(false);
+    expect(readInboxCursor(tmpDir, 'marcus').lineCount).toBe(0);
+    expect(markInboxEntryDelivered(tmpDir, 'marcus', first!)).toBe(true);
+    expect(readInboxCursor(tmpDir, 'marcus').lineCount).toBe(1);
+    expect(markInboxEntryDelivered(tmpDir, 'marcus', second!)).toBe(true);
     expect(readInboxCursor(tmpDir, 'marcus').lineCount).toBe(2);
+  });
+
+  it('keeps a message pending when injection fails before delivery ack', () => {
+    const inboxPath = path.join(tmpDir, 'bridge', 'inbox', 'marcus.jsonl');
+    fs.writeFileSync(inboxPath, [
+      JSON.stringify({ id: 'm1', agentKey: 'marcus', channelId: 'c1', author: 'Jeremy', content: 'first', timestamp: '2026-04-13T18:00:00.000Z' }),
+      '',
+    ].join('\n'));
+
+    expect(readPendingInboxEntries(tmpDir, 'marcus')).toHaveLength(1);
+    expect(readInboxCursor(tmpDir, 'marcus').lineCount).toBe(0);
+    expect(readPendingInboxEntries(tmpDir, 'marcus')).toHaveLength(1);
   });
 
   it('formats inbox entries into a readable Codex prompt', () => {

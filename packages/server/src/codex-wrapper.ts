@@ -5,13 +5,22 @@ import * as pty from 'node-pty';
 import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
-import { ensureRuntimeStateDir, formatInboxEntryForCodex, readPendingInboxEntries } from './services/codex-inbox.js';
+import {
+  ensureRuntimeStateDir,
+  formatInboxEntryForCodex,
+  markInboxEntryDelivered,
+  readPendingInboxEntries,
+} from './services/codex-inbox.js';
 import { buildAnswerContext } from './services/answer-context.js';
 import {
   captureAgentMailMessage,
   captureDiscordInboxEntry,
   resolveOpenBrainRuntimeConfig,
 } from './services/open-brain-runtime.js';
+import {
+  loadPendingRuntimeHandoff,
+  markRuntimeHandoffConsumed,
+} from './services/runtime-handoff.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -50,22 +59,7 @@ function parseArgs(argv: string[]) {
   return { agentKey, cwd, codexArgs };
 }
 
-function runtimeHandoffPath(cwd: string): string {
-  return path.join(cwd, '.runtime-handoff.md');
-}
-
-function consumeRuntimeHandoff(cwd: string): string {
-  const filePath = runtimeHandoffPath(cwd);
-  try {
-    const text = fs.readFileSync(filePath, 'utf8').trim();
-    fs.unlinkSync(filePath);
-    return text;
-  } catch {
-    return '';
-  }
-}
-
-function injectRuntimeHandoff(term: pty.IPty, handoff: string): void {
+function injectRuntimeHandoff(term: pty.IPty, cwd: string, handoff: string): void {
   const trimmed = handoff.trim();
   if (!trimmed) return;
   term.write('\x15');
@@ -73,6 +67,11 @@ function injectRuntimeHandoff(term: pty.IPty, handoff: string): void {
     term.write(`[Runtime Handoff]\n\n${trimmed}\n`);
     setTimeout(() => {
       term.write('\r');
+      try {
+        markRuntimeHandoffConsumed(cwd);
+      } catch {
+        // Leave the handoff file in place rather than crashing the wrapper.
+      }
     }, 80);
   }, 40);
 }
@@ -85,8 +84,9 @@ const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agen
 let injectChain = Promise.resolve();
 const mailStore = createAgentMailStore();
 const deliveredMailIds = new Set<string>();
+const deliveredInboxIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
-const runtimeHandoff = consumeRuntimeHandoff(cwd);
+const runtimeHandoff = loadPendingRuntimeHandoff(cwd);
 
 const term = pty.spawn('codex', codexArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -124,11 +124,13 @@ if (openBrainConfig) {
   fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey}\n`);
 }
 
-injectRuntimeHandoff(term, runtimeHandoff);
+injectRuntimeHandoff(term, cwd, runtimeHandoff?.injectableText ?? '');
 
 const poller = setInterval(() => {
   const pending = readPendingInboxEntries(contentRoot, agentKey);
   for (const entry of pending) {
+    if (deliveredInboxIds.has(entry.id)) continue;
+    deliveredInboxIds.add(entry.id);
     injectChain = injectChain.then(async () => {
       if (openBrainConfig) {
         try {
@@ -157,8 +159,10 @@ const poller = setInterval(() => {
       term.write(prompt);
       await new Promise((resolve) => setTimeout(resolve, 80));
       term.write('\r');
+      markInboxEntryDelivered(contentRoot, agentKey, entry);
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} submitted ${entry.id}\n`);
     }).catch((error) => {
+      deliveredInboxIds.delete(entry.id);
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} inject error ${entry.id}: ${String(error)}\n`);
     });
   }
