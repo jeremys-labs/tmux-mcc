@@ -77,6 +77,47 @@ describe('ChannelsView', () => {
     expect(screen.queryByText(/Daily standup summary is ready./i)).toBeNull();
   });
 
+  it('renders the subject line when present and filters on it', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            subject: 'PR ready for review',
+            content: 'Branch marcus/channels-from-agent-mail is up.',
+            type: 'handoff',
+            timestamp: new Date('2026-05-12T10:00:00Z').getTime(),
+          },
+          {
+            from: 'Nova',
+            to: 'Isla',
+            subject: undefined,
+            content: 'No subject here.',
+            type: 'note',
+            timestamp: new Date('2026-05-12T09:00:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    // Subject renders for the first message
+    expect(screen.getByText('PR ready for review')).toBeTruthy();
+    // Body still renders
+    expect(screen.getByText(/Branch marcus\/channels-from-agent-mail/)).toBeTruthy();
+
+    // Filter by subject text hides unrelated messages
+    fireEvent.change(screen.getByPlaceholderText(/filter interactions/i), {
+      target: { value: 'PR ready for review' },
+    });
+    expect(screen.getByText(/Branch marcus\/channels-from-agent-mail/)).toBeTruthy();
+    expect(screen.queryByText(/No subject here/)).toBeNull();
+  });
+
   it('shows a helpful empty state when no interactions are available', () => {
     mockChannelStore.mockImplementation((selector: (state: any) => any) =>
       selector({

@@ -3,6 +3,7 @@ import { create } from 'zustand';
 interface ChannelMessage {
   from: string;
   to: string;
+  subject?: string;
   content: string;
   type?: string;
   timestamp: number;
@@ -26,6 +27,7 @@ export const useChannelStore = create<ChannelState>((set) => ({
       const interactions = raw.map((m: Record<string, unknown>) => ({
         from: m.from as string,
         to: m.to as string,
+        subject: m.subject as string | undefined,
         content: (m.content || m.topic || '') as string,
         type: m.type as string | undefined,
         timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp as string).getTime() : m.timestamp as number,

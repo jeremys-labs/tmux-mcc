@@ -19,7 +19,7 @@ export function ChannelsView() {
     const sorted = [...interactions].sort((a, b) => b.timestamp - a.timestamp);
     if (!query) return sorted;
     return sorted.filter((interaction) =>
-      [interaction.from, interaction.to, interaction.content, interaction.type]
+      [interaction.from, interaction.to, interaction.subject, interaction.content, interaction.type]
         .filter(Boolean)
         .some((value) => value!.toLowerCase().includes(query))
     );
@@ -86,7 +86,10 @@ export function ChannelsView() {
                     {formatRelativeTime(interaction.timestamp)}
                   </span>
                 </div>
-                <p className="mt-3 text-sm leading-6 text-text-primary">{interaction.content}</p>
+                {interaction.subject ? (
+                  <p className="mt-2 text-xs font-semibold text-text-secondary">{interaction.subject}</p>
+                ) : null}
+                <p className="mt-2 text-sm leading-6 text-text-primary">{interaction.content}</p>
               </article>
             ))}
           </div>
