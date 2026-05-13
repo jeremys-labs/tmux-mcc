@@ -4,9 +4,11 @@ import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
+import { ensureRuntimeStateDir } from './services/codex-inbox.js';
 import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { enqueuePendingRuntimeAgentMail } from './services/runtime-agent-mail.js';
+import { enqueuePendingRuntimeDiscordInbox } from './services/runtime-discord-inbox.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
@@ -17,10 +19,12 @@ process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 const { agentKey, cwd, runtimeArgs: claudeArgs } = parseRuntimeWrapperArgs(process.argv.slice(2));
 const contentRoot = resolveContentRoot();
 ensureContentDirs(contentRoot);
+ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
 const taskQueue = createRuntimeTaskQueue();
-const deliveredIds = new Set<string>();
+const deliveredMailIds = new Set<string>();
+const deliveredInboxIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -72,17 +76,30 @@ taskQueue.enqueue(async () => {
 });
 
 const poller = setInterval(() => {
+  enqueuePendingRuntimeDiscordInbox({
+    agentKey,
+    contentRoot,
+    deliveredIds: deliveredInboxIds,
+    events: runtimeEvents,
+    openBrainConfig,
+    runtimeLogPath,
+    submitPrompt: async (prompt, entry) => {
+      await submitRuntimePrompt(term, prompt);
+    },
+    enqueue: taskQueue.enqueue,
+  });
+
   enqueuePendingRuntimeAgentMail({
     agentKey,
     mailStore: store,
-    deliveredIds,
+    deliveredIds: deliveredMailIds,
     events: runtimeEvents,
     openBrainConfig,
     runtimeLogPath,
     submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
     enqueue: taskQueue.enqueue,
   });
-}, 15_000);
+}, 2_000);
 
 function cleanup(): void {
   clearInterval(poller);

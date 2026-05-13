@@ -9,12 +9,13 @@ describe('runtime launch plan', () => {
   const agentDir = '/Volumes/Repo-Drive/agents/enzo';
   const mccRoot = '/Volumes/Repo-Drive/src/mcc-tmux';
 
-  it('builds the Enzo Claude adapter plan with Discord channel injection', () => {
+  it('builds the Enzo Claude adapter plan using inbox-based Discord delivery', () => {
     const plan = buildRuntimeLaunchPlan({
       agent: 'enzo',
       agentDir,
       runtime: 'claude',
       mccRoot,
+      homeDir: '/Users/jeremy',
     });
 
     expect(plan).toMatchObject({
@@ -23,7 +24,7 @@ describe('runtime launch plan', () => {
       command: 'npm',
       cwd: agentDir,
       env: {
-        DISCORD_STATE_DIR: path.join(agentDir, '.claude', 'discord'),
+        CONTENT_ROOT: '/Users/jeremy/.tmux-mcc',
       },
     });
     expect(plan.args).toEqual([
@@ -37,8 +38,6 @@ describe('runtime launch plan', () => {
       'enzo',
       '--cd',
       agentDir,
-      '--channels',
-      'plugin:discord@claude-plugins-official',
       '--dangerously-skip-permissions',
     ]);
   });

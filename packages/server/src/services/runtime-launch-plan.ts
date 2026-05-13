@@ -49,13 +49,11 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
       command: 'npm',
       args: [
         ...baseArgs,
-        '--channels',
-        'plugin:discord@claude-plugins-official',
         '--dangerously-skip-permissions',
       ],
       cwd: input.agentDir,
       env: {
-        DISCORD_STATE_DIR: path.join(input.agentDir, '.claude', 'discord'),
+        CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
       },
     };
   }
