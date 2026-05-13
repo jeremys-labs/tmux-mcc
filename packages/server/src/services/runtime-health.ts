@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
 
@@ -8,6 +9,8 @@ const DEFAULT_SCHEDULER_ROOT = '/Users/jeremylahners/.claude/scheduler';
 const DEFAULT_AGENT_MAIL_DB = '/Volumes/Repo-Drive/agents/SHARED/agent-mail/agent_mail.db';
 const DEFAULT_SCHEDULED_OUTBOX = '/Volumes/Repo-Drive/agents/SHARED/scheduled-discord-outbox.jsonl';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
+const DEFAULT_CODEX_CONFIG_PATH = '/Users/jeremylahners/.codex/config.toml';
+const DEFAULT_CONTENT_ROOT = '/Users/jeremylahners/.tmux-mcc';
 
 export type HealthStatus = 'ok' | 'warn' | 'error' | 'unknown';
 
@@ -20,11 +23,14 @@ export interface AgentRuntimeHealth {
   agent: string;
   runtimeType: HealthCheck;
   discordBridgeConfig: HealthCheck;
+  codexInboundBridge: HealthCheck;
+  codexOutboundDiscordMcp: HealthCheck;
   openBrainMemoryKey: HealthCheck;
   lastOpenBrainCapture: HealthCheck;
   lastOpenBrainSearch: HealthCheck;
   groomingQueueDepth: HealthCheck;
   agentMail: HealthCheck;
+  migrationReadiness: HealthCheck;
 }
 
 export interface SchedulerHealth {
@@ -70,6 +76,8 @@ export interface RuntimeHealthOptions {
   openBrainSearchTimeoutMs?: number;
   includeOpenBrainSearch?: boolean;
   includeOpenBrainMetadata?: boolean;
+  codexConfigPath?: string;
+  contentRoot?: string;
 }
 
 interface SchedulerJob {
@@ -118,6 +126,14 @@ function fileExists(filePath: string): boolean {
   }
 }
 
+function readOptional(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 function fileMtimeIso(filePath: string): string | undefined {
   try {
     return fs.statSync(filePath).mtime.toISOString();
@@ -136,11 +152,85 @@ function check(status: HealthStatus, detail: string): HealthCheck {
   return { status, detail };
 }
 
+function hasDiscordChannels(accessPath: string): boolean {
+  const access = readJsonFile<{ groups?: Record<string, unknown> }>(accessPath);
+  return Object.keys(access?.groups ?? {}).length > 0;
+}
+
+function codexDiscordMcpCheck(agent: string, agentsRoot: string, codexConfigPath: string): HealthCheck {
+  const config = readOptional(codexConfigPath);
+  if (!config) return check('warn', `Codex config missing at ${codexConfigPath}`);
+
+  const serverHeader = `[mcp_servers.discord-${agent}]`;
+  if (!config.includes(serverHeader)) {
+    return check('warn', `missing ${serverHeader} in Codex config`);
+  }
+
+  const wrapperPath = path.join(agentsRoot, agent, 'bin', 'discord-mcp-wrapper');
+  if (!fileExists(wrapperPath)) {
+    return check('warn', `missing outbound Discord MCP wrapper at ${wrapperPath}`);
+  }
+
+  return check('ok', `discord-${agent} MCP configured`);
+}
+
+function tmuxSessionExists(session: string): boolean {
+  try {
+    execFileSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bridgeConfigContainsAgent(configPath: string, agent: string): boolean {
+  const config = readJsonFile<{ bindings?: Array<{ name?: string; subscriptions?: Array<{ agentKey?: string }> }>; subscriptions?: Array<{ agentKey?: string }> }>(configPath);
+  if (!config) return false;
+  if (config.bindings?.some((binding) => binding.name === agent || binding.subscriptions?.some((sub) => sub.agentKey === agent))) {
+    return true;
+  }
+  return config.subscriptions?.some((sub) => sub.agentKey === agent) ?? false;
+}
+
+function codexInboundBridgeCheck(agent: string, contentRoot: string): HealthCheck {
+  const defaultConfigPath = path.join(contentRoot, 'bridge', 'discord.json');
+  if (bridgeConfigContainsAgent(defaultConfigPath, agent)) {
+    return check('ok', `shared bridge config includes ${agent}`);
+  }
+  if (tmuxSessionExists(`${agent}-discord-bridge`)) {
+    return check('ok', `tmux bridge session ${agent}-discord-bridge is running`);
+  }
+  return check('warn', `no shared bridge binding or ${agent}-discord-bridge tmux session found`);
+}
+
 function worstStatus(checks: HealthCheck[]): HealthStatus {
   if (checks.some((item) => item.status === 'error')) return 'error';
   if (checks.some((item) => item.status === 'warn')) return 'warn';
   if (checks.some((item) => item.status === 'unknown')) return 'unknown';
   return 'ok';
+}
+
+function evaluateMigrationReadiness(agent: AgentRuntimeHealth): HealthCheck {
+  const blockers: string[] = [];
+  const requiredChecks: Array<[string, HealthCheck]> = [
+    ['runtime', agent.runtimeType],
+    ['discord', agent.discordBridgeConfig],
+    ['codex-in', agent.codexInboundBridge],
+    ['codex-out', agent.codexOutboundDiscordMcp],
+    ['ob1-key', agent.openBrainMemoryKey],
+    ['capture', agent.lastOpenBrainCapture],
+    ['search', agent.lastOpenBrainSearch],
+  ];
+
+  for (const [name, health] of requiredChecks) {
+    if (health.status !== 'ok') {
+      blockers.push(`${name}=${health.status}`);
+    }
+  }
+
+  return blockers.length === 0
+    ? check('ok', 'all migration gates green')
+    : check('error', `migration blockers: ${blockers.join(', ')}`);
 }
 
 function resolveAgents(options: RuntimeHealthOptions): string[] {
@@ -352,6 +442,10 @@ async function probeOpenBrainSearch(agent: string, timeoutMs: number): Promise<H
       const body = await response.text();
       return check('error', `search probe failed: ${response.status} ${body}`);
     }
+    const body = await response.text();
+    if (body.includes('"isError":true')) {
+      return check('error', `search probe returned MCP error: ${body.slice(0, 500)}`);
+    }
     return check('ok', `search probe succeeded at ${new Date().toISOString()}`);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -411,12 +505,16 @@ function buildAgentHealth(
   rows: ThoughtRow[] | null,
   searchCheck: HealthCheck,
   mailStats: AgentMailHealth['agents'][string] | undefined,
+  codexConfigPath: string,
+  contentRoot: string,
 ): AgentRuntimeHealth {
   const agentRoot = path.join(agentsRoot, agent);
   const runtime = readTrimmed(path.join(agentRoot, '.runtime'));
   const discordAccess = path.join(agentRoot, '.claude', 'discord', 'access.json');
   const discordEnv = path.join(agentRoot, '.claude', 'discord', '.env');
   const ob1Env = path.join(agentRoot, '.open-brain', 'memory.env');
+  const hasDiscordConfig = fileExists(discordAccess) && fileExists(discordEnv) && hasDiscordChannels(discordAccess);
+  const isCodex = runtime === 'codex';
   const agentRows = rows?.filter((row) => agentForRow(row) === agent) ?? [];
   const lastCapture = agentRows[0]?.created_at;
   const queueDepth = agentRows.filter(unresolvedRawCapture).length;
@@ -430,8 +528,16 @@ function buildAgentHealth(
       ? check(runtime === 'claude' || runtime === 'codex' ? 'ok' : 'warn', runtime)
       : check('unknown', '.runtime file missing'),
     discordBridgeConfig: fileExists(discordAccess) && fileExists(discordEnv)
-      ? check('ok', 'Discord access.json and .env present')
+      ? hasDiscordChannels(discordAccess)
+        ? check('ok', 'Discord access.json and .env present with allowed channel(s)')
+        : check('warn', 'Discord access.json has no allowed channel groups')
       : check('warn', `missing ${fileExists(discordAccess) ? '' : 'access.json '}${fileExists(discordEnv) ? '' : '.env'}`.trim()),
+    codexInboundBridge: isCodex && hasDiscordConfig
+      ? codexInboundBridgeCheck(agent, contentRoot)
+      : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
+    codexOutboundDiscordMcp: isCodex && hasDiscordConfig
+      ? codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath)
+      : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
     openBrainMemoryKey: fileExists(ob1Env)
       ? check('ok', '.open-brain/memory.env present')
       : check('warn', '.open-brain/memory.env missing'),
@@ -447,6 +553,7 @@ function buildAgentHealth(
         ? check('ok', '0 unresolved raw_capture rows in recent window')
         : check('warn', `${queueDepth} unresolved raw_capture row(s) in recent window`),
     agentMail: check((mailStats?.inboxDepth ?? 0) > 0 ? 'warn' : 'ok', `${mailStats?.inboxDepth ?? 0} unacked inbox item(s)${oldestUnacked}`),
+    migrationReadiness: check('unknown', 'pending'),
   };
 }
 
@@ -487,7 +594,12 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     rows,
     searchChecks.get(agent) ?? check('unknown', 'search probe missing'),
     agentMail.agents[agent],
+    options.codexConfigPath ?? DEFAULT_CODEX_CONFIG_PATH,
+    options.contentRoot ?? DEFAULT_CONTENT_ROOT,
   ));
+  for (const agent of agentHealth) {
+    agent.migrationReadiness = evaluateMigrationReadiness(agent);
+  }
 
   const allChecks = [
     scheduler.checks.jobTypes,
@@ -497,6 +609,8 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     ...agentHealth.flatMap((agent) => [
       agent.runtimeType,
       agent.discordBridgeConfig,
+      agent.codexInboundBridge,
+      agent.codexOutboundDiscordMcp,
       agent.openBrainMemoryKey,
       agent.lastOpenBrainCapture,
       agent.lastOpenBrainSearch,
@@ -529,11 +643,14 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
     const checks = [
       `runtime=${agent.runtimeType.status}:${agent.runtimeType.detail}`,
       `discord=${agent.discordBridgeConfig.status}`,
+      `codex-in=${agent.codexInboundBridge.status}:${agent.codexInboundBridge.detail}`,
+      `codex-out=${agent.codexOutboundDiscordMcp.status}:${agent.codexOutboundDiscordMcp.detail}`,
       `ob1-key=${agent.openBrainMemoryKey.status}`,
       `capture=${agent.lastOpenBrainCapture.status}:${agent.lastOpenBrainCapture.detail}`,
       `search=${agent.lastOpenBrainSearch.status}:${agent.lastOpenBrainSearch.detail}`,
       `grooming=${agent.groomingQueueDepth.status}:${agent.groomingQueueDepth.detail}`,
       `mail=${agent.agentMail.status}:${agent.agentMail.detail}`,
+      `migration=${agent.migrationReadiness.status}:${agent.migrationReadiness.detail}`,
     ];
     lines.push(`- ${agent.agent}: ${checks.join('; ')}`);
   }

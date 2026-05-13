@@ -12,6 +12,7 @@ function hasFlag(name: string): boolean {
 
 async function main(): Promise<void> {
   const agentsArg = readArg('--agents');
+  const requireMigrationReady = hasFlag('--require-migration-ready');
   const report = await buildRuntimeHealthReport({
     agents: agentsArg ? agentsArg.split(',').map((item) => item.trim()).filter(Boolean) : undefined,
     openBrainSearchTimeoutMs: Number(readArg('--ob1-search-timeout-ms') ?? '1000'),
@@ -24,6 +25,13 @@ async function main(): Promise<void> {
   }
 
   process.stdout.write(`${formatRuntimeHealthSummary(report)}\n`);
+  if (requireMigrationReady) {
+    const failingAgents = report.agents.filter((agent) => agent.migrationReadiness.status !== 'ok');
+    if (failingAgents.length > 0) {
+      process.stderr.write(`Migration readiness failed for: ${failingAgents.map((agent) => agent.agent).join(', ')}\n`);
+      process.exit(1);
+    }
+  }
 }
 
 main().catch((error) => {

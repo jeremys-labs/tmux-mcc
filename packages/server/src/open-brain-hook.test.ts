@@ -6,6 +6,7 @@ import {
   formatCodexSystemMessage,
   inferAgentKey,
   parseOpenBrainHookArgs,
+  shouldSkipWrapperInjectedAnswerContext,
 } from './services/open-brain-harness-hook.js';
 
 describe('open brain Claude hook helpers', () => {
@@ -58,5 +59,35 @@ describe('open brain Claude hook helpers', () => {
       continue: true,
       systemMessage: 'context',
     });
+  });
+
+  it('skips duplicate answer-context only for Enzo wrapper-injected agent-mail turns', () => {
+    const prompt = [
+      '[Answer Context] Retrieved before agent_mail turn for enzo.',
+      '',
+      '[Agent Mail] New message from eli | type=note | subject=Runtime smoke test',
+      '',
+      'Smoke test.',
+    ].join('\n');
+
+    expect(shouldSkipWrapperInjectedAnswerContext('enzo', prompt)).toBe(true);
+    expect(shouldSkipWrapperInjectedAnswerContext('eli', prompt)).toBe(false);
+  });
+
+  it('skips duplicate answer-context only for Enzo wrapper-injected Discord turns', () => {
+    const prompt = [
+      '[Answer Context] Retrieved before discord turn for enzo.',
+      '',
+      '[Messaging Gateway] Discord message routed for enzo.',
+      '',
+      '<channel source="discord" chat_id="c1">Buongiorno</channel>',
+    ].join('\n');
+
+    expect(shouldSkipWrapperInjectedAnswerContext('enzo', prompt)).toBe(true);
+    expect(shouldSkipWrapperInjectedAnswerContext('marcus', prompt)).toBe(false);
+  });
+
+  it('keeps answer-context enabled for normal Enzo manual prompts', () => {
+    expect(shouldSkipWrapperInjectedAnswerContext('enzo', 'What should I teach next?')).toBe(false);
   });
 });

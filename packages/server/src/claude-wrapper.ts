@@ -1,74 +1,32 @@
 import process from 'process';
-import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
-import { createAgentMailStore, formatAgentMailForRuntime } from '@agent-comms/mailbox';
+import { createAgentMailStore } from '@agent-comms/mailbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
-import { buildAnswerContext } from './services/answer-context.js';
-import {
-  captureAgentMailMessage,
-  resolveOpenBrainRuntimeConfig,
-} from './services/open-brain-runtime.js';
-import {
-  loadPendingRuntimeHandoff,
-  markRuntimeHandoffConsumed,
-} from './services/runtime-handoff.js';
+import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
+import { createRuntimeEventEmitter } from './services/runtime-events.js';
+import { enqueuePendingRuntimeAgentMail } from './services/runtime-agent-mail.js';
+import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
+import { submitRuntimePrompt } from './services/runtime-pty.js';
+import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
+import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
-function parseArgs(argv: string[]) {
-  const args = [...argv];
-  let agentKey = '';
-  let cwd = process.cwd();
-  const claudeArgs: string[] = [];
-
-  while (args.length > 0) {
-    const current = args.shift()!;
-    if (current === '--agent') {
-      agentKey = args.shift() ?? '';
-      continue;
-    }
-    if (current === '--cd') {
-      cwd = args.shift() ?? cwd;
-      continue;
-    }
-    claudeArgs.push(current);
-  }
-
-  if (!agentKey) {
-    throw new Error('Missing required --agent <agentKey>');
-  }
-
-  return { agentKey, cwd, claudeArgs };
-}
-
-function injectRuntimeHandoff(term: pty.IPty, cwd: string, handoff: string): void {
-  const trimmed = handoff.trim();
-  if (!trimmed) return;
-  term.write('\x15');
-  setTimeout(() => {
-    term.write(`[Runtime Handoff]\n\n${trimmed}\n`);
-    setTimeout(() => {
-      term.write('\r');
-      try {
-        markRuntimeHandoffConsumed(cwd);
-      } catch {
-        // Leave the handoff file in place rather than crashing the wrapper.
-      }
-    }, 80);
-  }, 40);
-}
-
-const { agentKey, cwd, claudeArgs } = parseArgs(process.argv.slice(2));
+const { agentKey, cwd, runtimeArgs: claudeArgs } = parseRuntimeWrapperArgs(process.argv.slice(2));
 const contentRoot = resolveContentRoot();
 ensureContentDirs(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
-let injectChain = Promise.resolve();
+const taskQueue = createRuntimeTaskQueue();
 const deliveredIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
-const runtimeHandoff = loadPendingRuntimeHandoff(cwd);
+const runtimeEvents = createRuntimeEventEmitter({
+  agent: agentKey,
+  runtime: 'claude',
+  logPath: runtimeLogPath,
+});
 
 const term = pty.spawn('claude', claudeArgs, {
   name: process.env.TERM || 'xterm-256color',
@@ -100,47 +58,30 @@ const resize = () => {
 };
 process.stdout.on('resize', resize);
 
-injectRuntimeHandoff(term, cwd, runtimeHandoff?.injectableText ?? '');
+void runtimeEvents.emit('onRuntimeHealth', {
+  source: 'runtime',
+  metadata: { status: 'started' },
+});
+
+taskQueue.enqueue(async () => {
+  await injectPendingRuntimeHandoff({
+    workspace: cwd,
+    events: runtimeEvents,
+    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
+  });
+});
 
 const poller = setInterval(() => {
-  const pending = store.listInbox({ agent: agentKey, status: 'new' });
-  for (const message of pending) {
-    if (deliveredIds.has(message.id)) continue;
-    deliveredIds.add(message.id);
-    injectChain = injectChain.then(async () => {
-      if (openBrainConfig) {
-        try {
-          await captureAgentMailMessage(openBrainConfig, message);
-          fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} captured mail ${message.id} to open-brain raw_capture\n`);
-        } catch (error) {
-          fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain mail capture error ${message.id}: ${String(error)}\n`);
-        }
-      }
-      const answerContext = await buildAnswerContext({
-        agentKey,
-        source: 'agent_mail',
-        subject: message.subject,
-        text: message.bodyMd,
-        project: message.relatedProject,
-        openBrainConfig,
-      }).catch((error) => {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} answer-context mail error ${message.id}: ${String(error)}\n`);
-        return '';
-      });
-      if (answerContext) {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} built answer-context for mail ${message.id}\n`);
-      }
-      const prompt = [answerContext, formatAgentMailForRuntime(message)].filter(Boolean).join('\n\n');
-      term.write('\x15');
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      term.write(prompt);
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      term.write('\r');
-      store.ackMessage(agentKey, message.id);
-    }).catch(() => {
-      deliveredIds.delete(message.id);
-    });
-  }
+  enqueuePendingRuntimeAgentMail({
+    agentKey,
+    mailStore: store,
+    deliveredIds,
+    events: runtimeEvents,
+    openBrainConfig,
+    runtimeLogPath,
+    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    enqueue: taskQueue.enqueue,
+  });
 }, 15_000);
 
 function cleanup(): void {

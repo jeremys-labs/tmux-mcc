@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildAnswerContext, formatAnswerContext } from './answer-context.js';
+import { buildAnswerContext, formatAnswerContext, isFreshSessionFirstTurnPayload } from './answer-context.js';
 
 describe('answer context', () => {
   let tmpDir: string;
@@ -248,5 +248,52 @@ describe('answer context', () => {
     const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
     expect(body.params.name).toBe('search_agent_memory');
     expect(body.params.arguments.query).toContain('Should I reply in a thread?');
+  });
+
+  it('adds recent activity fallback search on fresh session first turn', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Semantic restart result"}]},"jsonrpc":"2.0","id":1}\n\n',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Recent Discord MCP outage work"}]},"jsonrpc":"2.0","id":2}\n\n',
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const context = await buildAnswerContext({
+      agentKey: 'isla',
+      source: 'discord',
+      text: 'Okay, restarted. Discord working?',
+      freshSessionFirstTurn: true,
+      openBrainConfig: {
+        agentId: 'isla',
+        endpointUrl: 'https://example.test/open-brain',
+        agentMemoryKey: 'agent-secret',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(context).toContain('Semantic restart result');
+    expect(context).toContain('Recent activity fallback for fresh session first turn');
+    expect(context).toContain('Recent Discord MCP outage work');
+    const recentBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
+    expect(recentBody.params.arguments.query).toBe('recent isla session activity work troubleshooting restart current task');
+    expect(recentBody.params.arguments.limit).toBe(5);
+  });
+
+  it('detects first-turn payloads without prior assistant turns', () => {
+    expect(isFreshSessionFirstTurnPayload({
+      messages: [{ role: 'user', content: 'restart check' }],
+    })).toBe(true);
+    expect(isFreshSessionFirstTurnPayload({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+      ],
+    })).toBe(false);
+    expect(isFreshSessionFirstTurnPayload({ parentUuid: null })).toBe(true);
+    expect(isFreshSessionFirstTurnPayload({ parentUuid: 'previous-turn' })).toBe(false);
   });
 });
