@@ -42,6 +42,21 @@ describe('runtime launch plan', () => {
     ]);
   });
 
+  it('appends --model to Claude args when model is specified', () => {
+    const plan = buildRuntimeLaunchPlan({
+      agent: 'enzo',
+      agentDir,
+      runtime: 'claude',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      model: 'claude-haiku-4-5-20251001',
+    });
+
+    expect(plan.args).toContain('--model');
+    expect(plan.args).toContain('claude-haiku-4-5-20251001');
+    expect(plan.args.indexOf('--model')).toBe(plan.args.indexOf('claude-haiku-4-5-20251001') - 1);
+  });
+
   it('builds the Enzo Codex adapter plan with Codex-only forwarded args', () => {
     const plan = buildRuntimeLaunchPlan({
       agent: 'enzo',

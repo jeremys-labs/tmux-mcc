@@ -5,6 +5,7 @@ type ParsedArgs = {
   agent: string;
   runtime: string;
   agentDir: string;
+  model: string;
   dryRun: boolean;
 };
 
@@ -13,6 +14,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     agent: '',
     runtime: process.env.LAUNCH_RUNTIME ?? 'claude',
     agentDir: process.cwd(),
+    model: '',
     dryRun: false,
   };
   const args = [...argv];
@@ -34,6 +36,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.agentDir = args.shift() ?? parsed.agentDir;
       continue;
     }
+    if (current === '--model') {
+      parsed.model = args.shift() ?? '';
+      continue;
+    }
     if (current === '--dry-run') {
       parsed.dryRun = true;
       continue;
@@ -51,6 +57,7 @@ const plan = buildRuntimeLaunchPlan({
   agent: parsed.agent,
   agentDir: parsed.agentDir,
   runtime: parseSupportedRuntime(parsed.runtime),
+  model: parsed.model || undefined,
 });
 
 if (parsed.dryRun) {

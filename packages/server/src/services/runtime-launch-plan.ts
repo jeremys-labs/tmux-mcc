@@ -10,6 +10,7 @@ export type RuntimeLaunchPlanInput = {
   runtime: SupportedRuntime;
   mccRoot?: string;
   homeDir?: string;
+  model?: string;
 };
 
 export type RuntimeLaunchPlan = {
@@ -43,14 +44,13 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
   ];
 
   if (input.runtime === 'claude') {
+    const claudeArgs = ['--dangerously-skip-permissions'];
+    if (input.model) claudeArgs.push('--model', input.model);
     return {
       agent: input.agent,
       runtime: input.runtime,
       command: 'npm',
-      args: [
-        ...baseArgs,
-        '--dangerously-skip-permissions',
-      ],
+      args: [...baseArgs, ...claudeArgs],
       cwd: input.agentDir,
       env: {
         CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
