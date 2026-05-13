@@ -10,7 +10,7 @@ import {
   type OpenBrainHookOutputFormat,
   type RunOpenBrainHookInput,
 } from './open-brain-hook-helpers.js';
-import { buildAnswerContext } from './answer-context.js';
+import { buildAnswerContext, isFreshSessionFirstTurnPayload } from './answer-context.js';
 import {
   captureClaudeHookEvent,
   captureClaudePromptEvent,
@@ -32,6 +32,12 @@ export {
   type RunOpenBrainHookInput,
 };
 
+export function shouldSkipWrapperInjectedAnswerContext(agentKey: string, promptText: string): boolean {
+  if (agentKey !== 'enzo') return false;
+  if (!promptText.includes('[Answer Context] Retrieved before')) return false;
+  return promptText.includes('[Agent Mail] New message from') || promptText.includes('[Messaging Gateway] Discord message routed');
+}
+
 export async function runOpenBrainHarnessHook(input: RunOpenBrainHookInput): Promise<string> {
   return runSharedOpenBrainHarnessHook(input, {
     async resolveStartupContext(agentKey, _payload, outputFormat) {
@@ -44,6 +50,9 @@ export async function runOpenBrainHarnessHook(input: RunOpenBrainHookInput): Pro
     },
 
     async resolveAnswerContext(agentKey, promptText, payload) {
+      if (shouldSkipWrapperInjectedAnswerContext(agentKey, promptText)) {
+        return '';
+      }
       const config = resolveOpenBrainRuntimeConfig(agentKey);
       if (config) {
         await captureClaudePromptEvent(config, promptText, payload).catch((error) => {
@@ -54,6 +63,7 @@ export async function runOpenBrainHarnessHook(input: RunOpenBrainHookInput): Pro
         agentKey,
         source: 'claude_prompt',
         text: promptText,
+        freshSessionFirstTurn: isFreshSessionFirstTurnPayload(payload),
         openBrainConfig: config,
       });
     },
