@@ -18,6 +18,7 @@ export interface BuildAnswerContextInput {
   text: string;
   subject?: string;
   project?: string | null;
+  freshSessionFirstTurn?: boolean;
   openBrainConfig?: OpenBrainRuntimeConfig | null;
   agentsRoot?: string;
   now?: Date;
@@ -487,16 +488,100 @@ function buildMemoryQuery(input: BuildAnswerContextInput): string {
   ].filter(Boolean).join('\n');
 }
 
+async function safeSearchAgentMemory(
+  config: OpenBrainRuntimeConfig,
+  args: Record<string, unknown>,
+): Promise<string> {
+  try {
+    const result = await callOpenBrainTool(config, 'search_agent_memory', args);
+    return result.text;
+  } catch {
+    return '';
+  }
+}
+
 async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<string> {
   if (!input.openBrainConfig) return '';
-  const result = await callOpenBrainTool(input.openBrainConfig, 'search_agent_memory', {
-    agent_id: input.openBrainConfig.agentId,
-    query: buildMemoryQuery(input),
-    project: input.project ?? undefined,
-    limit: 6,
-    threshold: 0.1,
-  });
-  return compactText(result.text, 3600);
+  const [semanticResult, recentResult] = await Promise.all([
+    safeSearchAgentMemory(input.openBrainConfig, {
+      agent_id: input.openBrainConfig.agentId,
+      query: buildMemoryQuery(input),
+      project: input.project ?? undefined,
+      limit: 6,
+      threshold: 0.1,
+    }),
+    input.freshSessionFirstTurn
+      ? safeSearchAgentMemory(input.openBrainConfig, {
+        agent_id: input.openBrainConfig.agentId,
+        query: `recent ${input.openBrainConfig.agentId} session activity work troubleshooting restart current task`,
+        project: input.project ?? undefined,
+        limit: 5,
+        threshold: 0.1,
+      })
+      : Promise.resolve(''),
+  ]);
+  const sections = [
+    semanticResult,
+    recentResult.trim()
+      ? [
+        'Recent activity fallback for fresh session first turn:',
+        recentResult,
+      ].join('\n')
+      : '',
+  ].filter((section) => section.trim());
+  return compactText(sections.join('\n\n'), 5200);
+}
+
+function hasAssistantRole(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(hasAssistantRole);
+  const record = value as Record<string, unknown>;
+  if (record.role === 'assistant') return true;
+  if (record.type === 'assistant') return true;
+  if (record.message && hasAssistantRole(record.message)) return true;
+  return false;
+}
+
+function transcriptHasAssistantTurn(filePath: string): boolean {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    return text
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .some((line) => {
+        try {
+          return hasAssistantRole(JSON.parse(line) as unknown);
+        } catch {
+          return false;
+        }
+      });
+  } catch {
+    return false;
+  }
+}
+
+export function isFreshSessionFirstTurnPayload(payload: Record<string, unknown>): boolean {
+  const transcriptPath = payload.transcript_path ?? payload.transcriptPath;
+  if (typeof transcriptPath === 'string' && transcriptPath) {
+    return !transcriptHasAssistantTurn(transcriptPath);
+  }
+
+  const candidateFields = [
+    payload.messages,
+    payload.conversation,
+    payload.conversation_context,
+    payload.conversationContext,
+    payload.transcript,
+    payload.turns,
+  ];
+  if (candidateFields.some((field) => Array.isArray(field))) {
+    return !candidateFields.some(hasAssistantRole);
+  }
+
+  if (payload.parentUuid === null || payload.parent_uuid === null) return true;
+  if (payload.parentUuid || payload.parent_uuid) return false;
+
+  return false;
 }
 
 export function formatAnswerContext(input: {

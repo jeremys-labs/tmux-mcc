@@ -18,6 +18,7 @@
     "open-brain:canary": "tsx src/open-brain-canary.ts",
     "open-brain:seed-agent-history": "tsx src/open-brain-seed-agent-history.ts",
     "runtime-handoff": "tsx src/runtime-handoff.ts",
+    "runtime-launch": "tsx src/runtime-launch.ts",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
     "build": "tsc",

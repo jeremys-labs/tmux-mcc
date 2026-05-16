@@ -11,7 +11,7 @@ set -euo pipefail
 TMUX_CONF="${HOME}/.config/mcc-tmux/tmux.conf"
 SESSION="${TMUX_SESSION:-agents}"
 AGENTS_DIR="${AGENTS_DIR:-/Volumes/Repo-Drive/agents}"
-DEFAULT_AGENTS=(marcus isla harper eli sage remy lena nova zara jordan enzo)
+DEFAULT_AGENTS=(marcus isla harper eli sage remy lena nova zara jordan enzo hercule)
 
 if [[ $# -gt 0 ]]; then
   AGENTS=("$@")
