@@ -21,7 +21,6 @@ export function shouldIgnoreDiscordMessage(
   event: DiscordMessageEvent,
 ): boolean {
   if (!event.content?.trim()) return true;
-  if (event.author?.bot) return true;
   if (config.selfUserId && event.author?.id === config.selfUserId) return true;
   return false;
 }
@@ -34,6 +33,8 @@ export function routeDiscordMessage(
 
   const subscription = config.subscriptions.find((item) => matchesSubscription(item, event));
   if (!subscription) return null;
+
+  if (event.author?.bot && !subscription.allowBotIds?.includes(event.author.id!)) return null;
 
   return {
     id: event.id,

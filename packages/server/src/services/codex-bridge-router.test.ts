@@ -44,6 +44,51 @@ describe('codex bridge router', () => {
     expect(routed?.threadId).toBe('12345');
   });
 
+  it('ignores bot messages by default', () => {
+    const routed = routeDiscordMessage(config as any, {
+      id: 'm5',
+      channel_id: '1492892431543308439',
+      content: 'bot says hi',
+      author: { id: 'bot-123', username: 'SomeBot', bot: true },
+    });
+    expect(routed).toBeNull();
+  });
+
+  it('allows bot messages when author ID is in allowBotIds', () => {
+    const configWithBots = {
+      ...config,
+      subscriptions: [
+        { agentKey: 'marcus', channelId: '1492892431543308439', allowBotIds: ['bot-123'] },
+        config.subscriptions[1],
+      ],
+    };
+    const routed = routeDiscordMessage(configWithBots as any, {
+      id: 'm6',
+      channel_id: '1492892431543308439',
+      content: 'allowed bot says hi',
+      author: { id: 'bot-123', username: 'Donna', bot: true },
+    });
+    expect(routed?.agentKey).toBe('marcus');
+    expect(routed?.author).toBe('Donna');
+  });
+
+  it('blocks bot messages when author ID is not in allowBotIds', () => {
+    const configWithBots = {
+      ...config,
+      subscriptions: [
+        { agentKey: 'marcus', channelId: '1492892431543308439', allowBotIds: ['bot-999'] },
+        config.subscriptions[1],
+      ],
+    };
+    const routed = routeDiscordMessage(configWithBots as any, {
+      id: 'm7',
+      channel_id: '1492892431543308439',
+      content: 'unlisted bot',
+      author: { id: 'bot-123', username: 'RandomBot', bot: true },
+    });
+    expect(routed).toBeNull();
+  });
+
   it('adds binding metadata when routing through a specific binding', () => {
     const routed = routeDiscordMessageForBinding({
       name: 'zara',

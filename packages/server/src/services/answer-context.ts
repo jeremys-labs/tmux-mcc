@@ -5,6 +5,7 @@ import {
   callOpenBrainTool,
   type OpenBrainRuntimeConfig,
 } from './open-brain-runtime.js';
+import { buildSkillSnapshot } from './skill-snapshot.js';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
@@ -479,6 +480,20 @@ async function buildDomainContexts(agentKey: string, text: string, agentsRoot: s
   return contexts;
 }
 
+function buildSkillsContext(agentKey: string, agentsRoot: string): DomainContext | null {
+  if (process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED === '1') return null;
+  const snapshot = buildSkillSnapshot({ agentKey, agentsRoot });
+  if (!snapshot.prompt.trim()) return null;
+  return {
+    domain: 'skills',
+    content: [
+      `skill_snapshot_version=${snapshot.version}`,
+      `skill_count=${snapshot.skills.length}`,
+      snapshot.prompt,
+    ].join('\n'),
+  };
+}
+
 function buildMemoryQuery(input: BuildAnswerContextInput): string {
   return [
     input.subject ? `Subject: ${input.subject}` : '',
@@ -631,6 +646,7 @@ export async function buildAnswerContext(input: BuildAnswerContextInput): Promis
     searchAnswerMemory(input),
     buildDomainContexts(input.agentKey, input.text, agentsRoot, now),
   ]);
+  const skillsContext = buildSkillsContext(input.agentKey, agentsRoot);
   return formatAnswerContext({
     agentKey: input.agentKey,
     source: input.source,
@@ -640,6 +656,7 @@ export async function buildAnswerContext(input: BuildAnswerContextInput): Promis
         domain: 'scheduled_discord_outbox',
         content: scheduledDiscordOutbox,
       }] : []),
+      ...(skillsContext ? [skillsContext] : []),
       ...domainContexts,
     ],
   });

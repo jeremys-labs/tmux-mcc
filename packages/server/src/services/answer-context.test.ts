@@ -10,10 +10,12 @@ describe('answer context', () => {
   const originalProjectUrl = process.env.SUPABASE_PROJECT_URL;
   const originalSecretKey = process.env.SUPABASE_SECRET_KEY;
   const originalScheduledOutboxPath = process.env.SCHEDULED_DISCORD_OUTBOX_PATH;
+  const originalSkillSnapshotDisabled = process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'answer-context-'));
     process.env.OPEN_BRAIN_EXTENSION_CONTEXT_DISABLED = '1';
+    process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED = '1';
     delete process.env.SUPABASE_PROJECT_URL;
     delete process.env.SUPABASE_SECRET_KEY;
     process.env.SCHEDULED_DISCORD_OUTBOX_PATH = path.join(tmpDir, 'scheduled-discord-outbox.jsonl');
@@ -41,6 +43,11 @@ describe('answer context', () => {
       delete process.env.SCHEDULED_DISCORD_OUTBOX_PATH;
     } else {
       process.env.SCHEDULED_DISCORD_OUTBOX_PATH = originalScheduledOutboxPath;
+    }
+    if (originalSkillSnapshotDisabled === undefined) {
+      delete process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED;
+    } else {
+      process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED = originalSkillSnapshotDisabled;
     }
   });
 
@@ -137,6 +144,33 @@ describe('answer context', () => {
     expect(context).toContain('Daily 7:30am weigh-in prompt');
     expect(context).toContain('asking Jeremy for his morning weigh-in');
     expect(context).not.toContain('Do not include this.');
+  });
+
+  it('adds current skill snapshot context when enabled', async () => {
+    delete process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED;
+    const sharedSkillDir = path.join(tmpDir, 'SHARED', 'skills', 'runtime-canary');
+    fs.mkdirSync(sharedSkillDir, { recursive: true });
+    fs.writeFileSync(path.join(sharedSkillDir, 'SKILL.md'), [
+      '---',
+      'name: runtime-canary',
+      'description: Report the runtime canary phrase.',
+      '---',
+      '',
+      'When asked for the runtime canary phrase, reply exactly: central skills are live.',
+    ].join('\n'));
+
+    const context = await buildAnswerContext({
+      agentKey: 'enzo',
+      source: 'discord',
+      text: 'Use the runtime canary skill.',
+      agentsRoot: tmpDir,
+    });
+
+    expect(context).toContain('<domain_state domain="skills">');
+    expect(context).toContain('skill_snapshot_version=');
+    expect(context).toContain('<available_skills>');
+    expect(context).toContain('runtime-canary');
+    expect(context).toContain('Report the runtime canary phrase.');
   });
 
   it('prefers Remy meal-planning extension rows over local files', async () => {

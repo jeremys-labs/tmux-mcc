@@ -3,6 +3,7 @@ import path from 'path';
 import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
+import { buildSkillSnapshot } from './skill-snapshot.js';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_SCHEDULER_ROOT = '/Users/jeremylahners/.claude/scheduler';
@@ -21,15 +22,18 @@ export interface HealthCheck {
 
 export interface AgentRuntimeHealth {
   agent: string;
+  runtimeLaunchConfig: HealthCheck;
   runtimeType: HealthCheck;
   discordBridgeConfig: HealthCheck;
   codexInboundBridge: HealthCheck;
   codexOutboundDiscordMcp: HealthCheck;
+  discordOutboundMcp: HealthCheck;
   openBrainMemoryKey: HealthCheck;
   lastOpenBrainCapture: HealthCheck;
   lastOpenBrainSearch: HealthCheck;
   groomingQueueDepth: HealthCheck;
   agentMail: HealthCheck;
+  skillSnapshot: HealthCheck;
   migrationReadiness: HealthCheck;
 }
 
@@ -157,6 +161,21 @@ function hasDiscordChannels(accessPath: string): boolean {
   return Object.keys(access?.groups ?? {}).length > 0;
 }
 
+function runtimeLaunchConfigCheck(agent: string, agentsRoot: string): HealthCheck {
+  const launchPath = path.join(agentsRoot, agent, 'launch.sh');
+  const launch = readOptional(launchPath);
+  if (!launch) return check('error', `missing launcher at ${launchPath}`);
+  const required = [
+    'npm run runtime-launch',
+    `--agent ${agent}`,
+    '--runtime "$LAUNCH_RUNTIME"',
+  ];
+  const missing = required.filter((needle) => !launch.includes(needle));
+  return missing.length === 0
+    ? check('ok', 'launcher delegates to runtime-launch')
+    : check('error', `launcher is not Pi/runtime-launch ready; missing ${missing.join(', ')}`);
+}
+
 function codexDiscordMcpCheck(agent: string, agentsRoot: string, codexConfigPath: string): HealthCheck {
   const config = readOptional(codexConfigPath);
   if (!config) return check('warn', `Codex config missing at ${codexConfigPath}`);
@@ -172,6 +191,33 @@ function codexDiscordMcpCheck(agent: string, agentsRoot: string, codexConfigPath
   }
 
   return check('ok', `discord-${agent} MCP configured`);
+}
+
+function claudeDiscordMcpCheck(agent: string, agentsRoot: string): HealthCheck {
+  const mcpPath = path.join(agentsRoot, agent, '.mcp.json');
+  const mcp = readJsonFile<{ mcpServers?: Record<string, { command?: string; type?: string }> }>(mcpPath);
+  if (!mcp) return check('error', `Claude .mcp.json missing or invalid at ${mcpPath}`);
+
+  const expectedWrapperPath = path.join(agentsRoot, agent, 'bin', 'discord-mcp-wrapper');
+  const server = Object.values(mcp.mcpServers ?? {}).find((entry) => entry.command === expectedWrapperPath);
+  if (!server) return check('error', `missing Discord MCP server command ${expectedWrapperPath} in .mcp.json`);
+  if (!fileExists(expectedWrapperPath)) return check('error', `missing outbound Discord MCP wrapper at ${expectedWrapperPath}`);
+  return check('ok', '.mcp.json Discord MCP configured');
+}
+
+function discordOutboundMcpCheck(agent: string, runtime: string | null, agentsRoot: string, codexConfigPath: string, hasDiscordConfig: boolean): HealthCheck {
+  if (!hasDiscordConfig) return check('ok', 'no Discord channels configured');
+  if (runtime === 'codex') return codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath);
+  if (runtime === 'claude') return claudeDiscordMcpCheck(agent, agentsRoot);
+  return check('error', `unsupported runtime for outbound Discord MCP: ${runtime ?? 'unknown'}`);
+}
+
+function skillSnapshotCheck(agent: string, agentsRoot: string): HealthCheck {
+  const snapshot = buildSkillSnapshot({ agentKey: agent, agentsRoot });
+  const names = snapshot.skills.map((skill) => skill.name);
+  if (snapshot.skills.length === 0) return check('error', 'no central or agent skills projected');
+  if (!names.includes('runtime-canary')) return check('error', `runtime-canary skill missing from snapshot ${snapshot.version}`);
+  return check('ok', `${snapshot.skills.length} skill(s), version=${snapshot.version}`);
 }
 
 function tmuxSessionExists(session: string): boolean {
@@ -197,10 +243,14 @@ function codexInboundBridgeCheck(agent: string, contentRoot: string): HealthChec
   if (bridgeConfigContainsAgent(defaultConfigPath, agent)) {
     return check('ok', `shared bridge config includes ${agent}`);
   }
+  const inboxPath = path.join(contentRoot, 'bridge', 'inbox', `${agent}.jsonl`);
+  if (fileExists(inboxPath)) {
+    return check('ok', `runtime inbox exists at ${inboxPath}`);
+  }
   if (tmuxSessionExists(`${agent}-discord-bridge`)) {
     return check('ok', `tmux bridge session ${agent}-discord-bridge is running`);
   }
-  return check('warn', `no shared bridge binding or ${agent}-discord-bridge tmux session found`);
+  return check('warn', `no shared bridge binding, runtime inbox, or ${agent}-discord-bridge tmux session found`);
 }
 
 function worstStatus(checks: HealthCheck[]): HealthStatus {
@@ -213,13 +263,16 @@ function worstStatus(checks: HealthCheck[]): HealthStatus {
 function evaluateMigrationReadiness(agent: AgentRuntimeHealth): HealthCheck {
   const blockers: string[] = [];
   const requiredChecks: Array<[string, HealthCheck]> = [
+    ['launcher', agent.runtimeLaunchConfig],
     ['runtime', agent.runtimeType],
     ['discord', agent.discordBridgeConfig],
     ['codex-in', agent.codexInboundBridge],
-    ['codex-out', agent.codexOutboundDiscordMcp],
+    ['discord-out', agent.discordOutboundMcp],
     ['ob1-key', agent.openBrainMemoryKey],
     ['capture', agent.lastOpenBrainCapture],
     ['search', agent.lastOpenBrainSearch],
+    ['mail', agent.agentMail],
+    ['skills', agent.skillSnapshot],
   ];
 
   for (const [name, health] of requiredChecks) {
@@ -524,6 +577,7 @@ function buildAgentHealth(
 
   return {
     agent,
+    runtimeLaunchConfig: runtimeLaunchConfigCheck(agent, agentsRoot),
     runtimeType: runtime
       ? check(runtime === 'claude' || runtime === 'codex' ? 'ok' : 'warn', runtime)
       : check('unknown', '.runtime file missing'),
@@ -532,12 +586,13 @@ function buildAgentHealth(
         ? check('ok', 'Discord access.json and .env present with allowed channel(s)')
         : check('warn', 'Discord access.json has no allowed channel groups')
       : check('warn', `missing ${fileExists(discordAccess) ? '' : 'access.json '}${fileExists(discordEnv) ? '' : '.env'}`.trim()),
-    codexInboundBridge: isCodex && hasDiscordConfig
+    codexInboundBridge: hasDiscordConfig
       ? codexInboundBridgeCheck(agent, contentRoot)
-      : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
+      : check('ok', 'no Discord channels configured'),
     codexOutboundDiscordMcp: isCodex && hasDiscordConfig
       ? codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath)
       : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
+    discordOutboundMcp: discordOutboundMcpCheck(agent, runtime, agentsRoot, codexConfigPath, hasDiscordConfig),
     openBrainMemoryKey: fileExists(ob1Env)
       ? check('ok', '.open-brain/memory.env present')
       : check('warn', '.open-brain/memory.env missing'),
@@ -553,6 +608,7 @@ function buildAgentHealth(
         ? check('ok', '0 unresolved raw_capture rows in recent window')
         : check('warn', `${queueDepth} unresolved raw_capture row(s) in recent window`),
     agentMail: check((mailStats?.inboxDepth ?? 0) > 0 ? 'warn' : 'ok', `${mailStats?.inboxDepth ?? 0} unacked inbox item(s)${oldestUnacked}`),
+    skillSnapshot: skillSnapshotCheck(agent, agentsRoot),
     migrationReadiness: check('unknown', 'pending'),
   };
 }
@@ -607,15 +663,18 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     scheduler.checks.staleRecurring,
     agentMail.outbox,
     ...agentHealth.flatMap((agent) => [
+      agent.runtimeLaunchConfig,
       agent.runtimeType,
       agent.discordBridgeConfig,
       agent.codexInboundBridge,
       agent.codexOutboundDiscordMcp,
+      agent.discordOutboundMcp,
       agent.openBrainMemoryKey,
       agent.lastOpenBrainCapture,
       agent.lastOpenBrainSearch,
       agent.groomingQueueDepth,
       agent.agentMail,
+      agent.skillSnapshot,
     ]),
   ];
   const status = worstStatus(allChecks);
@@ -641,15 +700,17 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
 
   for (const agent of report.agents) {
     const checks = [
+      `launcher=${agent.runtimeLaunchConfig.status}:${agent.runtimeLaunchConfig.detail}`,
       `runtime=${agent.runtimeType.status}:${agent.runtimeType.detail}`,
       `discord=${agent.discordBridgeConfig.status}`,
       `codex-in=${agent.codexInboundBridge.status}:${agent.codexInboundBridge.detail}`,
-      `codex-out=${agent.codexOutboundDiscordMcp.status}:${agent.codexOutboundDiscordMcp.detail}`,
+      `discord-out=${agent.discordOutboundMcp.status}:${agent.discordOutboundMcp.detail}`,
       `ob1-key=${agent.openBrainMemoryKey.status}`,
       `capture=${agent.lastOpenBrainCapture.status}:${agent.lastOpenBrainCapture.detail}`,
       `search=${agent.lastOpenBrainSearch.status}:${agent.lastOpenBrainSearch.detail}`,
       `grooming=${agent.groomingQueueDepth.status}:${agent.groomingQueueDepth.detail}`,
       `mail=${agent.agentMail.status}:${agent.agentMail.detail}`,
+      `skills=${agent.skillSnapshot.status}:${agent.skillSnapshot.detail}`,
       `migration=${agent.migrationReadiness.status}:${agent.migrationReadiness.detail}`,
     ];
     lines.push(`- ${agent.agent}: ${checks.join('; ')}`);

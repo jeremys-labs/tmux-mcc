@@ -55,8 +55,12 @@ import json
 from pathlib import Path
 access = json.loads(Path("$ACCESS_PATH").read_text())
 groups = []
-for channel_id in (access.get("groups") or {}).keys():
-    groups.append({"agentKey": "$AGENT_KEY", "channelId": channel_id})
+for channel_id, cfg in (access.get("groups") or {}).items():
+    sub = {"agentKey": "$AGENT_KEY", "channelId": channel_id}
+    bot_ids = cfg.get("allowBotIds") if isinstance(cfg, dict) else None
+    if bot_ids:
+        sub["allowBotIds"] = bot_ids
+    groups.append(sub)
 print(json.dumps(groups))
 PY
 )"

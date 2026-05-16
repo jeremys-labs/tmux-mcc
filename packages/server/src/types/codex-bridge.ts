@@ -3,6 +3,7 @@ export interface CodexBridgeSubscription {
   channelId: string;
   threadId?: string;
   workspaceDir?: string;
+  allowBotIds?: string[];
 }
 
 export interface CodexBridgeConfig {
