@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useChannelStore } from '../stores/channelStore';
+import { useAgentStore } from '../stores/agentStore';
 import { formatPreciseTime, formatRelativeTime } from '../utils/formatTime';
 
 export function ChannelsView() {
   const interactions = useChannelStore((s) => s.interactions);
   const loading = useChannelStore((s) => s.loading);
   const fetchInteractions = useChannelStore((s) => s.fetch);
+  const agents = useAgentStore((s) => s.agents);
   const [filter, setFilter] = useState('');
+
+  function agentLabel(key: string): string {
+    const agent = agents[key];
+    return agent ? `${agent.emoji} ${agent.name}` : key;
+  }
 
   useEffect(() => {
     void fetchInteractions();
@@ -71,9 +78,9 @@ export function ChannelsView() {
                 className="rounded-2xl border border-white/10 bg-surface-raised p-4 shadow-sm"
               >
                 <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="font-semibold text-text-primary">{interaction.from}</span>
+                  <span className="font-semibold text-text-primary">{agentLabel(interaction.from)}</span>
                   <span className="text-text-secondary">→</span>
-                  <span className="font-semibold text-text-primary">{interaction.to}</span>
+                  <span className="font-semibold text-text-primary">{agentLabel(interaction.to)}</span>
                   {interaction.type ? (
                     <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-accent">
                       {interaction.type}

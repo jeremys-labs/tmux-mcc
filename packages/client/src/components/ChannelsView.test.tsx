@@ -4,15 +4,24 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import { ChannelsView } from './ChannelsView';
 
 const mockChannelStore = vi.fn();
+const mockAgentStore = vi.fn();
 
 vi.mock('../stores/channelStore', () => ({
   useChannelStore: (selector: (state: any) => any) => mockChannelStore(selector),
+}));
+
+vi.mock('../stores/agentStore', () => ({
+  useAgentStore: (selector: (state: any) => any) => mockAgentStore(selector),
 }));
 
 describe('ChannelsView', () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    // Default: no agents known
+    mockAgentStore.mockImplementation((selector: (state: any) => any) =>
+      selector({ agents: {} })
+    );
   });
 
   afterEach(() => {
@@ -90,5 +99,37 @@ describe('ChannelsView', () => {
 
     expect(screen.getByText(/no recent agent interactions yet/i)).toBeTruthy();
     expect(screen.getByText(/when agents start coordinating/i)).toBeTruthy();
+  });
+
+  it('shows agent emoji when the agent key is known', () => {
+    mockAgentStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        agents: {
+          marcus: { name: 'Marcus', emoji: '🔧', role: 'Dev Lead' },
+          isla: { name: 'Isla', emoji: '🌟', role: 'PM' },
+        },
+      })
+    );
+
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'marcus',
+            to: 'isla',
+            content: 'PR is ready.',
+            type: 'handoff',
+            timestamp: new Date('2026-05-09T12:00:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    expect(screen.getByText(/🔧/)).toBeTruthy();
+    expect(screen.getByText(/🌟/)).toBeTruthy();
   });
 });
