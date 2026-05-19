@@ -117,7 +117,15 @@ describe('runtime health', () => {
     writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
     fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
     fs.mkdirSync(path.join(agentRoot, '.claude', 'discord'), { recursive: true });
-    fs.writeFileSync(path.join(agentRoot, 'launch.sh'), '#!/bin/zsh\n');
+    fs.mkdirSync(path.join(agentsRoot, 'SHARED', 'skills', 'runtime-canary'), { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsRoot, 'SHARED', 'skills', 'runtime-canary', 'SKILL.md'),
+      '---\nname: runtime-canary\ndescription: Runtime canary skill for agent isolation testing.\n---\nCanary.\n',
+    );
+    fs.writeFileSync(
+      path.join(agentRoot, 'launch.sh'),
+      '#!/bin/zsh\nnpm run runtime-launch --agent pilot --runtime "$LAUNCH_RUNTIME"\n',
+    );
     fs.writeFileSync(path.join(agentRoot, '.runtime'), 'codex\n');
     fs.writeFileSync(path.join(agentRoot, '.claude', 'discord', '.env'), 'DISCORD_BOT_TOKEN=x\n');
     writeJson(path.join(agentRoot, '.claude', 'discord', 'access.json'), {
@@ -255,7 +263,15 @@ describe('runtime health', () => {
     fs.mkdirSync(path.join(agentRoot, '.open-brain'), { recursive: true });
     fs.mkdirSync(path.join(root, 'tmux', 'bridge', 'inbox'), { recursive: true });
     fs.mkdirSync(path.join(root, 'tmux', 'bridge', 'runtime-state'), { recursive: true });
-    fs.writeFileSync(path.join(agentRoot, 'launch.sh'), '#!/bin/zsh\n');
+    fs.mkdirSync(path.join(agentsRoot, 'SHARED', 'skills', 'runtime-canary'), { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsRoot, 'SHARED', 'skills', 'runtime-canary', 'SKILL.md'),
+      '---\nname: runtime-canary\ndescription: Runtime canary skill for agent isolation testing.\n---\nCanary.\n',
+    );
+    fs.writeFileSync(
+      path.join(agentRoot, 'launch.sh'),
+      '#!/bin/zsh\nnpm run runtime-launch --agent pilot --runtime "$LAUNCH_RUNTIME"\n',
+    );
     fs.writeFileSync(path.join(agentRoot, '.runtime'), 'codex\n');
     fs.writeFileSync(path.join(agentRoot, '.claude', 'discord', '.env'), 'DISCORD_BOT_TOKEN=x\n');
     fs.writeFileSync(path.join(agentRoot, 'bin', 'discord-mcp-wrapper'), '#!/bin/zsh\n');
