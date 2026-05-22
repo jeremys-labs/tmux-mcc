@@ -59,6 +59,17 @@ export class TmuxRelay {
       // Pane may not exist or have no scrollback yet — continue silently
     }
 
+    // Fail fast if the agent window doesn't exist — avoids creating an orphaned
+    // grouped session that leaks when select-window then throws.
+    const windows = execFileSync(
+      'tmux',
+      ['list-windows', '-t', session, '-F', '#{window_name}'],
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!windows.includes(agentName)) {
+      throw new Error(`tmux window '${agentName}' not found in session '${session}'`);
+    }
+
     // Create a per-client grouped session so each web client gets its own
     // independent current-window pointer. Multiple clients can view different
     // agents simultaneously without tmux cross-client interference.
@@ -69,11 +80,17 @@ export class TmuxRelay {
       ['new-session', '-d', '-s', mccSessionName, '-t', session],
       { stdio: ['pipe', 'pipe', 'pipe'] }
     );
-    execFileSync(
-      'tmux',
-      ['select-window', '-t', `${mccSessionName}:${agentName}`],
-      { stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+    try {
+      execFileSync(
+        'tmux',
+        ['select-window', '-t', `${mccSessionName}:${agentName}`],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+    } catch (err) {
+      // Clean up the grouped session we just created before throwing
+      try { execFileSync('tmux', ['kill-session', '-t', mccSessionName], { stdio: ['pipe', 'pipe', 'pipe'] }); } catch { /* ignore */ }
+      throw err;
+    }
 
     const term = pty.spawn('tmux', ['attach-session', '-t', mccSessionName], {
       name: 'xterm-256color',
