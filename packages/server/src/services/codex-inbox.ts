@@ -75,6 +75,12 @@ function resolveDiscordReplyTool(bindingName?: string): string {
 export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
   const content = entry.content.replace(/\s+/g, ' ').trim();
   const replyTool = resolveDiscordReplyTool(entry.bindingName);
+  const bridgeReplyCommand = [
+    'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
+    `--agent ${entry.agentKey}`,
+    `--chat-id ${entry.channelId}`,
+    '--text-file /absolute/path/to/reply.txt',
+  ].join(' ');
   const attrs = [
     'source="discord"',
     `chat_id="${entry.channelId}"`,
@@ -92,7 +98,9 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     '',
     'Routing rule for this turn:',
     '- This message arrived from Discord via the Messaging Gateway.',
-    `- Reply on Discord using \`${replyTool}\`.`,
+    `- Reply on Discord through the shared bridge using \`${bridgeReplyCommand}\`, especially for text containing shell-sensitive characters like \`$\`, backticks, quotes, or backslashes.`,
+    '- Short shell-safe replies may still use `--text`, but do not wrap arbitrary message text in double quotes.',
+    `- Do not use raw direct Discord curl. Treat \`${replyTool}\` as legacy unless explicitly instructed otherwise.`,
     `- Use \`chat_id: "${entry.channelId}"\`.`,
     '- Do not pass `reply_to` unless Jeremy explicitly asks for a threaded reply.',
     '- Do not answer only in the local relay session.',

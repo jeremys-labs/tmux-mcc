@@ -195,22 +195,22 @@ function codexDiscordMcpCheck(agent: string, agentsRoot: string, codexConfigPath
   return check('ok', `discord-${agent} MCP configured`);
 }
 
-function claudeDiscordMcpCheck(agent: string, agentsRoot: string): HealthCheck {
-  const mcpPath = path.join(agentsRoot, agent, '.mcp.json');
-  const mcp = readJsonFile<{ mcpServers?: Record<string, { command?: string; type?: string }> }>(mcpPath);
-  if (!mcp) return check('error', `Claude .mcp.json missing or invalid at ${mcpPath}`);
+function sharedDiscordBridgeOutboundCheck(agent: string, contentRoot: string): HealthCheck {
+  const socketPath = process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock';
+  if (fileExists(socketPath)) return check('ok', `shared Discord bridge socket exists at ${socketPath}`);
 
-  const expectedWrapperPath = path.join(agentsRoot, agent, 'bin', 'discord-mcp-wrapper');
-  const server = Object.values(mcp.mcpServers ?? {}).find((entry) => entry.command === expectedWrapperPath);
-  if (!server) return check('error', `missing Discord MCP server command ${expectedWrapperPath} in .mcp.json`);
-  if (!fileExists(expectedWrapperPath)) return check('error', `missing outbound Discord MCP wrapper at ${expectedWrapperPath}`);
-  return check('ok', '.mcp.json Discord MCP configured');
+  const defaultConfigPath = path.join(contentRoot, 'bridge', 'discord.json');
+  if (bridgeConfigContainsAgent(defaultConfigPath, agent)) {
+    return check('warn', `shared bridge config includes ${agent}, but socket missing at ${socketPath}`);
+  }
+
+  return check('warn', `shared Discord bridge socket missing at ${socketPath}`);
 }
 
-function discordOutboundMcpCheck(agent: string, runtime: string | null, agentsRoot: string, codexConfigPath: string, hasDiscordConfig: boolean): HealthCheck {
+function discordOutboundMcpCheck(agent: string, runtime: string | null, agentsRoot: string, codexConfigPath: string, contentRoot: string, hasDiscordConfig: boolean): HealthCheck {
   if (!hasDiscordConfig) return check('ok', 'no Discord channels configured');
   if (runtime === 'codex') return codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath);
-  if (runtime === 'claude') return claudeDiscordMcpCheck(agent, agentsRoot);
+  if (runtime === 'claude') return sharedDiscordBridgeOutboundCheck(agent, contentRoot);
   return check('error', `unsupported runtime for outbound Discord MCP: ${runtime ?? 'unknown'}`);
 }
 
@@ -612,7 +612,7 @@ function buildAgentHealth(
     codexOutboundDiscordMcp: isCodex && hasDiscordConfig
       ? codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath)
       : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
-    discordOutboundMcp: discordOutboundMcpCheck(agent, runtime, agentsRoot, codexConfigPath, hasDiscordConfig),
+    discordOutboundMcp: discordOutboundMcpCheck(agent, runtime, agentsRoot, codexConfigPath, contentRoot, hasDiscordConfig),
     openBrainMemoryKey: fileExists(ob1Env)
       ? check('ok', '.open-brain/memory.env present')
       : check('warn', '.open-brain/memory.env missing'),

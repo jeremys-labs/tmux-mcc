@@ -11,7 +11,7 @@ export const RUNTIME_EVENT_NAMES = [
 ] as const;
 
 export type RuntimeEventName = (typeof RUNTIME_EVENT_NAMES)[number];
-export type RuntimeEventSource = 'agent_mail' | 'discord' | 'runtime_handoff' | 'runtime';
+export type RuntimeEventSource = 'agent_mail' | 'discord' | 'bluebubbles' | 'runtime_handoff' | 'runtime';
 
 export interface RuntimeEvent {
   name: RuntimeEventName;
@@ -43,7 +43,7 @@ export interface CreateRuntimeEventEmitterInput {
 
 export interface RuntimeInboundTurnInput {
   emit: RuntimeEventEmitter['emit'];
-  source: Extract<RuntimeEventSource, 'agent_mail' | 'discord'>;
+  source: Extract<RuntimeEventSource, 'agent_mail' | 'discord' | 'bluebubbles'>;
   messageId: string;
   preparePrompt: () => Promise<string>;
   submitPrompt: (prompt: string) => Promise<void>;

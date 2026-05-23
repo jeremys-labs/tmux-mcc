@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { buildRuntimeLaunchPlan, parseSupportedRuntime } from './services/runtime-launch-plan.js';
+import { projectRuntimeMcpServers } from './services/runtime-mcp-projection.js';
 
 type ParsedArgs = {
   agent: string;
@@ -53,16 +54,24 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 const parsed = parseArgs(process.argv.slice(2));
+const runtime = parseSupportedRuntime(parsed.runtime);
 const plan = buildRuntimeLaunchPlan({
   agent: parsed.agent,
   agentDir: parsed.agentDir,
-  runtime: parseSupportedRuntime(parsed.runtime),
+  runtime,
   model: parsed.model || undefined,
 });
 
 if (parsed.dryRun) {
   process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
   process.exit(0);
+}
+
+if (runtime === 'claude') {
+  projectRuntimeMcpServers({
+    agent: parsed.agent,
+    agentDir: parsed.agentDir,
+  });
 }
 
 const child = spawn(plan.command, plan.args, {

@@ -8,8 +8,10 @@ import { ensureRuntimeStateDir } from './services/codex-inbox.js';
 import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { enqueuePendingRuntimeAgentMail } from './services/runtime-agent-mail.js';
+import { enqueuePendingRuntimeBlueBubblesInbox } from './services/runtime-bluebubbles-inbox.js';
 import { enqueuePendingRuntimeDiscordInbox } from './services/runtime-discord-inbox.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
+import { detectModelSwitch, injectModelSwitch } from './services/runtime-model-switch.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -25,6 +27,7 @@ const store = createAgentMailStore();
 const taskQueue = createRuntimeTaskQueue();
 const deliveredMailIds = new Set<string>();
 const deliveredInboxIds = new Set<string>();
+const deliveredBlueBubblesIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -76,6 +79,17 @@ taskQueue.enqueue(async () => {
 });
 
 const poller = setInterval(() => {
+  enqueuePendingRuntimeBlueBubblesInbox({
+    agentKey,
+    contentRoot,
+    deliveredIds: deliveredBlueBubblesIds,
+    events: runtimeEvents,
+    openBrainConfig,
+    runtimeLogPath,
+    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    enqueue: taskQueue.enqueue,
+  });
+
   enqueuePendingRuntimeDiscordInbox({
     agentKey,
     contentRoot,
@@ -84,6 +98,10 @@ const poller = setInterval(() => {
     openBrainConfig,
     runtimeLogPath,
     submitPrompt: async (prompt, entry) => {
+      const switchResult = detectModelSwitch(entry.content);
+      if (switchResult.matched && switchResult.model) {
+        await injectModelSwitch(term, switchResult.model);
+      }
       await submitRuntimePrompt(term, prompt);
     },
     enqueue: taskQueue.enqueue,

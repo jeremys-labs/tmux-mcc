@@ -4,6 +4,7 @@
 # Usage:
 #   ./scripts/start-agents-from-launchers.sh
 #   ./scripts/start-agents-from-launchers.sh marcus eli
+#   ALLOW_PROTECTED_AGENTS=1 ./scripts/start-agents-from-launchers.sh hercule
 #   AGENTS_DIR=/path/to/agents ./scripts/start-agents-from-launchers.sh
 
 set -euo pipefail
@@ -11,7 +12,8 @@ set -euo pipefail
 TMUX_CONF="${HOME}/.config/mcc-tmux/tmux.conf"
 SESSION="${TMUX_SESSION:-agents}"
 AGENTS_DIR="${AGENTS_DIR:-/Volumes/Repo-Drive/agents}"
-DEFAULT_AGENTS=(marcus isla harper eli sage remy lena nova zara jordan enzo hercule)
+DEFAULT_AGENTS=(marcus isla eli remy lena nova zara jordan val enzo hercule)
+PROTECTED_AGENTS=()
 
 if [[ $# -gt 0 ]]; then
   AGENTS=("$@")
@@ -69,6 +71,15 @@ runtime_for() {
 
 FIRST=true
 for agent in "${AGENTS[@]}"; do
+  if [[ "${ALLOW_PROTECTED_AGENTS:-0}" != "1" ]]; then
+    for protected_agent in "${PROTECTED_AGENTS[@]}"; do
+      if [[ "$agent" == "$protected_agent" ]]; then
+        echo "ERROR: '$agent' is protected; set ALLOW_PROTECTED_AGENTS=1 to start it explicitly" >&2
+        exit 1
+      fi
+    done
+  fi
+
   work_dir="${AGENTS_DIR}/${agent}"
 
   if [[ ! -d "$work_dir" ]]; then

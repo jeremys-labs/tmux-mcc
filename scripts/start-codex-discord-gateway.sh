@@ -82,5 +82,7 @@ printf '%s\n' "$JSON" > "$TMP_CONFIG"
 
 export DISCORD_BRIDGE_CONFIG="$TMP_CONFIG"
 export CONTENT_ROOT
+export DISCORD_BRIDGE_LOCAL_ADDRESS="${DISCORD_BRIDGE_LOCAL_ADDRESS:-192.168.7.20}"
+export DISCORD_BRIDGE_BACKFILL_INTERVAL_MS="${DISCORD_BRIDGE_BACKFILL_INTERVAL_MS:-0}"
 
 exec npm run bridge:codex-discord --workspace=@mcc-tmux/server --prefix "$MCC_DIR"

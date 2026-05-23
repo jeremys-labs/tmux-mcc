@@ -85,7 +85,9 @@ describe('codex inbox', () => {
     expect(prompt).toContain('<channel source="discord" chat_id="c1" message_id="m3" user="Jeremy"');
     expect(prompt).toContain('thread_id="t1"');
     expect(prompt).toContain('Can you reply to me?');
-    expect(prompt).toContain('Reply on Discord using `mcp__discord_eli__.reply`.');
+    expect(prompt).toContain('--text-file /absolute/path/to/reply.txt');
+    expect(prompt).toContain('shell-sensitive characters');
+    expect(prompt).toContain('do not wrap arbitrary message text in double quotes');
     expect(prompt).toContain('`chat_id: "c1"`');
     expect(prompt).toContain('Do not pass `reply_to` unless Jeremy explicitly asks for a threaded reply.');
     expect(prompt).toContain('Do not answer only in the local relay session.');
