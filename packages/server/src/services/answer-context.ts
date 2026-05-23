@@ -10,8 +10,12 @@ import { buildSkillSnapshot } from './skill-snapshot.js';
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_SCHEDULED_DISCORD_OUTBOX_PATH = '/Volumes/Repo-Drive/agents/SHARED/scheduled-discord-outbox.jsonl';
+const DEFAULT_OPEN_BRAIN_RECALL_TRACE_PATH = '/Volumes/Repo-Drive/agents/SHARED/open-brain-recall-traces.jsonl';
+const DEFAULT_JEREMY_TIMEZONE_PATH = '/Volumes/Repo-Drive/agents/SHARED/jeremy-timezone.json';
+const DEFAULT_JEREMY_TIMEZONE = 'America/New_York';
+const DEFAULT_JEREMY_TIMEZONE_LABEL = 'Home (Charlotte)';
 
-export type InboundTurnSource = 'discord' | 'agent_mail' | 'claude_prompt';
+export type InboundTurnSource = 'discord' | 'agent_mail' | 'bluebubbles' | 'claude_prompt';
 
 export interface BuildAnswerContextInput {
   agentKey: string;
@@ -44,15 +48,121 @@ interface OpenBrainRestConfig {
   serviceRoleKey: string;
 }
 
+interface JeremyTimezoneFile {
+  timezone?: unknown;
+  label?: unknown;
+  reason?: unknown;
+  valid_from?: unknown;
+  valid_until?: unknown;
+  source_ref?: unknown;
+}
+
+interface JeremyTimezoneContext {
+  timezone: string;
+  label: string;
+  reason: string;
+  sourceRef: string | null;
+  status: 'active' | 'fallback';
+}
+
+export interface OpenBrainRecallTraceResult {
+  rank: number;
+  similarity: number | null;
+  source_ref: string | null;
+  scope: string | null;
+  project: string | null;
+  authority: string | null;
+}
+
+interface OpenBrainRecallTrace {
+  timestamp: string;
+  agent: string;
+  source: InboundTurnSource;
+  lookup: 'semantic' | 'recent';
+  project?: string | null;
+  scope?: string | null;
+  threshold?: number | null;
+  limit?: number | null;
+  query: string;
+  result_count: number;
+  empty: boolean;
+  error?: string;
+  results: OpenBrainRecallTraceResult[];
+}
+
 function compactText(value: string, maxLength = 2400): string {
   const text = value.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 3).trim()}...`;
 }
 
-export function formatJeremyDateTime(now = new Date()): string {
+function isValidTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function timezoneDateKey(now: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes): string => (
+    parts.find((part) => part.type === type)?.value ?? ''
+  );
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function timezoneAbbreviation(timezone: string): string {
+  if (timezone === 'America/New_York') return 'ET';
+  if (timezone === 'America/Chicago') return 'CT';
+  if (timezone === 'Europe/London') return 'BST';
+  return timezone;
+}
+
+function fallbackJeremyTimezone(): JeremyTimezoneContext {
+  return {
+    timezone: DEFAULT_JEREMY_TIMEZONE,
+    label: DEFAULT_JEREMY_TIMEZONE_LABEL,
+    reason: 'default',
+    sourceRef: null,
+    status: 'fallback',
+  };
+}
+
+export function resolveJeremyTimezone(
+  now = new Date(),
+  filePath = process.env.JEREMY_TIMEZONE_PATH ?? DEFAULT_JEREMY_TIMEZONE_PATH,
+): JeremyTimezoneContext {
+  const parsed = safeJsonFile(filePath) as JeremyTimezoneFile | null;
+  if (!parsed || typeof parsed !== 'object') return fallbackJeremyTimezone();
+
+  const timezone = typeof parsed.timezone === 'string' ? parsed.timezone : '';
+  if (!timezone || !isValidTimezone(timezone)) return fallbackJeremyTimezone();
+
+  const today = timezoneDateKey(now, timezone);
+  const validFrom = typeof parsed.valid_from === 'string' ? parsed.valid_from : null;
+  const validUntil = typeof parsed.valid_until === 'string' ? parsed.valid_until : null;
+  if (validFrom && today < validFrom) return fallbackJeremyTimezone();
+  if (validUntil && today > validUntil) return fallbackJeremyTimezone();
+
+  return {
+    timezone,
+    label: typeof parsed.label === 'string' && parsed.label.trim() ? parsed.label.trim() : timezone,
+    reason: typeof parsed.reason === 'string' && parsed.reason.trim() ? parsed.reason.trim() : 'configured',
+    sourceRef: typeof parsed.source_ref === 'string' && parsed.source_ref.trim() ? parsed.source_ref.trim() : null,
+    status: 'active',
+  };
+}
+
+export function formatJeremyDateTime(now = new Date(), timezoneContext = resolveJeremyTimezone(now)): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezoneContext.timezone,
     weekday: 'long',
     year: 'numeric',
     month: '2-digit',
@@ -68,8 +178,53 @@ export function formatJeremyDateTime(now = new Date()): string {
     value('weekday'),
     `${value('year')}-${value('month')}-${value('day')}`,
     `${value('hour')}:${value('minute')} ${value('dayPeriod')}`,
-    'ET',
+    timezoneAbbreviation(timezoneContext.timezone),
   ].join(' ');
+}
+
+function formatJeremyTimezoneSource(context: JeremyTimezoneContext): string {
+  const source = context.sourceRef ? ` (${context.sourceRef})` : '';
+  const prefix = context.status === 'fallback' ? 'Timezone source: fallback' : 'Timezone source';
+  return `${prefix}: ${context.label} — ${context.reason}${source}.`;
+}
+
+function resolveRecallTracePath(): string | null {
+  if (process.env.OPEN_BRAIN_RECALL_TRACE_DISABLED === '1') return null;
+  return process.env.OPEN_BRAIN_RECALL_TRACE_PATH ?? DEFAULT_OPEN_BRAIN_RECALL_TRACE_PATH;
+}
+
+export function parseSearchAgentMemoryTrace(text: string): OpenBrainRecallTraceResult[] {
+  const blocks = text.split(/^--- Result /m).slice(1);
+  const parsed = blocks.map((block): OpenBrainRecallTraceResult | null => {
+    const header = block.match(/^(\d+) \(([\d.]+)% match\)/);
+    if (!header) return null;
+    const line = (label: string) => block.match(new RegExp(`^${label}:\\s*(.+)$`, 'm'))?.[1]?.trim() ?? null;
+    return {
+      rank: Number(header[1]),
+      similarity: Number(header[2]) / 100,
+      source_ref: line('Source'),
+      scope: line('Scope'),
+      project: line('Project'),
+      authority: line('Authority'),
+    };
+  }).filter((item): item is OpenBrainRecallTraceResult => Boolean(item));
+  const topLevel: OpenBrainRecallTraceResult[] = [];
+  for (const item of parsed) {
+    const previousRank = topLevel[topLevel.length - 1]?.rank ?? 0;
+    if (item.rank > previousRank) topLevel.push(item);
+  }
+  return topLevel;
+}
+
+function writeRecallTrace(trace: OpenBrainRecallTrace): void {
+  const tracePath = resolveRecallTracePath();
+  if (!tracePath) return;
+  try {
+    fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+    fs.appendFileSync(tracePath, `${JSON.stringify(trace)}\n`);
+  } catch (error) {
+    process.stderr.write(`[answer-context] failed to write OB1 recall trace: ${String(error)}\n`);
+  }
 }
 
 function readFileIfExists(filePath: string, maxLength = 2400): string {
@@ -528,11 +683,52 @@ function buildMemoryQuery(input: BuildAnswerContextInput): string {
 async function safeSearchAgentMemory(
   config: OpenBrainRuntimeConfig,
   args: Record<string, unknown>,
+  traceInput?: {
+    agentKey: string;
+    source: InboundTurnSource;
+    lookup: 'semantic' | 'recent';
+  },
 ): Promise<string> {
+  const startedAt = new Date();
+  const query = typeof args.query === 'string' ? args.query : '';
   try {
     const result = await callOpenBrainTool(config, 'search_agent_memory', args);
+    if (traceInput) {
+      const results = parseSearchAgentMemoryTrace(result.text);
+      writeRecallTrace({
+        timestamp: startedAt.toISOString(),
+        agent: traceInput.agentKey,
+        source: traceInput.source,
+        lookup: traceInput.lookup,
+        project: typeof args.project === 'string' ? args.project : null,
+        scope: typeof args.scope === 'string' ? args.scope : null,
+        threshold: typeof args.threshold === 'number' ? args.threshold : null,
+        limit: typeof args.limit === 'number' ? args.limit : null,
+        query: compactText(query, 2000),
+        result_count: results.length,
+        empty: results.length === 0,
+        results,
+      });
+    }
     return result.text;
-  } catch {
+  } catch (error) {
+    if (traceInput) {
+      writeRecallTrace({
+        timestamp: startedAt.toISOString(),
+        agent: traceInput.agentKey,
+        source: traceInput.source,
+        lookup: traceInput.lookup,
+        project: typeof args.project === 'string' ? args.project : null,
+        scope: typeof args.scope === 'string' ? args.scope : null,
+        threshold: typeof args.threshold === 'number' ? args.threshold : null,
+        limit: typeof args.limit === 'number' ? args.limit : null,
+        query: compactText(query, 2000),
+        result_count: 0,
+        empty: true,
+        error: String(error),
+        results: [],
+      });
+    }
     return '';
   }
 }
@@ -546,7 +742,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
       project: input.project ?? undefined,
       limit: 6,
       threshold: 0.1,
-    }),
+    }, { agentKey: input.agentKey, source: input.source, lookup: 'semantic' }),
     input.freshSessionFirstTurn
       ? safeSearchAgentMemory(input.openBrainConfig, {
         agent_id: input.openBrainConfig.agentId,
@@ -554,7 +750,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
         project: input.project ?? undefined,
         limit: 5,
         threshold: 0.1,
-      })
+      }, { agentKey: input.agentKey, source: input.source, lookup: 'recent' })
       : Promise.resolve(''),
   ]);
   const sections = [
@@ -629,9 +825,11 @@ export function formatAnswerContext(input: {
   domainContexts?: DomainContext[];
 }): string {
   const sections: string[] = [];
+  const timezoneContext = resolveJeremyTimezone(input.now);
   sections.push([
     '<domain_state domain="current_datetime">',
-    `The current date/time in Jeremy's timezone is ${formatJeremyDateTime(input.now)}.`,
+    `The current date/time in Jeremy's timezone is ${formatJeremyDateTime(input.now, timezoneContext)}.`,
+    formatJeremyTimezoneSource(timezoneContext),
     '</domain_state>',
   ].join('\n'));
 
