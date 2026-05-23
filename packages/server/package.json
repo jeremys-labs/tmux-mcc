@@ -12,6 +12,7 @@
     "open-brain:grooming-review": "tsx src/open-brain-grooming-review.ts",
     "open-brain:memory-audit": "tsx src/open-brain-memory-audit.ts",
     "open-brain:runtime-health": "tsx src/open-brain-runtime-health.ts",
+    "open-brain:runtime-health-monitor": "tsx src/open-brain-runtime-health-monitor.ts",
     "open-brain:evict-raw-captures": "tsx src/open-brain-evict-raw-captures.ts",
     "open-brain:backfill-quality-score": "node /Volumes/Repo-Drive/src/open-brain/scripts/backfill-quality-score.mjs",
     "open-brain:hook": "tsx src/open-brain-hook.ts",

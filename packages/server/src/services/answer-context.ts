@@ -50,6 +50,28 @@ function compactText(value: string, maxLength = 2400): string {
   return `${text.slice(0, maxLength - 3).trim()}...`;
 }
 
+export function formatJeremyDateTime(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'long',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes): string => (
+    parts.find((part) => part.type === type)?.value ?? ''
+  );
+  return [
+    value('weekday'),
+    `${value('year')}-${value('month')}-${value('day')}`,
+    `${value('hour')}:${value('minute')} ${value('dayPeriod')}`,
+    'ET',
+  ].join(' ');
+}
+
 function readFileIfExists(filePath: string, maxLength = 2400): string {
   try {
     return compactText(fs.readFileSync(filePath, 'utf8'), maxLength);
@@ -602,10 +624,17 @@ export function isFreshSessionFirstTurnPayload(payload: Record<string, unknown>)
 export function formatAnswerContext(input: {
   agentKey: string;
   source: InboundTurnSource;
+  now?: Date;
   memoryText?: string;
   domainContexts?: DomainContext[];
 }): string {
   const sections: string[] = [];
+  sections.push([
+    '<domain_state domain="current_datetime">',
+    `The current date/time in Jeremy's timezone is ${formatJeremyDateTime(input.now)}.`,
+    '</domain_state>',
+  ].join('\n'));
+
   const memoryText = input.memoryText?.trim();
   if (memoryText) {
     sections.push([
@@ -623,7 +652,6 @@ export function formatAnswerContext(input: {
     ].join('\n'));
   }
 
-  if (sections.length === 0) return '';
   return [
     `[Answer Context] Retrieved before ${input.source} turn for ${input.agentKey}.`,
     '',
@@ -650,6 +678,7 @@ export async function buildAnswerContext(input: BuildAnswerContextInput): Promis
   return formatAnswerContext({
     agentKey: input.agentKey,
     source: input.source,
+    now,
     memoryText,
     domainContexts: [
       ...(scheduledDiscordOutbox ? [{

@@ -2,7 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildAnswerContext, formatAnswerContext, isFreshSessionFirstTurnPayload } from './answer-context.js';
+import {
+  buildAnswerContext,
+  formatAnswerContext,
+  formatJeremyDateTime,
+  isFreshSessionFirstTurnPayload,
+} from './answer-context.js';
 
 describe('answer context', () => {
   let tmpDir: string;
@@ -55,16 +60,35 @@ describe('answer context', () => {
     const prompt = formatAnswerContext({
       agentKey: 'remy',
       source: 'discord',
+      now: new Date('2026-05-23T02:22:00.000Z'),
       memoryText: 'Shared team rule',
       domainContexts: [{ domain: 'food', content: 'Dinner is burgers.' }],
     });
 
     expect(prompt).toContain('[Answer Context] Retrieved before discord turn for remy.');
+    expect(prompt).toContain("The current date/time in Jeremy's timezone is Friday 2026-05-22 10:22 PM ET.");
     expect(prompt).toContain('<governed_memory>');
     expect(prompt).toContain('Shared team rule');
     expect(prompt).toContain('<domain_state domain="food">');
     expect(prompt).toContain('Dinner is burgers.');
     expect(prompt).toContain('Do not ask Jeremy for information that is present here');
+  });
+
+  it('formats Jeremy timezone datetime in Eastern time', () => {
+    expect(formatJeremyDateTime(new Date('2026-05-23T02:22:00.000Z'))).toBe('Friday 2026-05-22 10:22 PM ET');
+  });
+
+  it('injects current Eastern datetime even without memory hits', async () => {
+    const context = await buildAnswerContext({
+      agentKey: 'eli',
+      source: 'discord',
+      text: 'Quick check',
+      agentsRoot: tmpDir,
+      now: new Date('2026-05-23T02:22:00.000Z'),
+    });
+
+    expect(context).toContain('[Answer Context] Retrieved before discord turn for eli.');
+    expect(context).toContain("The current date/time in Jeremy's timezone is Friday 2026-05-22 10:22 PM ET.");
   });
 
   it('loads Remy meal state for food turns', async () => {
