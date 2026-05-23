@@ -7,7 +7,8 @@ import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { ensureRuntimeStateDir } from './services/codex-inbox.js';
 import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
-import { createRuntimeEventEmitter } from './services/runtime-events.js';
+import { appendRuntimeEventToLog, createRuntimeEventEmitter } from './services/runtime-events.js';
+import { createSharedActivitySink } from './services/runtime-shared-activity.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { detectModelSwitch, injectModelSwitch } from './services/runtime-model-switch.js';
@@ -32,7 +33,7 @@ const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
   runtime: 'claude',
-  logPath: runtimeLogPath,
+  sinks: [appendRuntimeEventToLog(runtimeLogPath), createSharedActivitySink()],
 });
 
 const preSession = await buildPreSessionPrompt({
@@ -66,7 +67,14 @@ term.onData((data) => {
   process.stdout.write(data);
 });
 
-term.onExit(({ exitCode }) => {
+term.onExit(async ({ exitCode, signal }) => {
+  await runtimeEvents.emit('onRuntimeHealth', {
+    source: 'runtime',
+    metadata: {
+      status: 'stopped',
+      reason: signal ? `signal:${signal}` : `exit:${exitCode}`,
+    },
+  });
   cleanup();
   process.exit(exitCode);
 });
