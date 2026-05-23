@@ -82,3 +82,19 @@ Before migrating another agent, define:
 5. A canary proving private-lane segregation and relevant answer-time recall.
 
 Do not import domain history as flat memory when a structured extension exists or is clearly needed.
+
+## Evaluated and Shelved: Pi as Sole Runtime (2026-05-23)
+
+We spiked replacing the Claude Code / Codex PTY wrappers with the Pi agent harness (`@earendil-works/pi-coding-agent`) so Pi would be the single runtime worker inside our session envelope. The technical integration worked — `createAgentSession` instantiated against Enzo's SOUL.md, skills loaded from `~/.claude/skills` + plugin caches via `loadSkillsFromDir` and `appendSystemPromptOverride`, the full coding-tool set registered (read/bash/edit/write/find/grep/ls), and Pi's event stream surfaced structured responses including API errors.
+
+**The blocker is Anthropic billing policy, not Pi technology.** Anthropic's enforcement (effective 2026-04-04) routes any third-party OAuth client — including Pi's — into a separate `extra_usage` billing pool that is not covered by Claude Pro / Max subscriptions, regardless of whether the request impersonates Claude Code's `client_id`, `user-agent`, and beta headers. The routing decision is server-side, based on the OAuth token issued. Pi cannot forge a Claude-Code-issued token; OpenClaw, Hermes Agent, NemoClaw, GSD2, and Zed are all in the same bucket. The May 14 Anthropic announcement of an "Agent SDK Credit pool" (effective 2026-06-15) gives third-party agent apps a small per-plan monthly credit ($20 Pro / $100 Max 5x / $200 Max 20x), but the ceiling is too low for production fleet traffic.
+
+**Conclusion:** Continue Pi-orchestrates-Claude-Code as the durable architecture. mcc-tmux owns the wrappers; Claude Code / Codex remain the runtime workers because only they get Max-tier subscription billing. The Pi-owned services we shipped during the evaluation are kept on `main`:
+
+- `services/runtime-inbox-pollers.ts` (Slice 4)
+- `services/runtime-pre-session.ts` (Slice 2)
+- `services/runtime-shared-activity.ts` (Slice 3)
+
+The throwaway branch `spike/pi-embed` was deleted on 2026-05-23. The `jeremys-labs/pi-extensions` monorepo was scaffolded to host Pi MCP and sub-agent extensions; it is now archived as a reference artifact rather than an active project.
+
+**Revisit trigger:** if Anthropic raises the Agent SDK credit ceiling to a level that covers fleet-scale agent traffic, or if we adopt a non-Anthropic provider (Google Gemini, OpenAI, local) for production agents, redo the spike. Until then, Pi remains a researched alternative, not a planned migration.
