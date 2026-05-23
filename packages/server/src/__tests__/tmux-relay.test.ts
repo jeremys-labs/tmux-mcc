@@ -30,6 +30,17 @@ describe('TmuxRelay', () => {
       (mockTerm as any)._dataCallback = cb;
       return { dispose: mockTerm.dispose };
     });
+    // Return sensible defaults for each execFileSync call pattern:
+    // - capture-pane: empty scrollback (no prior output to preload)
+    // - list-windows: 'marcus' window exists in the agents session
+    // - all other calls (new-session, select-window, kill-session): void return, not used
+    vi.mocked(childProcess.execFileSync).mockImplementation(
+      (_cmd: string, args: readonly string[]) => {
+        if (Array.isArray(args) && args.includes('capture-pane')) return '';
+        if (Array.isArray(args) && args.includes('list-windows')) return 'marcus\n';
+        return undefined as any;
+      }
+    );
     relay = new TmuxRelay();
   });
 
@@ -137,5 +148,24 @@ describe('TmuxRelay', () => {
 
   it('silently ignores detach for unknown session id', () => {
     expect(() => relay.detach('nonexistent')).not.toThrow();
+  });
+
+  it('throws if the agent window does not exist in the tmux session', () => {
+    // list-windows returns a list that does not include 'missing-agent'
+    vi.mocked(childProcess.execFileSync).mockImplementation(
+      (_cmd: string, args: readonly string[]) => {
+        if (Array.isArray(args) && args.includes('capture-pane')) return '';
+        if (Array.isArray(args) && args.includes('list-windows')) return 'marcus\nela\n';
+        return undefined as any;
+      }
+    );
+    const mockWs = { send: vi.fn(), readyState: WebSocket.OPEN };
+    expect(() => relay.attach('missing-agent', mockWs as any, { cols: 80, rows: 24 })).toThrow(
+      /tmux window 'missing-agent' not found/
+    );
+    // Must NOT have created a grouped session before the throw
+    expect(vi.mocked(childProcess.execFileSync)).not.toHaveBeenCalledWith(
+      'tmux', ['new-session', '-d', '-s', expect.anything(), '-t', 'agents'], expect.anything()
+    );
   });
 });
