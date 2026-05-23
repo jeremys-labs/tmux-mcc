@@ -1,4 +1,5 @@
 import process from 'process';
+import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
@@ -10,6 +11,10 @@ import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { detectModelSwitch, injectModelSwitch } from './services/runtime-model-switch.js';
+import {
+  buildPreSessionPrompt,
+  writePreSessionPromptFile,
+} from './services/runtime-pre-session.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -29,6 +34,25 @@ const runtimeEvents = createRuntimeEventEmitter({
   runtime: 'claude',
   logPath: runtimeLogPath,
 });
+
+const preSession = await buildPreSessionPrompt({
+  agentKey,
+  runtime: 'claude',
+  openBrainConfig,
+});
+if (preSession.text) {
+  const file = writePreSessionPromptFile({ agentKey, contentRoot, text: preSession.text });
+  claudeArgs.push('--append-system-prompt-file', file);
+  fs.appendFileSync(
+    runtimeLogPath,
+    `${new Date().toISOString()} pre-session prompt assembled (soul=${preSession.hasSoul} memory=${preSession.hasMemory}) -> ${file}\n`,
+  );
+} else {
+  fs.appendFileSync(
+    runtimeLogPath,
+    `${new Date().toISOString()} pre-session prompt skipped (no SOUL.md, no OB1 config)\n`,
+  );
+}
 
 const term = pty.spawn('claude', claudeArgs, {
   name: process.env.TERM || 'xterm-256color',
