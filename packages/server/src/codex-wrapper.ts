@@ -10,9 +10,7 @@ import {
 } from './services/codex-inbox.js';
 import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
-import { enqueuePendingRuntimeAgentMail } from './services/runtime-agent-mail.js';
-import { enqueuePendingRuntimeBlueBubblesInbox } from './services/runtime-bluebubbles-inbox.js';
-import { enqueuePendingRuntimeDiscordInbox } from './services/runtime-discord-inbox.js';
+import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
@@ -30,9 +28,6 @@ ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const taskQueue = createRuntimeTaskQueue();
 const mailStore = createAgentMailStore();
-const deliveredMailIds = new Set<string>();
-const deliveredInboxIds = new Set<string>();
-const deliveredBlueBubblesIds = new Set<string>();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -111,14 +106,14 @@ taskQueue.enqueue(async () => {
   });
 });
 
-const poller = setInterval(() => {
-  enqueuePendingRuntimeBlueBubblesInbox({
-    agentKey,
-    contentRoot,
-    deliveredIds: deliveredBlueBubblesIds,
-    events: runtimeEvents,
-    openBrainConfig,
-    runtimeLogPath,
+const pollers = startRuntimeInboxPollers({
+  agentKey,
+  contentRoot,
+  events: runtimeEvents,
+  openBrainConfig,
+  runtimeLogPath,
+  enqueue: taskQueue.enqueue,
+  blueBubbles: {
     submitPrompt: async (prompt, entry) => {
       const readinessResult = await waitForCodexInjectionWindow();
       if (readinessResult === 'timeout') {
@@ -127,16 +122,8 @@ const poller = setInterval(() => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
     },
-    enqueue: taskQueue.enqueue,
-  });
-
-  enqueuePendingRuntimeDiscordInbox({
-    agentKey,
-    contentRoot,
-    deliveredIds: deliveredInboxIds,
-    events: runtimeEvents,
-    openBrainConfig,
-    runtimeLogPath,
+  },
+  discord: {
     submitPrompt: async (prompt, entry) => {
       const readinessResult = await waitForCodexInjectionWindow();
       if (readinessResult === 'timeout') {
@@ -145,16 +132,9 @@ const poller = setInterval(() => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting ${entry.id}: ${prompt}\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
     },
-    enqueue: taskQueue.enqueue,
-  });
-
-  enqueuePendingRuntimeAgentMail({
-    agentKey,
+  },
+  agentMail: {
     mailStore,
-    deliveredIds: deliveredMailIds,
-    events: runtimeEvents,
-    openBrainConfig,
-    runtimeLogPath,
     submitPrompt: async (prompt, message) => {
       const readinessResult = await waitForCodexInjectionWindow();
       if (readinessResult === 'timeout') {
@@ -163,12 +143,11 @@ const poller = setInterval(() => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
     },
-    enqueue: taskQueue.enqueue,
-  });
-}, 2000);
+  },
+});
 
 function cleanup(): void {
-  clearInterval(poller);
+  pollers.stop();
   process.stdout.off('resize', resize);
   mailStore.close();
   if (process.stdin.isTTY) {
