@@ -205,6 +205,67 @@ describe('runtime health', () => {
     expect(report.agents[0].migrationReadiness.status).toBe('error');
   });
 
+  it('flags stale Discord inbox entries that have not crossed the delivery cursor', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const agentRoot = path.join(agentsRoot, 'pilot');
+    const contentRoot = path.join(root, 'content');
+    const codexConfigPath = path.join(root, 'config.toml');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agentRoot, '.claude', 'discord'), { recursive: true });
+    fs.mkdirSync(path.join(agentRoot, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(contentRoot, 'bridge', 'inbox'), { recursive: true });
+    fs.mkdirSync(path.join(contentRoot, 'bridge', 'runtime-state'), { recursive: true });
+    fs.writeFileSync(path.join(agentRoot, 'launch.sh'), '#!/bin/zsh\n');
+    fs.writeFileSync(path.join(agentRoot, '.runtime'), 'codex\n');
+    fs.writeFileSync(path.join(agentRoot, '.claude', 'discord', '.env'), 'DISCORD_BOT_TOKEN=x\n');
+    fs.writeFileSync(path.join(agentRoot, 'bin', 'discord-mcp-wrapper'), '#!/bin/zsh\n');
+    fs.writeFileSync(codexConfigPath, '[mcp_servers.discord-pilot]\ncommand = "/tmp/pilot-wrapper"\n');
+    writeJson(path.join(agentRoot, '.claude', 'discord', 'access.json'), {
+      groups: {
+        '1234567890': { requireMention: false },
+      },
+    });
+    writeJson(path.join(contentRoot, 'bridge', 'discord.json'), {
+      bindings: [{
+        name: 'pilot',
+        tokenEnvVar: 'DISCORD_BOT_TOKEN_ENZO',
+        subscriptions: [{ agentKey: 'pilot', channelId: '1234567890' }],
+      }],
+    });
+    fs.writeFileSync(path.join(contentRoot, 'bridge', 'runtime-state', 'pilot.json'), '{"lineCount":0}\n');
+    fs.writeFileSync(path.join(contentRoot, 'bridge', 'inbox', 'pilot.jsonl'), `${JSON.stringify({
+      id: 'discord_1',
+      bindingName: 'pilot',
+      agentKey: 'pilot',
+      channelId: '1234567890',
+      author: 'jeremy',
+      content: 'are you listening',
+      timestamp: '2026-05-12T01:30:00.000Z',
+    })}\n`);
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['pilot'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing-agent-mail.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      codexConfigPath,
+      contentRoot,
+      now: new Date('2026-05-12T01:45:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.agents[0].discordInboxDelivery.status).toBe('error');
+    expect(report.agents[0].discordInboxDelivery.detail).toContain('1 pending Discord inbox entries');
+    expect(report.agents[0].migrationReadiness.detail).toContain('delivery=error');
+    expect(formatRuntimeHealthSummary(report)).toContain('delivery=error');
+  });
+
   it('treats OB1 MCP isError search responses as runtime-health errors', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');

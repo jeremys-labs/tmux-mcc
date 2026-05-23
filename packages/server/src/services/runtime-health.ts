@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
 import { buildSkillSnapshot } from './skill-snapshot.js';
+import { readPendingInboxEntries } from './codex-inbox.js';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_SCHEDULER_ROOT = '/Users/jeremylahners/.claude/scheduler';
@@ -26,6 +27,7 @@ export interface AgentRuntimeHealth {
   runtimeType: HealthCheck;
   discordBridgeConfig: HealthCheck;
   codexInboundBridge: HealthCheck;
+  discordInboxDelivery: HealthCheck;
   codexOutboundDiscordMcp: HealthCheck;
   discordOutboundMcp: HealthCheck;
   openBrainMemoryKey: HealthCheck;
@@ -253,6 +255,21 @@ function codexInboundBridgeCheck(agent: string, contentRoot: string): HealthChec
   return check('warn', `no shared bridge binding, runtime inbox, or ${agent}-discord-bridge tmux session found`);
 }
 
+function discordInboxDeliveryCheck(agent: string, contentRoot: string, now: Date, hasDiscordConfig: boolean): HealthCheck {
+  if (!hasDiscordConfig) return check('ok', 'no Discord channels configured');
+  const pending = readPendingInboxEntries(contentRoot, agent);
+  if (pending.length === 0) return check('ok', '0 pending Discord inbox entries');
+
+  const oldest = pending
+    .map((entry) => entry.timestamp)
+    .filter((timestamp): timestamp is string => typeof timestamp === 'string' && timestamp.length > 0)
+    .sort()[0];
+  const age = oldest ? minutesBetween(now, oldest) : undefined;
+  const ageDetail = oldest && age !== undefined ? `; oldest ${oldest} (${age}m)` : '';
+  const status = age !== undefined && age >= 5 ? 'error' : 'warn';
+  return check(status, `${pending.length} pending Discord inbox entries after cursor${ageDetail}`);
+}
+
 function worstStatus(checks: HealthCheck[]): HealthStatus {
   if (checks.some((item) => item.status === 'error')) return 'error';
   if (checks.some((item) => item.status === 'warn')) return 'warn';
@@ -267,6 +284,7 @@ function evaluateMigrationReadiness(agent: AgentRuntimeHealth): HealthCheck {
     ['runtime', agent.runtimeType],
     ['discord', agent.discordBridgeConfig],
     ['codex-in', agent.codexInboundBridge],
+    ['delivery', agent.discordInboxDelivery],
     ['discord-out', agent.discordOutboundMcp],
     ['ob1-key', agent.openBrainMemoryKey],
     ['capture', agent.lastOpenBrainCapture],
@@ -560,6 +578,7 @@ function buildAgentHealth(
   mailStats: AgentMailHealth['agents'][string] | undefined,
   codexConfigPath: string,
   contentRoot: string,
+  now: Date,
 ): AgentRuntimeHealth {
   const agentRoot = path.join(agentsRoot, agent);
   const runtime = readTrimmed(path.join(agentRoot, '.runtime'));
@@ -589,6 +608,7 @@ function buildAgentHealth(
     codexInboundBridge: hasDiscordConfig
       ? codexInboundBridgeCheck(agent, contentRoot)
       : check('ok', 'no Discord channels configured'),
+    discordInboxDelivery: discordInboxDeliveryCheck(agent, contentRoot, now, hasDiscordConfig),
     codexOutboundDiscordMcp: isCodex && hasDiscordConfig
       ? codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath)
       : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
@@ -652,6 +672,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     agentMail.agents[agent],
     options.codexConfigPath ?? DEFAULT_CODEX_CONFIG_PATH,
     options.contentRoot ?? DEFAULT_CONTENT_ROOT,
+    now,
   ));
   for (const agent of agentHealth) {
     agent.migrationReadiness = evaluateMigrationReadiness(agent);
@@ -667,6 +688,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
       agent.runtimeType,
       agent.discordBridgeConfig,
       agent.codexInboundBridge,
+      agent.discordInboxDelivery,
       agent.codexOutboundDiscordMcp,
       agent.discordOutboundMcp,
       agent.openBrainMemoryKey,
@@ -704,6 +726,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
       `runtime=${agent.runtimeType.status}:${agent.runtimeType.detail}`,
       `discord=${agent.discordBridgeConfig.status}`,
       `codex-in=${agent.codexInboundBridge.status}:${agent.codexInboundBridge.detail}`,
+      `delivery=${agent.discordInboxDelivery.status}:${agent.discordInboxDelivery.detail}`,
       `discord-out=${agent.discordOutboundMcp.status}:${agent.discordOutboundMcp.detail}`,
       `ob1-key=${agent.openBrainMemoryKey.status}`,
       `capture=${agent.lastOpenBrainCapture.status}:${agent.lastOpenBrainCapture.detail}`,
