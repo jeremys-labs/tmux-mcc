@@ -433,7 +433,7 @@ describe('answer context', () => {
     expect(context).toContain('Recent Discord MCP outage work');
     const recentBody = JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string);
     expect(recentBody.params.arguments.query).toBe('recent isla session activity work troubleshooting restart current task');
-    expect(recentBody.params.arguments.limit).toBe(5);
+    expect(recentBody.params.arguments.limit).toBe(3);
     const traces = fs.readFileSync(process.env.OPEN_BRAIN_RECALL_TRACE_PATH!, 'utf8')
       .trim()
       .split(/\r?\n/)

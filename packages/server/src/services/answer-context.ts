@@ -90,6 +90,13 @@ interface OpenBrainRecallTrace {
   results: OpenBrainRecallTraceResult[];
 }
 
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function compactText(value: string, maxLength = 2400): string {
   const text = value.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length <= maxLength) return text;
@@ -735,21 +742,24 @@ async function safeSearchAgentMemory(
 
 async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<string> {
   if (!input.openBrainConfig) return '';
+  const semanticLimit = numberFromEnv('ANSWER_CONTEXT_MEMORY_LIMIT', 3);
+  const semanticThreshold = numberFromEnv('ANSWER_CONTEXT_MEMORY_THRESHOLD', 0.45);
+  const sectionCap = numberFromEnv('ANSWER_CONTEXT_MEMORY_CHAR_CAP', 2400);
   const [semanticResult, recentResult] = await Promise.all([
     safeSearchAgentMemory(input.openBrainConfig, {
       agent_id: input.openBrainConfig.agentId,
       query: buildMemoryQuery(input),
       project: input.project ?? undefined,
-      limit: 6,
-      threshold: 0.1,
+      limit: semanticLimit,
+      threshold: semanticThreshold,
     }, { agentKey: input.agentKey, source: input.source, lookup: 'semantic' }),
     input.freshSessionFirstTurn
       ? safeSearchAgentMemory(input.openBrainConfig, {
         agent_id: input.openBrainConfig.agentId,
         query: `recent ${input.openBrainConfig.agentId} session activity work troubleshooting restart current task`,
         project: input.project ?? undefined,
-        limit: 5,
-        threshold: 0.1,
+        limit: 3,
+        threshold: semanticThreshold,
       }, { agentKey: input.agentKey, source: input.source, lookup: 'recent' })
       : Promise.resolve(''),
   ]);
@@ -762,7 +772,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
       ].join('\n')
       : '',
   ].filter((section) => section.trim());
-  return compactText(sections.join('\n\n'), 5200);
+  return compactText(sections.join('\n\n'), sectionCap);
 }
 
 function hasAssistantRole(value: unknown): boolean {
