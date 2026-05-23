@@ -33,7 +33,7 @@ export {
 };
 
 export function shouldSkipWrapperInjectedAnswerContext(agentKey: string, promptText: string): boolean {
-  if (agentKey !== 'enzo') return false;
+  if (!agentKey) return false;
   if (!promptText.includes('[Answer Context] Retrieved before')) return false;
   return promptText.includes('[Agent Mail] New message from') || promptText.includes('[Messaging Gateway] Discord message routed');
 }

@@ -107,6 +107,15 @@ function parseMcpResponse(raw: string): ToolCallResult {
     if (parsed.error) {
       throw new Error(parsed.error.message ?? JSON.stringify(parsed.error));
     }
+    if (parsed.result?.isError) {
+      const errorText = Array.isArray(parsed.result.content)
+        ? parsed.result.content
+          .map((item: { text?: unknown }) => (typeof item?.text === 'string' ? item.text : ''))
+          .filter(Boolean)
+          .join('\n')
+        : '';
+      throw new Error(errorText || JSON.stringify(parsed.result));
+    }
     const content = parsed.result?.content;
     if (Array.isArray(content)) {
       return {

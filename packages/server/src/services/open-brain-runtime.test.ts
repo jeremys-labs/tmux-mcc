@@ -68,6 +68,20 @@ describe('open brain runtime', () => {
     );
   });
 
+  it('throws when streamable MCP responses return isError', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Agent \\"jordan\\" is not enabled"}],"isError":true},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(callOpenBrainTool(
+      { agentId: 'jordan', endpointUrl: 'https://example.test/open-brain' },
+      'capture_agent_memory',
+      { agent_id: 'jordan' },
+    )).rejects.toThrow('Agent "jordan" is not enabled');
+  });
+
   it('formats startup recall as injectable context', () => {
     const prompt = formatStartupMemoryForCodex('eli', 'Found memory');
 

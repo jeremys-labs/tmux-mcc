@@ -3,7 +3,6 @@ import path from 'path';
 import { resolveContentRoot } from '../config.js';
 import { callOpenBrainTool, resolveOpenBrainGroomingConfig } from './open-brain-runtime.js';
 
-const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_DISCORD_ENV_PATH = '/Volumes/Repo-Drive/agents/eli/.claude/discord/.env';
 const DEFAULT_DIGEST_CHANNEL_ID = '1491979880747765810';
 
@@ -38,11 +37,6 @@ export interface GroomingDigestState {
   lastDecisionDigestIso?: string;
 }
 
-interface OpenBrainRestConfig {
-  projectUrl: string;
-  secretKey: string;
-}
-
 function parseEnvFile(text: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const rawLine of text.split(/\r?\n/)) {
@@ -57,17 +51,6 @@ function parseEnvFile(text: string): Record<string, string> {
 
 function readEnvFile(filePath: string): Record<string, string> {
   return parseEnvFile(fs.readFileSync(filePath, 'utf8'));
-}
-
-function resolveOpenBrainRestConfig(): OpenBrainRestConfig {
-  const envPath = process.env.OPEN_BRAIN_ENV_PATH ?? DEFAULT_OPEN_BRAIN_ENV_PATH;
-  const env = readEnvFile(envPath);
-  const projectUrl = env.SUPABASE_PROJECT_URL;
-  const secretKey = env.SUPABASE_SECRET_KEY;
-  if (!projectUrl || !secretKey) {
-    throw new Error(`Missing SUPABASE_PROJECT_URL or SUPABASE_SECRET_KEY in ${envPath}`);
-  }
-  return { projectUrl, secretKey };
 }
 
 export function resolveDigestStatePath(): string {
@@ -95,66 +78,36 @@ export function defaultSinceIso(now = new Date(), state = readDigestState()): st
 }
 
 export async function fetchRawCapturesSince(sinceIso: string, limit = 80): Promise<RawCaptureRow[]> {
-  if (process.env.OPEN_BRAIN_GROOMING_MAINTENANCE_ENABLED === '1') {
-    const groomingConfig = resolveOpenBrainGroomingConfig();
-    if (!groomingConfig) {
-      throw new Error('Open Brain grooming maintenance path enabled but grooming-bot config is missing. Set OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY.');
-    }
-    const result = await callOpenBrainTool(groomingConfig, 'list_agent_raw_captures', {
-      agent_id: groomingConfig.agentId,
-      since: sinceIso,
-      limit,
-    });
-    const parsed = JSON.parse(result.text) as { rows?: RawCaptureRow[] };
-    return parsed.rows ?? [];
+  const groomingConfig = resolveOpenBrainGroomingConfig();
+  if (!groomingConfig) {
+    throw new Error('Open Brain grooming-bot config is missing. Set OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY.');
   }
-
-  const config = resolveOpenBrainRestConfig();
-  const url = new URL('/rest/v1/thoughts', config.projectUrl);
-  url.searchParams.set('select', 'id,created_at,content,metadata');
-  url.searchParams.set('metadata->>scope', 'eq.raw_capture');
-  url.searchParams.set('metadata->>grooming_status', 'is.null');
-  url.searchParams.set('created_at', `gte.${sinceIso}`);
-  url.searchParams.set('order', 'created_at.asc');
-  url.searchParams.set('limit', String(limit));
-
-  const response = await fetch(url, {
-    headers: {
-      apikey: config.secretKey,
-      Authorization: `Bearer ${config.secretKey}`,
-    },
+  const result = await callOpenBrainTool(groomingConfig, 'list_agent_raw_captures', {
+    agent_id: groomingConfig.agentId,
+    since: sinceIso,
+    limit,
   });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`Open Brain raw capture query failed: ${response.status} ${body}`);
-  }
-  return JSON.parse(body) as RawCaptureRow[];
+  const parsed = JSON.parse(result.text) as { rows?: RawCaptureRow[] };
+  return parsed.rows ?? [];
 }
 
 export async function fetchRawCapturesBySourceRefs(sourceRefs: string[]): Promise<RawCaptureRow[]> {
   const refs = [...new Set(sourceRefs.map((ref) => ref.trim()).filter(Boolean))];
   if (refs.length === 0) return [];
 
-  const config = resolveOpenBrainRestConfig();
+  const groomingConfig = resolveOpenBrainGroomingConfig();
+  if (!groomingConfig) {
+    throw new Error('Open Brain grooming-bot config is missing. Set OPEN_BRAIN_GROOMING_AGENT_MEMORY_KEY.');
+  }
+
   const rows: RawCaptureRow[] = [];
   for (const ref of refs) {
-    const url = new URL('/rest/v1/thoughts', config.projectUrl);
-    url.searchParams.set('select', 'id,created_at,content,metadata');
-    url.searchParams.set('metadata->>source_ref', `eq.${ref}`);
-    url.searchParams.set('order', 'created_at.desc');
-    url.searchParams.set('limit', '10');
-
-    const response = await fetch(url, {
-      headers: {
-        apikey: config.secretKey,
-        Authorization: `Bearer ${config.secretKey}`,
-      },
+    const result = await callOpenBrainTool(groomingConfig, 'get_agent_raw_capture', {
+      agent_id: groomingConfig.agentId,
+      source_ref: ref,
     });
-    const body = await response.text();
-    if (!response.ok) {
-      throw new Error(`Open Brain source_ref query failed for ${ref}: ${response.status} ${body}`);
-    }
-    rows.push(...JSON.parse(body) as RawCaptureRow[]);
+    const row = JSON.parse(result.text) as RawCaptureRow | null;
+    if (row) rows.push(row);
   }
   return rows;
 }

@@ -61,7 +61,7 @@ describe('open brain Claude hook helpers', () => {
     });
   });
 
-  it('skips duplicate answer-context only for Enzo wrapper-injected agent-mail turns', () => {
+  it('skips duplicate answer-context for any wrapper-injected agent-mail turn', () => {
     const prompt = [
       '[Answer Context] Retrieved before agent_mail turn for enzo.',
       '',
@@ -71,10 +71,10 @@ describe('open brain Claude hook helpers', () => {
     ].join('\n');
 
     expect(shouldSkipWrapperInjectedAnswerContext('enzo', prompt)).toBe(true);
-    expect(shouldSkipWrapperInjectedAnswerContext('eli', prompt)).toBe(false);
+    expect(shouldSkipWrapperInjectedAnswerContext('eli', prompt)).toBe(true);
   });
 
-  it('skips duplicate answer-context only for Enzo wrapper-injected Discord turns', () => {
+  it('skips duplicate answer-context for any wrapper-injected Discord turn', () => {
     const prompt = [
       '[Answer Context] Retrieved before discord turn for enzo.',
       '',
@@ -84,7 +84,7 @@ describe('open brain Claude hook helpers', () => {
     ].join('\n');
 
     expect(shouldSkipWrapperInjectedAnswerContext('enzo', prompt)).toBe(true);
-    expect(shouldSkipWrapperInjectedAnswerContext('marcus', prompt)).toBe(false);
+    expect(shouldSkipWrapperInjectedAnswerContext('marcus', prompt)).toBe(true);
   });
 
   it('keeps answer-context enabled for normal Enzo manual prompts', () => {
