@@ -522,11 +522,23 @@ export async function runScheduledGrooming(
     const clusterPlansByKey = new Map(clusterPlans.map((plan) => [plan.cluster.key, plan] as const));
     for (const plan of clusterPlans) {
       if (!clusterHandled(plan)) continue;
-      await applyGroomingClusterClassification(plan.cluster, plan.classification, options.actorAgent);
+      try {
+        await applyGroomingClusterClassification(plan.cluster, plan.classification, options.actorAgent);
+      } catch (error) {
+        // Fail-soft: one missing/poisoned raw_capture must not stall the whole
+        // batch. Earlier code threw the whole digest on a single 'No raw_capture
+        // found' from patch_agent_raw_capture_metadata and left the pipeline
+        // dead for ~18 days (2026-05-05 → 2026-05-23). Log and continue.
+        process.stderr.write(`[open-brain-grooming] cluster classification failed for ${plan.cluster.key}: ${String(error)}\n`);
+      }
     }
     for (const plan of itemPlans) {
       if (itemHandledByCluster(plan, clusterPlansByKey)) continue;
-      await applyGroomingClassification(plan.row, plan.classification, options.actorAgent);
+      try {
+        await applyGroomingClassification(plan.row, plan.classification, options.actorAgent);
+      } catch (error) {
+        process.stderr.write(`[open-brain-grooming] item classification failed for ${String(plan.row.metadata.source_ref ?? plan.row.id)}: ${String(error)}\n`);
+      }
     }
   }
 
