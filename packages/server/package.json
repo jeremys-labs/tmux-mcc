@@ -21,6 +21,7 @@
     "open-brain:canary": "tsx src/open-brain-canary.ts",
     "open-brain:seed-agent-history": "tsx src/open-brain-seed-agent-history.ts",
     "runtime-handoff": "tsx src/runtime-handoff.ts",
+    "a2a-poller": "tsx src/a2a-poller.ts",
     "runtime-launch": "tsx src/runtime-launch.ts",
     "runtime-scheduled-job": "tsx src/runtime-scheduled-job.ts",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
@@ -30,6 +31,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@agent-comms/a2a-client": "file:../../../agent-comms/packages/a2a-client",
     "@agent-comms/discord-bridge": "file:../../../agent-comms/packages/discord-bridge",
     "@agent-comms/mailbox": "file:../../../agent-comms/packages/mailbox",
     "better-sqlite3": "^11.0.0",
