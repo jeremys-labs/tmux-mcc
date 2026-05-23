@@ -63,6 +63,16 @@ export interface GroomingScheduledResult {
   reviewCandidates: GroomingScheduledCandidate[];
   classifierFailureCount: number;
   classifierFailureCycles: number;
+  /**
+   * Highest `created_at` observed in the fetched batch, when any rows were
+   * fetched. Callers should advance the digest state's `lastRunIso` to this
+   * value rather than `now()` so a batch that hit the per-run row limit can
+   * be resumed on the next call instead of orphaning the tail.
+   *
+   * Undefined when no rows were fetched — in that case callers may safely
+   * advance the cursor to `now()` since there is nothing left to process.
+   */
+  maxProcessedCreatedAt?: string;
 }
 
 export interface GroomingScheduleOptions {
@@ -558,6 +568,10 @@ export async function runScheduledGrooming(
     classifierFailureCycles,
   );
 
+  const maxProcessedCreatedAt = rawCaptureRows.length > 0
+    ? rawCaptureRows.reduce((max, row) => (row.created_at > max ? row.created_at : max), rawCaptureRows[0]!.created_at)
+    : undefined;
+
   return {
     digest,
     rawCaptureCount: rawCaptureRows.length,
@@ -567,5 +581,6 @@ export async function runScheduledGrooming(
     reviewCandidates,
     classifierFailureCount,
     classifierFailureCycles,
+    ...(maxProcessedCreatedAt !== undefined ? { maxProcessedCreatedAt } : {}),
   };
 }

@@ -78,9 +78,15 @@ async function main(): Promise<void> {
     result.summary.itemNeedsReview + result.summary.clusterNeedsReview;
   const hasAnyActivity = result.rawCaptureCount > 0;
   const state = readDigestState();
+  // Advance the cursor to the highest created_at observed in this batch, not
+  // wall-clock `now()`. The fetch is bounded by a per-call row limit; jumping
+  // straight to `now()` orphans every row past the limit and the hourly cron
+  // never picks them up. Falling back to generatedAtIso is safe when the batch
+  // was empty (nothing left to process).
+  const lastRunIso = result.maxProcessedCreatedAt ?? generatedAtIso;
   const nextState = {
     ...state,
-    lastRunIso: generatedAtIso,
+    lastRunIso,
     classifierFailureCycles: result.classifierFailureCycles,
     pendingReviewCandidates: mergeReviewCandidates(
       state.pendingReviewCandidates,
