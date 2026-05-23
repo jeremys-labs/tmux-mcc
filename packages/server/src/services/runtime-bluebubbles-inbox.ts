@@ -127,11 +127,7 @@ export function formatBlueBubblesEntryForRuntime(entry: BlueBubblesInboxEntry): 
     '',
     `<channel ${attrs.join(' ')}>${content}</channel>`,
     '',
-    'Routing rule for this turn:',
-    '- This message arrived from BlueBubbles via the Messaging Gateway.',
-    '- Reply with the BlueBubbles reply tool when a text response is appropriate.',
-    `- Use \`chat_id: "${entry.chatId}"\`.`,
-    '- Do not answer only in the local relay session when the message needs an iMessage response.',
+    `Reply with the BlueBubbles reply tool when text is appropriate. chat_id="${entry.chatId}". Reply on BlueBubbles, not only the local session.`,
   ].join('\n');
 }
 

@@ -96,13 +96,6 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     '',
     `<channel ${attrs.join(' ')}>${content}</channel>`,
     '',
-    'Routing rule for this turn:',
-    '- This message arrived from Discord via the Messaging Gateway.',
-    `- Reply on Discord through the shared bridge using \`${bridgeReplyCommand}\`, especially for text containing shell-sensitive characters like \`$\`, backticks, quotes, or backslashes.`,
-    '- Short shell-safe replies may still use `--text`, but do not wrap arbitrary message text in double quotes.',
-    `- Do not use raw direct Discord curl. Treat \`${replyTool}\` as legacy unless explicitly instructed otherwise.`,
-    `- Use \`chat_id: "${entry.channelId}"\`.`,
-    '- Do not pass `reply_to` unless Jeremy explicitly asks for a threaded reply.',
-    '- Do not answer only in the local relay session.',
+    `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,
   ].join('\n');
 }
