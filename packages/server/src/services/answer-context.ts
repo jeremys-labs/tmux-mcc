@@ -5,7 +5,7 @@ import {
   callOpenBrainTool,
   type OpenBrainRuntimeConfig,
 } from './open-brain-runtime.js';
-import { buildSkillSnapshot } from './skill-snapshot.js';
+import { buildSkillSnapshotForPrompt } from './skill-snapshot.js';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
@@ -664,18 +664,25 @@ async function buildDomainContexts(agentKey: string, text: string, agentsRoot: s
   return contexts;
 }
 
-function buildSkillsContext(agentKey: string, agentsRoot: string): DomainContext | null {
+function buildSkillsContext(agentKey: string, agentsRoot: string, promptText?: string): DomainContext | null {
   if (process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED === '1') return null;
-  const snapshot = buildSkillSnapshot({ agentKey, agentsRoot });
-  if (!snapshot.prompt.trim()) return null;
+  const snapshot = buildSkillSnapshotForPrompt({ agentKey, agentsRoot, promptText });
+  if (!snapshot.compactPrompt.trim()) return null;
   return {
     domain: 'skills',
     content: [
       `skill_snapshot_version=${snapshot.version}`,
       `skill_count=${snapshot.skills.length}`,
-      snapshot.prompt,
+      snapshot.compactPrompt,
     ].join('\n'),
   };
+}
+
+function logContextBytes(agentKey: string, source: string, bytes: Record<string, number>): void {
+  if (process.env.ANSWER_CONTEXT_BYTE_LOG_DISABLED === '1') return;
+  const total = Object.values(bytes).reduce((a, b) => a + b, 0);
+  const parts = Object.entries(bytes).map(([k, v]) => `${k}=${v}`).join(' ');
+  process.stderr.write(`[answer-context] bytes agent=${agentKey} source=${source} ${parts} total=${total}\n`);
 }
 
 function buildMemoryQuery(input: BuildAnswerContextInput): string {
@@ -980,19 +987,23 @@ export async function buildAnswerContext(input: BuildAnswerContextInput): Promis
     searchAnswerMemory(input),
     buildDomainContexts(input.agentKey, input.text, agentsRoot, now),
   ]);
-  const skillsContext = buildSkillsContext(input.agentKey, agentsRoot);
+  const skillsContext = buildSkillsContext(input.agentKey, agentsRoot, input.text);
+  const extraDomains: DomainContext[] = [
+    ...(scheduledDiscordOutbox ? [{ domain: 'scheduled_discord_outbox', content: scheduledDiscordOutbox }] : []),
+    ...(skillsContext ? [skillsContext] : []),
+    ...domainContexts,
+  ];
+  logContextBytes(input.agentKey, input.source, {
+    memory: Buffer.byteLength(memoryText ?? ''),
+    skills: Buffer.byteLength(skillsContext?.content ?? ''),
+    domain: Buffer.byteLength(extraDomains.filter((d) => d.domain !== 'scheduled_discord_outbox' && d.domain !== 'skills').map((d) => d.content).join('')),
+    outbox: Buffer.byteLength(scheduledDiscordOutbox),
+  });
   return formatAnswerContext({
     agentKey: input.agentKey,
     source: input.source,
     now,
     memoryText,
-    domainContexts: [
-      ...(scheduledDiscordOutbox ? [{
-        domain: 'scheduled_discord_outbox',
-        content: scheduledDiscordOutbox,
-      }] : []),
-      ...(skillsContext ? [skillsContext] : []),
-      ...domainContexts,
-    ],
+    domainContexts: extraDomains,
   });
 }
