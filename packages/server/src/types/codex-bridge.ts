@@ -24,6 +24,7 @@ export interface DiscordMessageEvent {
   id: string;
   channel_id: string;
   content: string;
+  attachments?: DiscordMessageAttachment[];
   author?: {
     id?: string;
     username?: string;
@@ -40,6 +41,14 @@ export interface DiscordMessageEvent {
   } | null;
 }
 
+export interface DiscordMessageAttachment {
+  id?: string;
+  url: string;
+  filename: string;
+  content_type?: string;
+  size?: number;
+}
+
 export interface CodexBridgeInboxEntry {
   id: string;
   bindingName?: string;
@@ -49,5 +58,13 @@ export interface CodexBridgeInboxEntry {
   author: string;
   authorId?: string;
   content: string;
+  attachments?: CodexBridgeAttachment[];
   timestamp: string;
+}
+
+export interface CodexBridgeAttachment {
+  url: string;
+  filename: string;
+  content_type?: string;
+  size?: number;
 }

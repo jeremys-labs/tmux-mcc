@@ -89,4 +89,28 @@ describe('codex inbox', () => {
     expect(prompt).toContain('chat_id="c1"');
     expect(prompt).toContain('Reply on Discord');
   });
+
+  it('formats attachment metadata for Codex prompts', () => {
+    const prompt = formatInboxEntryForCodex({
+      id: 'm4',
+      bindingName: 'enzo',
+      agentKey: 'enzo',
+      channelId: 'c2',
+      author: 'Jeremy',
+      content: '',
+      timestamp: '2026-04-13T18:03:00.000Z',
+      attachments: [{
+        filename: 'voice "one".ogg',
+        content_type: 'audio/ogg',
+        size: 2345,
+        url: 'https://cdn.discordapp.com/attachments/voice.ogg?ex=1&is=2',
+      }],
+    });
+
+    expect(prompt).toContain('<attachments>');
+    expect(prompt).toContain('filename="voice &quot;one&quot;.ogg"');
+    expect(prompt).toContain('content_type="audio/ogg"');
+    expect(prompt).toContain('size="2345"');
+    expect(prompt).toContain('url="https://cdn.discordapp.com/attachments/voice.ogg?ex=1&amp;is=2"');
+  });
 });

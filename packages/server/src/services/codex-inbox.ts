@@ -72,8 +72,24 @@ function resolveDiscordReplyTool(bindingName?: string): string {
   return `mcp__discord_${normalized}__.reply`;
 }
 
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
   const content = entry.content.replace(/\s+/g, ' ').trim();
+  const attachmentLines = (entry.attachments ?? []).map((attachment, index) => {
+    const details = [
+      `filename="${escapeAttribute(attachment.filename)}"`,
+      attachment.content_type ? `content_type="${escapeAttribute(attachment.content_type)}"` : null,
+      typeof attachment.size === 'number' ? `size="${attachment.size}"` : null,
+    ].filter(Boolean).join(' ');
+    return `<attachment index="${index}" ${details} url="${escapeAttribute(attachment.url)}" />`;
+  });
   const replyTool = resolveDiscordReplyTool(entry.bindingName);
   const bridgeReplyCommand = [
     'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
@@ -95,6 +111,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     `[Messaging Gateway] Discord message routed for ${entry.agentKey}.`,
     '',
     `<channel ${attrs.join(' ')}>${content}</channel>`,
+    ...(attachmentLines.length > 0 ? ['', '<attachments>', ...attachmentLines, '</attachments>'] : []),
     '',
     `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,
   ].join('\n');
