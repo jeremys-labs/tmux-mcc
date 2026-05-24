@@ -849,6 +849,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
   const semanticLimit = numberFromEnv('ANSWER_CONTEXT_MEMORY_LIMIT', 1);
   const semanticThreshold = numberFromEnv('ANSWER_CONTEXT_MEMORY_THRESHOLD', 0.45);
   const sectionCap = numberFromEnv('ANSWER_CONTEXT_MEMORY_CHAR_CAP', 2400);
+  const recentFallbackLimit = numberFromEnv('ANSWER_CONTEXT_RECENT_MEMORY_LIMIT', semanticLimit);
   const [rawSemanticResult, recentResult] = await Promise.all([
     safeSearchAgentMemory(input.openBrainConfig, {
       agent_id: input.openBrainConfig.agentId,
@@ -862,18 +863,19 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
         agent_id: input.openBrainConfig.agentId,
         query: `recent ${input.openBrainConfig.agentId} session activity work troubleshooting restart current task`,
         project: input.project ?? undefined,
-        limit: 3,
+        limit: recentFallbackLimit,
         threshold: semanticThreshold,
       }, { agentKey: input.agentKey, source: input.source, lookup: 'recent' })
       : Promise.resolve(''),
   ]);
   const semanticResult = compactOB1Results(rawSemanticResult, input.text, semanticThreshold, input.project);
+  const compactRecentResult = compactOB1Results(recentResult, input.text, semanticThreshold, input.project);
   const sections = [
     semanticResult,
-    recentResult.trim()
+    compactRecentResult.trim()
       ? [
         'Recent activity fallback for fresh session first turn:',
-        recentResult,
+        compactRecentResult,
       ].join('\n')
       : '',
   ].filter((section) => section.trim());
