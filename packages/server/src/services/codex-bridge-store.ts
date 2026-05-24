@@ -36,7 +36,23 @@ export function markSeen(contentRoot: string, subscriptionKey: string, messageId
 
 export function hasSeen(contentRoot: string, subscriptionKey: string, messageId: string): boolean {
   const current = readBridgeState(contentRoot);
-  return current.lastSeenMessageIds[subscriptionKey] === messageId;
+  const lastSeen = current.lastSeenMessageIds[subscriptionKey];
+  if (lastSeen === messageId) return true;
+  const agentKey = subscriptionKey.split(':')[1];
+  if (!agentKey) return false;
+
+  const filePath = path.join(inboxDir(contentRoot), `${agentKey}.jsonl`);
+  if (!fs.existsSync(filePath)) return false;
+  return fs.readFileSync(filePath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .some((line) => {
+      try {
+        return (JSON.parse(line) as { id?: string }).id === messageId;
+      } catch {
+        return false;
+      }
+    });
 }
 
 export function appendInboxEntry(contentRoot: string, entry: CodexBridgeInboxEntry): string {
