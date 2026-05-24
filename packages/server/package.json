@@ -20,6 +20,8 @@
     "open-brain:hook": "tsx src/open-brain-hook.ts",
     "open-brain:canary": "tsx src/open-brain-canary.ts",
     "open-brain:seed-agent-history": "tsx src/open-brain-seed-agent-history.ts",
+    "open-brain:size-report": "tsx src/open-brain-size-report.ts",
+    "open-brain:generate-runtime-profile": "tsx src/open-brain-generate-runtime-profile.ts",
     "runtime-handoff": "tsx src/runtime-handoff.ts",
     "a2a-poller": "tsx src/a2a-poller.ts",
     "runtime-launch": "tsx src/runtime-launch.ts",
