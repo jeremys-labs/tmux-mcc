@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAnswerContext,
+  compactOB1Results,
   formatAnswerContext,
   formatJeremyDateTime,
   isFreshSessionFirstTurnPayload,
@@ -492,6 +493,108 @@ describe('answer context', () => {
     ].join('\n'));
 
     expect(trace.map((item) => item.source_ref)).toEqual(['real:1', 'real:2']);
+  });
+
+  it('passes non-OB1-format text through compactOB1Results unchanged', () => {
+    expect(compactOB1Results('Semantic restart result', 'restart', 0.45)).toBe('Semantic restart result');
+    expect(compactOB1Results('', 'anything', 0.45)).toBe('');
+  });
+
+  it('filters private_agent result when prompt does not name the project and similarity is below high threshold', () => {
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (60.0% match) ---',
+      'Scope: private_agent',
+      'Owner: eli',
+      'Project: gradesnap',
+      'Authority: context',
+      'Source: gradesnap:doc1',
+      '',
+      'GradeSnap implementation notes.',
+    ].join('\n');
+    expect(compactOB1Results(text, 'Should I reply in a thread?', 0.45)).toBe('');
+  });
+
+  it('admits private_agent result when prompt names the project', () => {
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (60.0% match) ---',
+      'Scope: private_agent',
+      'Owner: eli',
+      'Project: gradesnap',
+      'Authority: context',
+      'Source: gradesnap:doc1',
+      '',
+      'GradeSnap implementation notes.',
+    ].join('\n');
+    const result = compactOB1Results(text, 'What is the status of gradesnap?', 0.45);
+    expect(result).toContain('GradeSnap implementation notes.');
+  });
+
+  it('always admits source_of_truth authority regardless of scope or similarity', () => {
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (50.0% match) ---',
+      'Scope: private_agent',
+      'Project: secret-project',
+      'Authority: source_of_truth',
+      'Source: ref:1',
+      '',
+      'Always-included fact.',
+    ].join('\n');
+    const result = compactOB1Results(text, 'Unrelated question', 0.45);
+    expect(result).toContain('Always-included fact.');
+  });
+
+  it('admits private_agent result with high similarity even without prompt context mention', () => {
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (80.0% match) ---',
+      'Scope: private_agent',
+      'Project: some-private-project',
+      'Authority: context',
+      'Source: ref:2',
+      '',
+      'High-similarity private fact.',
+    ].join('\n');
+    const result = compactOB1Results(text, 'Totally unrelated question', 0.45);
+    expect(result).toContain('High-similarity private fact.');
+  });
+
+  it('compacts body to 300 chars for medium-similarity non-source-of-truth results', () => {
+    const longBody = 'A'.repeat(600);
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (74.0% match) ---',
+      'Scope: shared_team',
+      'Authority: context',
+      'Source: ref:3',
+      '',
+      longBody,
+    ].join('\n');
+    const result = compactOB1Results(text, 'Anything', 0.45);
+    expect(result).toContain('...');
+    const bodyInResult = result.split('\n\n').slice(1).join('\n\n');
+    expect(bodyInResult.length).toBeLessThan(400);
+  });
+
+  it('admits shared_team result at base threshold without project mention requirement', () => {
+    const text = [
+      'Found 1 eli-readable memory item(s):',
+      '',
+      '--- Result 1 (50.0% match) ---',
+      'Scope: shared_team',
+      'Authority: context',
+      'Source: ref:4',
+      '',
+      'Team-wide rule.',
+    ].join('\n');
+    expect(compactOB1Results(text, 'Any unrelated question', 0.45)).toContain('Team-wide rule.');
   });
 
   it('detects first-turn payloads without prior assistant turns', () => {

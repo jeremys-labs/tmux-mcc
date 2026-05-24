@@ -687,6 +687,103 @@ function buildMemoryQuery(input: BuildAnswerContextInput): string {
   ].filter(Boolean).join('\n');
 }
 
+interface OB1ResultBlock {
+  rank: number;
+  similarity: number;
+  metadata: Record<string, string>;
+  body: string;
+}
+
+function parseOB1ResultBlocks(text: string): OB1ResultBlock[] {
+  const blocks = text.split(/^--- Result /m).slice(1);
+  const topLevel: OB1ResultBlock[] = [];
+  for (const block of blocks) {
+    const header = block.match(/^(\d+) \(([\d.]+)% match\)/);
+    if (!header) continue;
+    const rank = Number(header[1]);
+    if (topLevel.length > 0 && rank <= topLevel[topLevel.length - 1].rank) continue;
+    const similarity = Number(header[2]) / 100;
+    const lines = block.split('\n');
+    const metaLines: string[] = [];
+    const bodyLines: string[] = [];
+    let pastHeader = false;
+    let inBody = false;
+    for (const line of lines) {
+      if (!pastHeader) { pastHeader = true; continue; }
+      if (!inBody) {
+        if (line.trim() === '') { inBody = true; } else { metaLines.push(line); }
+      } else {
+        bodyLines.push(line);
+      }
+    }
+    const metadata: Record<string, string> = {};
+    for (const line of metaLines) {
+      const colon = line.indexOf(':');
+      if (colon > 0) {
+        metadata[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+      }
+    }
+    topLevel.push({ rank, similarity, metadata, body: bodyLines.join('\n').trimEnd() });
+  }
+  return topLevel;
+}
+
+function resultPassesAdmissionGate(
+  block: OB1ResultBlock,
+  promptText: string,
+  baseThreshold: number,
+  inputProject?: string | null,
+): boolean {
+  if (block.metadata.authority === 'source_of_truth') return true;
+  const scope = block.metadata.scope ?? '';
+  if (scope === 'shared_team' || scope === '') return block.similarity >= baseThreshold;
+  const project = block.metadata.project ?? '';
+  const owner = block.metadata.owner ?? '';
+  const topics = (block.metadata.topics ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+  if (inputProject && project && inputProject.toLowerCase() === project.toLowerCase()) {
+    return block.similarity >= baseThreshold;
+  }
+  const promptLower = promptText.toLowerCase();
+  const contextTerms = [project, owner, ...topics].filter((t) => t.length > 3);
+  if (contextTerms.some((term) => promptLower.includes(term.toLowerCase()))) {
+    return block.similarity >= baseThreshold;
+  }
+  const highThreshold = numberFromEnv('ANSWER_CONTEXT_MEMORY_HIGH_THRESHOLD', 0.72);
+  return block.similarity >= highThreshold;
+}
+
+export function compactOB1Results(
+  text: string,
+  promptText: string,
+  baseThreshold: number,
+  inputProject?: string | null,
+): string {
+  if (!text.trim()) return text;
+  const blocks = parseOB1ResultBlocks(text);
+  if (blocks.length === 0) return text;
+  const admitted = blocks.filter((block) =>
+    resultPassesAdmissionGate(block, promptText, baseThreshold, inputProject)
+  );
+  if (admitted.length === 0) return '';
+  const firstLine = text.split('\n')[0];
+  const newFirstLine = firstLine.replace(/^Found \d+/, `Found ${admitted.length}`);
+  const formattedBlocks = admitted.map((block, idx) => {
+    const isHighValue = block.metadata.authority === 'source_of_truth' || block.similarity >= 0.85;
+    const bodyBudget = isHighValue ? 1200 : 300;
+    const metaSection = Object.entries(block.metadata)
+      .map(([k, v]) => `${k.charAt(0).toUpperCase() + k.slice(1)}: ${v}`)
+      .join('\n');
+    const body = compactText(block.body, bodyBudget);
+    return [
+      `--- Result ${idx + 1} (${(block.similarity * 100).toFixed(1)}% match) ---`,
+      metaSection,
+      '',
+      body,
+    ].join('\n');
+  });
+  return `${newFirstLine}\n\n${formattedBlocks.join('\n\n')}`;
+}
+
 async function safeSearchAgentMemory(
   config: OpenBrainRuntimeConfig,
   args: Record<string, unknown>,
@@ -742,10 +839,10 @@ async function safeSearchAgentMemory(
 
 async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<string> {
   if (!input.openBrainConfig) return '';
-  const semanticLimit = numberFromEnv('ANSWER_CONTEXT_MEMORY_LIMIT', 3);
+  const semanticLimit = numberFromEnv('ANSWER_CONTEXT_MEMORY_LIMIT', 1);
   const semanticThreshold = numberFromEnv('ANSWER_CONTEXT_MEMORY_THRESHOLD', 0.45);
   const sectionCap = numberFromEnv('ANSWER_CONTEXT_MEMORY_CHAR_CAP', 2400);
-  const [semanticResult, recentResult] = await Promise.all([
+  const [rawSemanticResult, recentResult] = await Promise.all([
     safeSearchAgentMemory(input.openBrainConfig, {
       agent_id: input.openBrainConfig.agentId,
       query: buildMemoryQuery(input),
@@ -763,6 +860,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
       }, { agentKey: input.agentKey, source: input.source, lookup: 'recent' })
       : Promise.resolve(''),
   ]);
+  const semanticResult = compactOB1Results(rawSemanticResult, input.text, semanticThreshold, input.project);
   const sections = [
     semanticResult,
     recentResult.trim()
