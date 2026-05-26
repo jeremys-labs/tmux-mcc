@@ -9,6 +9,7 @@ import {
   ensureRuntimeStateDir,
 } from './services/codex-inbox.js';
 import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
+import { writePreSessionContextSidecar } from './services/runtime-pre-session.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
@@ -87,10 +88,20 @@ const resize = () => {
 };
 process.stdout.on('resize', resize);
 
+const DEFAULT_AGENTS_ROOT = process.env.AGENTS_ROOT ?? '/Volumes/Repo-Drive/agents';
+const hasSoul = fs.existsSync(path.join(DEFAULT_AGENTS_ROOT, agentKey, 'SOUL.md'));
+writePreSessionContextSidecar({
+  agentKey,
+  contentRoot,
+  hasSoul,
+  hasMemory: openBrainConfig !== null,
+  runtime: 'codex',
+});
+
 if (openBrainConfig) {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall delegated to Codex SessionStart hook for ${agentKey}\n`);
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall delegated to Codex SessionStart hook for ${agentKey} (soul=${hasSoul} memory=true)\n`);
 } else {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey}\n`);
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey} (soul=${hasSoul} memory=false)\n`);
 }
 
 void runtimeEvents.emit('onRuntimeHealth', {

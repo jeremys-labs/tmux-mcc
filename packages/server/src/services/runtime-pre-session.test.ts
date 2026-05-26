@@ -11,7 +11,7 @@ vi.mock('./open-brain-runtime.js', async () => {
   };
 });
 
-import { buildPreSessionPrompt, writePreSessionPromptFile } from './runtime-pre-session.js';
+import { buildPreSessionPrompt, writePreSessionContextSidecar, writePreSessionPromptFile } from './runtime-pre-session.js';
 
 let tmp: string;
 
@@ -97,6 +97,33 @@ describe('buildPreSessionPrompt', () => {
     expect(result.hasSoul).toBe(true);
     expect(result.hasMemory).toBe(false);
     expect(result.text).toContain('SOUL-CONTENT');
+  });
+});
+
+describe('writePreSessionContextSidecar', () => {
+  it('writes the JSON sidecar without creating a .txt file', () => {
+    writePreSessionContextSidecar({
+      agentKey: 'enzo',
+      contentRoot: tmp,
+      hasSoul: true,
+      hasMemory: false,
+      runtime: 'codex',
+    });
+    const sidecarPath = path.join(tmp, 'bridge', 'runtime-state', 'enzo-pre-session-context.json');
+    const txtPath = path.join(tmp, 'bridge', 'runtime-state', 'enzo-pre-session.txt');
+    expect(fs.existsSync(sidecarPath)).toBe(true);
+    expect(fs.existsSync(txtPath)).toBe(false);
+    const record = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    expect(record.hasSoul).toBe(true);
+    expect(record.hasMemory).toBe(false);
+    expect(record.runtime).toBe('codex');
+    expect(typeof record.generatedAt).toBe('string');
+  });
+
+  it('creates parent directories if missing', () => {
+    const nested = path.join(tmp, 'deep', 'root');
+    writePreSessionContextSidecar({ agentKey: 'enzo', contentRoot: nested, hasSoul: false, hasMemory: true, runtime: 'codex' });
+    expect(fs.existsSync(path.join(nested, 'bridge', 'runtime-state', 'enzo-pre-session-context.json'))).toBe(true);
   });
 });
 
