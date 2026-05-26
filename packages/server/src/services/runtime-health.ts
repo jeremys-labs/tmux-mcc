@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
 import { buildSkillSnapshot } from './skill-snapshot.js';
 import { readPendingInboxEntries } from './codex-inbox.js';
+import { readPreSessionContextRecord } from './runtime-pre-session.js';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_SCHEDULER_ROOT = '/Users/jeremylahners/.claude/scheduler';
@@ -36,6 +37,7 @@ export interface AgentRuntimeHealth {
   groomingQueueDepth: HealthCheck;
   agentMail: HealthCheck;
   skillSnapshot: HealthCheck;
+  preSessionContext: HealthCheck;
   migrationReadiness: HealthCheck;
 }
 
@@ -220,6 +222,16 @@ function skillSnapshotCheck(agent: string, agentsRoot: string): HealthCheck {
   if (snapshot.skills.length === 0) return check('error', 'no central or agent skills projected');
   if (!names.includes('runtime-canary')) return check('error', `runtime-canary skill missing from snapshot ${snapshot.version}`);
   return check('ok', `${snapshot.skills.length} skill(s), version=${snapshot.version}`);
+}
+
+function preSessionContextCheck(agent: string, contentRoot: string): HealthCheck {
+  const ctx = readPreSessionContextRecord(contentRoot, agent);
+  if (!ctx) return check('warn', 'no startup context record — agent may have started cold (no SOUL.md and no OB1 memory at last launch)');
+  const { hasSoul, hasMemory, runtime, generatedAt } = ctx;
+  if (hasSoul && hasMemory) return check('ok', `soul=true memory=true runtime=${runtime} at ${generatedAt}`);
+  if (!hasSoul && !hasMemory) return check('warn', `cold start: soul=false memory=false runtime=${runtime} at ${generatedAt}`);
+  if (!hasSoul) return check('warn', `no SOUL.md at last start: soul=false memory=true runtime=${runtime} at ${generatedAt}`);
+  return check('warn', `no OB1 memory at last start: soul=true memory=false runtime=${runtime} at ${generatedAt}`);
 }
 
 function tmuxSessionExists(session: string): boolean {
@@ -629,6 +641,7 @@ function buildAgentHealth(
         : check('warn', `${queueDepth} unresolved raw_capture row(s) in recent window`),
     agentMail: check((mailStats?.inboxDepth ?? 0) > 0 ? 'warn' : 'ok', `${mailStats?.inboxDepth ?? 0} unacked inbox item(s)${oldestUnacked}`),
     skillSnapshot: skillSnapshotCheck(agent, agentsRoot),
+    preSessionContext: preSessionContextCheck(agent, contentRoot),
     migrationReadiness: check('unknown', 'pending'),
   };
 }
@@ -697,6 +710,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
       agent.groomingQueueDepth,
       agent.agentMail,
       agent.skillSnapshot,
+      agent.preSessionContext,
     ]),
   ];
   const status = worstStatus(allChecks);
@@ -734,6 +748,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
       `grooming=${agent.groomingQueueDepth.status}:${agent.groomingQueueDepth.detail}`,
       `mail=${agent.agentMail.status}:${agent.agentMail.detail}`,
       `skills=${agent.skillSnapshot.status}:${agent.skillSnapshot.detail}`,
+      `pre-session=${agent.preSessionContext.status}:${agent.preSessionContext.detail}`,
       `migration=${agent.migrationReadiness.status}:${agent.migrationReadiness.detail}`,
     ];
     lines.push(`- ${agent.agent}: ${checks.join('; ')}`);

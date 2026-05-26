@@ -42,7 +42,14 @@ const preSession = await buildPreSessionPrompt({
   openBrainConfig,
 });
 if (preSession.text) {
-  const file = writePreSessionPromptFile({ agentKey, contentRoot, text: preSession.text });
+  const file = writePreSessionPromptFile({
+    agentKey,
+    contentRoot,
+    text: preSession.text,
+    hasSoul: preSession.hasSoul,
+    hasMemory: preSession.hasMemory,
+    runtime: 'claude',
+  });
   claudeArgs.push('--append-system-prompt-file', file);
   fs.appendFileSync(
     runtimeLogPath,

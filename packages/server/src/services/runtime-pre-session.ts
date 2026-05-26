@@ -75,17 +75,56 @@ export interface WritePreSessionPromptInput {
   agentKey: string;
   contentRoot: string;
   text: string;
+  hasSoul?: boolean;
+  hasMemory?: boolean;
+  runtime?: 'claude' | 'codex';
+}
+
+export interface PreSessionContextRecord {
+  hasSoul: boolean;
+  hasMemory: boolean;
+  runtime: string;
+  generatedAt: string;
 }
 
 /**
  * Persists the pre-session prompt to a stable path under the runtime-state dir
  * so the underlying CLI can read it via `--append-system-prompt-file` and so
  * external observers (runtime-health, MCC UI) can inspect what was injected.
+ * Also writes a JSON sidecar with soul/memory/runtime metadata for health checks.
  */
 export function writePreSessionPromptFile(input: WritePreSessionPromptInput): string {
   const dir = path.join(input.contentRoot, 'bridge', 'runtime-state');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${input.agentKey}-pre-session.txt`);
   fs.writeFileSync(file, input.text, 'utf8');
+  const context: PreSessionContextRecord = {
+    hasSoul: input.hasSoul ?? false,
+    hasMemory: input.hasMemory ?? false,
+    runtime: input.runtime ?? 'unknown',
+    generatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(
+    path.join(dir, `${input.agentKey}-pre-session-context.json`),
+    JSON.stringify(context, null, 2),
+    'utf8',
+  );
   return file;
+}
+
+export function readPreSessionContextRecord(
+  contentRoot: string,
+  agentKey: string,
+): PreSessionContextRecord | null {
+  const sidecarPath = path.join(
+    contentRoot,
+    'bridge',
+    'runtime-state',
+    `${agentKey}-pre-session-context.json`,
+  );
+  try {
+    return JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as PreSessionContextRecord;
+  } catch {
+    return null;
+  }
 }

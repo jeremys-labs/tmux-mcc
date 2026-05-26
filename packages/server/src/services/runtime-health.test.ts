@@ -383,4 +383,110 @@ describe('runtime health', () => {
 
     expect(report.agents[0].migrationReadiness.status).toBe('ok');
   });
+
+  it('warns when no pre-session context sidecar exists — agent started cold after compaction', async () => {
+    // Regression: "The pattern that burns you" (CLAUDE.md) — agent restarts cold after
+    // compaction (no SOUL.md found, no OB1 memory), health report must surface this
+    // so the operator knows the agent is running without startup context.
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const contentRoot = path.join(root, 'content');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agentsRoot, 'eli'), { recursive: true });
+    fs.writeFileSync(path.join(agentsRoot, 'eli', 'launch.sh'), '#!/bin/zsh\nnpm run runtime-launch --agent eli --runtime "$LAUNCH_RUNTIME"\n');
+    fs.writeFileSync(path.join(agentsRoot, 'eli', '.runtime'), 'claude\n');
+    // No pre-session sidecar written — simulates cold start (no SOUL.md, no OB1 config)
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['eli'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      contentRoot,
+      now: new Date('2026-05-26T14:00:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.agents[0].preSessionContext.status).toBe('warn');
+    expect(report.agents[0].preSessionContext.detail).toContain('cold');
+    expect(formatRuntimeHealthSummary(report)).toContain('pre-session=warn');
+  });
+
+  it('reports ok when pre-session sidecar records soul and memory both present', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const contentRoot = path.join(root, 'content');
+    const runtimeStateDir = path.join(contentRoot, 'bridge', 'runtime-state');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agentsRoot, 'eli'), { recursive: true });
+    fs.mkdirSync(runtimeStateDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsRoot, 'eli', 'launch.sh'), '#!/bin/zsh\nnpm run runtime-launch --agent eli --runtime "$LAUNCH_RUNTIME"\n');
+    fs.writeFileSync(path.join(agentsRoot, 'eli', '.runtime'), 'claude\n');
+    writeJson(path.join(runtimeStateDir, 'eli-pre-session-context.json'), {
+      hasSoul: true,
+      hasMemory: true,
+      runtime: 'claude',
+      generatedAt: '2026-05-26T13:55:00.000Z',
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['eli'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      contentRoot,
+      now: new Date('2026-05-26T14:00:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.agents[0].preSessionContext.status).toBe('ok');
+    expect(report.agents[0].preSessionContext.detail).toContain('soul=true');
+    expect(report.agents[0].preSessionContext.detail).toContain('memory=true');
+  });
+
+  it('warns when pre-session sidecar shows soul-only start (no OB1 memory)', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const contentRoot = path.join(root, 'content');
+    const runtimeStateDir = path.join(contentRoot, 'bridge', 'runtime-state');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agentsRoot, 'eli'), { recursive: true });
+    fs.mkdirSync(runtimeStateDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsRoot, 'eli', 'launch.sh'), '#!/bin/zsh\nnpm run runtime-launch --agent eli --runtime "$LAUNCH_RUNTIME"\n');
+    fs.writeFileSync(path.join(agentsRoot, 'eli', '.runtime'), 'claude\n');
+    writeJson(path.join(runtimeStateDir, 'eli-pre-session-context.json'), {
+      hasSoul: true,
+      hasMemory: false,
+      runtime: 'claude',
+      generatedAt: '2026-05-26T13:55:00.000Z',
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['eli'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      contentRoot,
+      now: new Date('2026-05-26T14:00:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.agents[0].preSessionContext.status).toBe('warn');
+    expect(report.agents[0].preSessionContext.detail).toContain('memory=false');
+  });
 });
