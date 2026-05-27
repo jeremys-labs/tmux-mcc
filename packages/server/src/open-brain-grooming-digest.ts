@@ -1,4 +1,5 @@
 import { readDigestState, resolveDigestChannelId, sendDiscordDigest, writeDigestState } from './services/open-brain-grooming-digest.js';
+import { appendOpenBrainMeasurements, buildOpenBrainGroomingMeasurements } from './services/open-brain-measurements.js';
 import {
   buildPendingReviewDigest,
   mergeReviewCandidates,
@@ -93,11 +94,18 @@ async function main(): Promise<void> {
       result.reviewCandidates,
     ),
   };
+  const measurementPath = appendOpenBrainMeasurements(buildOpenBrainGroomingMeasurements(result, {
+    generatedAtIso: result.generatedAtIso,
+    sinceIso: result.sinceIso,
+    ownerAgent: 'eli',
+    pendingReviewCount: nextState.pendingReviewCandidates.length,
+    dryRun,
+  }));
 
   if (suppressReviewDigest) {
     writeDigestState(nextState);
     process.stdout.write(
-      `Groomed ${result.rawCaptureCount} raw captures silently; queued ${result.reviewCandidates.length} decision candidates for daily digest.\n`,
+      `Groomed ${result.rawCaptureCount} raw captures silently; queued ${result.reviewCandidates.length} decision candidates for daily digest. Measurements: ${measurementPath}\n`,
     );
     return;
   }
@@ -105,14 +113,14 @@ async function main(): Promise<void> {
   if (silentWhenClean && needsReviewCount === 0) {
     writeDigestState(nextState);
     process.stdout.write(
-      `Groomed ${result.rawCaptureCount} raw captures silently (no human review needed).\n`,
+      `Groomed ${result.rawCaptureCount} raw captures silently (no human review needed). Measurements: ${measurementPath}\n`,
     );
     return;
   }
 
   if (!hasAnyActivity) {
     writeDigestState(nextState);
-    process.stdout.write('No raw captures since previous run; skipping Discord digest.\n');
+    process.stdout.write(`No raw captures since previous run; skipping Discord digest. Measurements: ${measurementPath}\n`);
     return;
   }
 
@@ -123,7 +131,7 @@ async function main(): Promise<void> {
     lastDecisionDigestIso: generatedAtIso,
   });
   process.stdout.write(
-    `Sent OB1 grooming digest for ${result.rawCaptureCount} raw captures since ${sinceIso ?? 'previous run'}.\n`,
+    `Sent OB1 grooming digest for ${result.rawCaptureCount} raw captures since ${sinceIso ?? 'previous run'}. Measurements: ${measurementPath}\n`,
   );
 }
 

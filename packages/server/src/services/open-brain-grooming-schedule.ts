@@ -56,6 +56,8 @@ export interface GroomingScheduledCandidate {
 
 export interface GroomingScheduledResult {
   digest: string;
+  sinceIso: string;
+  generatedAtIso: string;
   rawCaptureCount: number;
   itemPlans: GroomingItemPlan[];
   clusterPlans: GroomingClusterPlan[];
@@ -63,6 +65,7 @@ export interface GroomingScheduledResult {
   reviewCandidates: GroomingScheduledCandidate[];
   classifierFailureCount: number;
   classifierFailureCycles: number;
+  applyFailureCount: number;
   /**
    * Highest `created_at` observed in the fetched batch, when any rows were
    * fetched. Callers should advance the digest state's `lastRunIso` to this
@@ -529,6 +532,7 @@ export async function runScheduledGrooming(
     : 0;
 
   if (!options.dryRun) {
+    let applyFailureCount = 0;
     const clusterPlansByKey = new Map(clusterPlans.map((plan) => [plan.cluster.key, plan] as const));
     for (const plan of clusterPlans) {
       if (!clusterHandled(plan)) continue;
@@ -539,6 +543,7 @@ export async function runScheduledGrooming(
         // batch. Earlier code threw the whole digest on a single 'No raw_capture
         // found' from patch_agent_raw_capture_metadata and left the pipeline
         // dead for ~18 days (2026-05-05 → 2026-05-23). Log and continue.
+        applyFailureCount += 1;
         process.stderr.write(`[open-brain-grooming] cluster classification failed for ${plan.cluster.key}: ${String(error)}\n`);
       }
     }
@@ -547,40 +552,88 @@ export async function runScheduledGrooming(
       try {
         await applyGroomingClassification(plan.row, plan.classification, options.actorAgent);
       } catch (error) {
+        applyFailureCount += 1;
         process.stderr.write(`[open-brain-grooming] item classification failed for ${String(plan.row.metadata.source_ref ?? plan.row.id)}: ${String(error)}\n`);
       }
     }
-  }
-
-  const digest = buildScheduledGroomingDigest(
-    rawCaptureRows,
-    itemPlans,
-    clusterPlans,
-    {
+    return buildGroomingScheduledResult({
+      rawCaptureRows,
+      itemPlans,
+      clusterPlans,
+      summary,
+      reviewCandidates,
+      classifierFailureCount,
+      classifierFailureCycles,
+      applyFailureCount,
       sinceIso,
       generatedAtIso,
-      channelId: 'unused',
       maxItems: options.maxItems,
       dryRun: options.dryRun,
-    },
-    summary,
-    reviewCandidates,
-    classifierFailureCycles,
-  );
+    });
+  }
 
-  const maxProcessedCreatedAt = rawCaptureRows.length > 0
-    ? rawCaptureRows.reduce((max, row) => (row.created_at > max ? row.created_at : max), rawCaptureRows[0]!.created_at)
-    : undefined;
-
-  return {
-    digest,
-    rawCaptureCount: rawCaptureRows.length,
+  return buildGroomingScheduledResult({
+    rawCaptureRows,
     itemPlans,
     clusterPlans,
     summary,
     reviewCandidates,
     classifierFailureCount,
     classifierFailureCycles,
+    applyFailureCount: 0,
+    sinceIso,
+    generatedAtIso,
+    maxItems: options.maxItems,
+    dryRun: options.dryRun,
+  });
+}
+
+function buildGroomingScheduledResult(args: {
+  rawCaptureRows: RawCaptureRow[];
+  itemPlans: GroomingItemPlan[];
+  clusterPlans: GroomingClusterPlan[];
+  summary: GroomingActionSummary;
+  reviewCandidates: GroomingScheduledCandidate[];
+  classifierFailureCount: number;
+  classifierFailureCycles: number;
+  applyFailureCount: number;
+  sinceIso: string;
+  generatedAtIso: string;
+  maxItems?: number;
+  dryRun?: boolean;
+}): GroomingScheduledResult {
+  const digest = buildScheduledGroomingDigest(
+    args.rawCaptureRows,
+    args.itemPlans,
+    args.clusterPlans,
+    {
+      sinceIso: args.sinceIso,
+      generatedAtIso: args.generatedAtIso,
+      channelId: 'unused',
+      maxItems: args.maxItems,
+      dryRun: args.dryRun,
+    },
+    args.summary,
+    args.reviewCandidates,
+    args.classifierFailureCycles,
+  );
+
+  const maxProcessedCreatedAt = args.rawCaptureRows.length > 0
+    ? args.rawCaptureRows.reduce((max, row) => (row.created_at > max ? row.created_at : max), args.rawCaptureRows[0]!.created_at)
+    : undefined;
+
+  return {
+    digest,
+    sinceIso: args.sinceIso,
+    generatedAtIso: args.generatedAtIso,
+    rawCaptureCount: args.rawCaptureRows.length,
+    itemPlans: args.itemPlans,
+    clusterPlans: args.clusterPlans,
+    summary: args.summary,
+    reviewCandidates: args.reviewCandidates,
+    classifierFailureCount: args.classifierFailureCount,
+    classifierFailureCycles: args.classifierFailureCycles,
+    applyFailureCount: args.applyFailureCount,
     ...(maxProcessedCreatedAt !== undefined ? { maxProcessedCreatedAt } : {}),
   };
 }
