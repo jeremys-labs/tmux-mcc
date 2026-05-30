@@ -1,4 +1,4 @@
-import { readDigestState, resolveDigestChannelId, sendDiscordDigest, writeDigestState } from './services/open-brain-grooming-digest.js';
+import { readDigestState, resolveDigestChannelId, sendDiscordDigest, writeDigestState, writeLastDecisionDigest } from './services/open-brain-grooming-digest.js';
 import { appendOpenBrainMeasurements, buildOpenBrainGroomingMeasurements } from './services/open-brain-measurements.js';
 import {
   buildPendingReviewDigest,
@@ -51,7 +51,25 @@ async function main(): Promise<void> {
       return;
     }
 
-    await sendDiscordDigest(digest, resolveDigestChannelId());
+    const channelId = resolveDigestChannelId();
+    await sendDiscordDigest(digest, channelId);
+    // Persist the sent digest + a numbered candidate map BEFORE clearing pending
+    // state, so a later human reply ("approve all" / "promote 3" / "ignore 7") can
+    // be applied without re-supplying the digest text.
+    writeLastDecisionDigest({
+      generatedAtIso,
+      channelId,
+      count: activePending.length,
+      digestText: digest,
+      entries: activePending.map((candidate, index) => ({
+        number: index + 1,
+        sourceRef: candidate.sourceRef,
+        project: candidate.project,
+        kind: candidate.kind,
+        recommendedAction: candidate.recommendedAction,
+        text: candidate.proposedMemory || candidate.text,
+      })),
+    });
     writeDigestState({
       ...state,
       pendingReviewCandidates: [],

@@ -72,6 +72,52 @@ export function writeDigestState(state: GroomingDigestState, statePath = resolve
   fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
+// The decision digest clears `pendingReviewCandidates` the moment it sends, so the
+// structured list of what was surfaced (source refs, recommended actions, scopes)
+// would otherwise survive only in the Discord message. Persist a numbered snapshot
+// here so a later human reply ("approve all", "promote 3", etc.) can be applied
+// without re-supplying the digest text.
+export interface LastDecisionDigestEntry {
+  number: number;
+  sourceRef: string;
+  project: string;
+  kind: string;
+  recommendedAction: string;
+  text: string;
+}
+
+export interface LastDecisionDigestRecord {
+  generatedAtIso: string;
+  channelId: string;
+  count: number;
+  digestText: string;
+  entries: LastDecisionDigestEntry[];
+}
+
+export function resolveLastDecisionDigestPath(): string {
+  const override = process.env.OPEN_BRAIN_LAST_DECISION_DIGEST;
+  if (override) return override;
+  return path.join(resolveContentRoot(), 'open-brain', 'last-decision-digest.json');
+}
+
+export function writeLastDecisionDigest(
+  record: LastDecisionDigestRecord,
+  filePath = resolveLastDecisionDigestPath(),
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+export function readLastDecisionDigest(
+  filePath = resolveLastDecisionDigestPath(),
+): LastDecisionDigestRecord | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as LastDecisionDigestRecord;
+  } catch {
+    return null;
+  }
+}
+
 export function defaultSinceIso(now = new Date(), state = readDigestState()): string {
   if (state.lastRunIso) return state.lastRunIso;
   return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();

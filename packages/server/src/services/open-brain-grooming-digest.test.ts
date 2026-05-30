@@ -1,5 +1,15 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { buildGroomingDigest, defaultSinceIso, type RawCaptureRow } from './open-brain-grooming-digest.js';
+import {
+  buildGroomingDigest,
+  defaultSinceIso,
+  readLastDecisionDigest,
+  writeLastDecisionDigest,
+  type LastDecisionDigestRecord,
+  type RawCaptureRow,
+} from './open-brain-grooming-digest.js';
 import {
   buildPendingReviewDigest,
   buildScheduledGroomingDigest,
@@ -201,5 +211,25 @@ describe('open brain grooming digest', () => {
     const second = { ...first, text: 'New text.', proposedMemory: 'New text.' };
 
     expect(mergeReviewCandidates([first], [second])).toEqual([second]);
+  });
+
+  it('persists and reloads the last decision digest snapshot so replies can be applied later', () => {
+    const filePath = path.join(os.tmpdir(), `last-decision-digest-${Date.now()}-${Math.round(performance.now())}.json`);
+    const record: LastDecisionDigestRecord = {
+      generatedAtIso: '2026-05-30T10:30:00.000Z',
+      channelId: '1491979880747765810',
+      count: 2,
+      digestText: 'OB1 memory decision digest - 2026-05-30',
+      entries: [
+        { number: 1, sourceRef: 'agent-mail:1', project: 'frontdesk', kind: 'item', recommendedAction: 'Promote item to project memory.', text: 'Tom owns the AWS accounts.' },
+        { number: 2, sourceRef: 'claude-prompt:2', project: 'ob1-memory', kind: 'item', recommendedAction: 'Promote item to project memory.', text: 'CloudFront cache_policy null-at-plan provider bug.' },
+      ],
+    };
+
+    writeLastDecisionDigest(record, filePath);
+    expect(readLastDecisionDigest(filePath)).toEqual(record);
+    expect(readLastDecisionDigest(path.join(os.tmpdir(), 'missing-last-decision-digest.json'))).toBeNull();
+
+    fs.rmSync(filePath, { force: true });
   });
 });
