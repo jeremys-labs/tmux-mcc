@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { callOpenBrainTool, resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
@@ -90,6 +91,108 @@ function splitContent(content: string): string[] {
   }
   if (current.trim()) chunks.push(current);
   return chunks;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Exploratory history discovery (Claude + Codex), HOME-relative, no hardcoded
+// machine paths. Discovers EVERY workspace that has session history — agents AND
+// non-agent source projects (src/, etc.) — keyed by the real cwd recorded INSIDE
+// each session file (Claude: top-level `cwd`; Codex: payload.cwd), which avoids
+// the lossy Claude dir-name encoding (both `/` and `.` collapse to `-`).
+//
+// OB1 isolation guardrail (HARD): ownership is derived from the cwd — a cwd under
+// .../agents/<name> is owned by that agent; everything else maps to the generic
+// 'shared-workspace' lane. Seeding always goes through resolveOpenBrainRuntimeConfig(owner),
+// which uses that owner's OWN memory key — so a non-agent workspace can NEVER be
+// written into an agent's private lane (it has no agent key), and src/ history is
+// reported discovered-but-not-seeded until a 'shared-workspace' OB1 identity exists.
+const SHARED_WORKSPACE_OWNER = 'shared-workspace';
+const homeDir = os.homedir();
+const claudeProjectsRoot = process.env['COLLECT_CLAUDE_PROJECTS_ROOT'] ?? path.join(homeDir, '.claude', 'projects');
+const codexSessionsRoot = process.env['COLLECT_CODEX_SESSIONS_ROOT'] ?? path.join(homeDir, '.codex', 'sessions');
+// Additional store roots, comma-separated, via env only — never baked in.
+const extraStoreRoots = (process.env['COLLECT_EXTRA_STORE_ROOTS'] ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+interface DiscoveredWorkspace {
+  cwd: string;
+  owner: string;
+  kind: 'agent' | 'shared';
+  claudeFiles: string[];
+  codexFiles: string[];
+}
+
+// Owner from a real cwd: .../agents/<name> -> that agent; else shared-workspace.
+function ownerForCwd(cwd: string): { owner: string; kind: 'agent' | 'shared' } {
+  const m = cwd.match(/\/agents\/([^/]+)(?:\/|$)/);
+  if (m && m[1]) return { owner: m[1], kind: 'agent' };
+  return { owner: SHARED_WORKSPACE_OWNER, kind: 'shared' };
+}
+
+// Read the cwd recorded inside a session jsonl. Claude lines carry a top-level
+// `cwd`; Codex meta carries payload.cwd. Scan a bounded prefix of lines.
+function readSessionCwd(filePath: string): string | null {
+  let content: string;
+  try { content = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  let count = 0;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    if (++count > 80) break;
+    try {
+      const d = JSON.parse(line) as { cwd?: unknown; payload?: { cwd?: unknown } };
+      if (typeof d.cwd === 'string') return d.cwd;
+      if (d.payload && typeof d.payload.cwd === 'string') return d.payload.cwd;
+    } catch { /* not JSON / partial — skip */ }
+  }
+  return null;
+}
+
+function discoverWorkspaces(): DiscoveredWorkspace[] {
+  const byCwd = new Map<string, DiscoveredWorkspace>();
+  const record = (cwd: string, store: 'claude' | 'codex', file: string) => {
+    let e = byCwd.get(cwd);
+    if (!e) {
+      const { owner, kind } = ownerForCwd(cwd);
+      e = { cwd, owner, kind, claudeFiles: [], codexFiles: [] };
+      byCwd.set(cwd, e);
+    }
+    (store === 'claude' ? e.claudeFiles : e.codexFiles).push(file);
+  };
+
+  // Claude: ~/.claude/projects/<encoded-cwd>/*.jsonl — authoritative cwd from content.
+  if (fs.existsSync(claudeProjectsRoot)) {
+    for (const file of listFiles(claudeProjectsRoot, (p) => p.endsWith('.jsonl'))) {
+      const cwd = readSessionCwd(file);
+      if (cwd) record(cwd, 'claude', file);
+    }
+  }
+  // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl — cwd from payload.cwd.
+  for (const root of [codexSessionsRoot, ...extraStoreRoots]) {
+    for (const file of listFiles(root, (p) => p.endsWith('.jsonl'))) {
+      const cwd = readSessionCwd(file);
+      if (cwd) record(cwd, 'codex', file);
+    }
+  }
+  return [...byCwd.values()].sort((a, b) => a.cwd.localeCompare(b.cwd));
+}
+
+// Read-only report: what would be collected, per workspace/owner, and whether it
+// can be seeded (owner has an OB1 identity) or is gated (e.g. shared-workspace
+// before its key exists). No writes. Drives the dry-run/report mode.
+function reportDiscovery(workspaces: DiscoveredWorkspace[]): void {
+  const agents = workspaces.filter((w) => w.kind === 'agent');
+  const shared = workspaces.filter((w) => w.kind === 'shared');
+  process.stdout.write(`Discovered ${workspaces.length} workspace(s) with session history: ${agents.length} agent, ${shared.length} non-agent/shared.\n\n`);
+  for (const w of workspaces) {
+    const cfg = resolveOpenBrainRuntimeConfig(w.owner);
+    const seedable = cfg ? 'SEEDABLE' : (w.kind === 'shared'
+      ? 'GATED (no shared-workspace OB1 key — discovered, not seeded)'
+      : `SKIPPED (no OB1 key for agent ${w.owner})`);
+    process.stdout.write(
+      `- [${w.kind}] owner=${w.owner} cwd=${w.cwd}\n` +
+      `    claude=${w.claudeFiles.length} codex=${w.codexFiles.length} -> ${seedable}\n`,
+    );
+  }
 }
 
 function addFile(items: ImportItem[], agent: string, filePath: string): void {
@@ -374,9 +477,16 @@ function buildItems(agent: string): ImportItem[] {
 }
 
 async function main(): Promise<void> {
+  // Exploratory discovery/report mode (read-only): enumerate every workspace with
+  // Claude/Codex session history and report owner + seed-status. No --agent needed.
+  if (hasFlag('--discover')) {
+    reportDiscovery(discoverWorkspaces());
+    return;
+  }
+
   const agent = readArg('--agent');
   if (!agent || !supportedAgents.has(agent)) {
-    throw new Error(`Usage: open-brain-seed-agent-history --agent ${[...supportedAgents].sort().join('|')} [--dry-run]`);
+    throw new Error(`Usage: open-brain-seed-agent-history --agent ${[...supportedAgents].sort().join('|')} [--dry-run]  |  --discover`);
   }
 
   const dryRun = hasFlag('--dry-run');
