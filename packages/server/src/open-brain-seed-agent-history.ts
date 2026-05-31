@@ -195,6 +195,70 @@ function reportDiscovery(workspaces: DiscoveredWorkspace[]): void {
   }
 }
 
+// ── Reference-only session-history seeding (deterministic; no raw transcript,
+// no LLM). Caps: latest N per owner per store within the last D days (whichever
+// is smaller). Idempotency: source_ref stable on store+session-id+mtime. ──────
+const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_MAX_AGE_DAYS = 30;
+
+interface SessionRef {
+  store: 'claude' | 'codex';
+  sessionId: string;
+  filePath: string;
+  mtimeMs: number;
+  sizeBytes: number;
+  eventCount: number;
+}
+
+// Apply caps to a store's files: keep files modified within maxAgeDays, then the
+// latest maxSessions. Returns { kept, skipped } (skipped = dropped by the cap).
+function capSessions(files: string[], maxSessions: number, maxAgeDays: number): { kept: SessionRef[]; skipped: number } {
+  const cutoffMs = maxAgeDays > 0 ? Date.now() - maxAgeDays * 24 * 60 * 60 * 1000 : 0;
+  const refs: SessionRef[] = [];
+  for (const filePath of files) {
+    let st: fs.Stats;
+    try { st = fs.statSync(filePath); } catch { continue; }
+    if (st.mtimeMs < cutoffMs) continue; // outside the age window
+    let eventCount = 0;
+    try { eventCount = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter((l) => l.trim()).length; } catch { /* keep 0 */ }
+    refs.push({
+      store: filePath.includes('/.codex/') ? 'codex' : 'claude',
+      sessionId: path.basename(filePath).replace(/\.jsonl$/, ''),
+      filePath,
+      mtimeMs: st.mtimeMs,
+      sizeBytes: st.size,
+      eventCount,
+    });
+  }
+  refs.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
+  const kept = refs.slice(0, maxSessions);
+  return { kept, skipped: refs.length - kept.length };
+}
+
+// Build a reference-only ImportItem for one session — metadata only, no body.
+function sessionRefItem(owner: string, cwd: string, ref: SessionRef): ImportItem {
+  const mtimeIso = new Date(ref.mtimeMs).toISOString();
+  return {
+    sourceType: 'session_summary',
+    confidence: 'medium',
+    // Stable + mtime-bound so re-seeding an unchanged session is idempotent and a
+    // modified session re-seeds. (owner is the OB1 lane, kept out of the ref.)
+    sourceRef: `session-ref:${ref.store}:${ref.sessionId}:${Math.round(ref.mtimeMs)}`,
+    content: [
+      `Session history reference (${ref.store}). Reference-only — no transcript body.`,
+      `Owner: ${owner}`,
+      `Workspace cwd: ${cwd}`,
+      `Store: ${ref.store}`,
+      `Session: ${ref.sessionId}`,
+      `File: ${normalizedRef(ref.filePath)}`,
+      `Modified: ${mtimeIso}`,
+      `Size: ${ref.sizeBytes} bytes`,
+      `Events: ${ref.eventCount}`,
+      `Label: ${ref.store} session ${mtimeIso.slice(0, 10)} (${path.basename(cwd)})`,
+    ].join('\n'),
+  };
+}
+
 function addFile(items: ImportItem[], agent: string, filePath: string): void {
   const raw = fs.readFileSync(filePath, 'utf8').trim();
   if (!raw) return;
@@ -481,6 +545,57 @@ async function main(): Promise<void> {
   // Claude/Codex session history and report owner + seed-status. No --agent needed.
   if (hasFlag('--discover')) {
     reportDiscovery(discoverWorkspaces());
+    return;
+  }
+
+  // Reference-only session-history seeding for AGENT-dir owners (shared-workspace
+  // stays gated until its OB1 key exists; never falls back to an agent key).
+  if (hasFlag('--seed-history')) {
+    const dry = hasFlag('--dry-run');
+    const onlyOwner = readArg('--owner');
+    const maxSessions = readNumberArg('--max-sessions', Number(process.env['COLLECT_MAX_SESSIONS'] ?? DEFAULT_MAX_SESSIONS));
+    const maxAgeDays = readNumberArg('--max-age-days', Number(process.env['COLLECT_MAX_AGE_DAYS'] ?? DEFAULT_MAX_AGE_DAYS));
+    const delayMs = readNumberArg('--delay-ms', 1);
+    const continueOnError = hasFlag('--continue-on-error');
+    const workspaces = discoverWorkspaces().filter((w) => w.kind === 'agent' && (!onlyOwner || w.owner === onlyOwner));
+    process.stdout.write(`Reference-only session-history seeding | agent owners=${workspaces.length} | caps: latest ${maxSessions}/store within ${maxAgeDays}d | ${dry ? 'DRY-RUN' : 'SEEDING'}\n`);
+    let seeded = 0;
+    const errors: string[] = [];
+    for (const w of workspaces) {
+      const config = resolveOpenBrainRuntimeConfig(w.owner);
+      if (!config) { process.stdout.write(`  [skip] ${w.owner}: no OB1 key\n`); continue; }
+      for (const store of ['claude', 'codex'] as const) {
+        const files = store === 'claude' ? w.claudeFiles : w.codexFiles;
+        if (files.length === 0) continue;
+        const { kept, skipped } = capSessions(files, maxSessions, maxAgeDays);
+        process.stdout.write(`  ${w.owner}/${store}: ${files.length} sessions -> ${kept.length} within cap, ${skipped} skipped-by-cap\n`);
+        for (const ref of kept) {
+          const item = sessionRefItem(w.owner, w.cwd, ref);
+          if (dry) continue;
+          try {
+            await callOpenBrainTool(config, 'capture_agent_memory', {
+              agent_id: w.owner,
+              scope: 'private_agent',
+              project: 'session-history',
+              audience: [w.owner],
+              authority: 'context',
+              confidence: item.confidence,
+              source_type: item.sourceType,
+              source_ref: item.sourceRef,
+              content: item.content,
+            });
+            seeded += 1;
+            if (delayMs > 1) await sleep(delayMs);
+          } catch (error) {
+            const msg = `Failed ${w.owner}/${store} ${ref.sessionId}: ${error instanceof Error ? error.message : String(error)}`;
+            process.stderr.write(`${msg}\n`);
+            errors.push(msg);
+            if (!continueOnError) throw error;
+          }
+        }
+      }
+    }
+    process.stdout.write(`${dry ? 'DRY-RUN complete (no writes).' : `Seeded ${seeded} session reference(s).`}${errors.length ? ` ${errors.length} error(s).` : ''}\n`);
     return;
   }
 
