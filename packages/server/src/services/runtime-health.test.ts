@@ -489,4 +489,104 @@ describe('runtime health', () => {
     expect(report.agents[0].preSessionContext.status).toBe('warn');
     expect(report.agents[0].preSessionContext.detail).toContain('memory=false');
   });
+
+  // ─── Scheduler heartbeat (regression: 2026-05-31 newsletter miss — daemon ─────
+  // alive via launchd but tick() silent; no heartbeat → invisible failure)
+
+  it('reports scheduler heartbeat ok when file is fresh', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    // Heartbeat written 30 seconds ago — fresh
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 30_000).toISOString(),
+      tickCount: 42,
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('ok');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('30s');
+  });
+
+  it('reports scheduler heartbeat warn when stale 3 minutes (2026-05-31 class)', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    // Heartbeat written 3 minutes ago — warn threshold
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 3 * 60_000).toISOString(),
+      tickCount: 10,
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('warn');
+  });
+
+  it('reports scheduler heartbeat error when stale 6 minutes', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
+      tickCount: 5,
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('error');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('tick() appears to have stopped');
+  });
+
+  it('reports scheduler heartbeat warn when file is missing', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    // No .scheduler-heartbeat file written
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now: new Date('2026-05-31T07:20:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('warn');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('missing');
+  });
 });
