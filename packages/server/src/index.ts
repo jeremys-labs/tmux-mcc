@@ -22,6 +22,8 @@ import { createAgentStatusRouter } from './routes/agent-status.js';
 import { agentStatusBroadcaster } from './services/agent-status-broadcaster.js';
 import { createAvatarRouter } from './routes/avatars.js';
 import { createCronRouter } from './routes/cron.js';
+import { createWebhookRouter } from './routes/webhooks.js';
+import { createEventInboxStore } from './services/event-inbox.js';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
@@ -70,11 +72,18 @@ for (const agentKey of Object.keys(config.agents)) {
 // Database
 const dbPath = path.join(contentRoot, 'databases', 'chat.db');
 const db = createChatDB(dbPath);
+const eventInboxPath = path.join(contentRoot, 'databases', 'event-inbox.db');
+const eventInbox = createEventInboxStore(eventInboxPath);
 
 // Express app
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => {
+    (req as any).rawBody = Buffer.from(buf);
+  },
+}));
 
 // Mount routes
 app.use('/api', createHealthRouter());
@@ -90,6 +99,7 @@ app.use('/api/terminal', terminalRouter);
 app.use('/api', createAgentStatusRouter());
 app.use('/api', createAvatarRouter());
 app.use('/api', createCronRouter());
+app.use('/api', createWebhookRouter(eventInbox));
 
 // Serve built client (production)
 const clientDist = path.join(import.meta.dirname, '../../client/dist');
@@ -146,6 +156,7 @@ function shutdown() {
   console.log('[Server] Shutting down...');
   stopVoiceHealthChecks();
   db.close();
+  eventInbox.close();
   server.close(() => {
     console.log('[Server] Stopped');
     process.exit(0);

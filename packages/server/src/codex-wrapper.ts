@@ -17,6 +17,7 @@ import { createCodexReadinessGate } from './services/runtime-codex-readiness.js'
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { createEventInboxStore } from './services/event-inbox.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -29,6 +30,7 @@ ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const taskQueue = createRuntimeTaskQueue();
 const mailStore = createAgentMailStore();
+const eventInbox = createEventInboxStore(path.join(contentRoot, 'databases', 'event-inbox.db'));
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -155,12 +157,24 @@ const pollers = startRuntimeInboxPollers({
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
     },
   },
+  eventInbox: {
+    eventInbox,
+    submitPrompt: async (prompt, event) => {
+      const readinessResult = await waitForCodexInjectionWindow();
+      if (readinessResult === 'timeout') {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for event-inbox ${event.id}; injecting anyway\n`);
+      }
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
+      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+    },
+  },
 });
 
 function cleanup(): void {
   pollers.stop();
   process.stdout.off('resize', resize);
   mailStore.close();
+  eventInbox.close();
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }

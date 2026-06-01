@@ -19,6 +19,7 @@ import {
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { createEventInboxStore } from './services/event-inbox.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -28,6 +29,7 @@ ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
+const eventInbox = createEventInboxStore(path.join(contentRoot, 'databases', 'event-inbox.db'));
 const taskQueue = createRuntimeTaskQueue();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
@@ -135,6 +137,10 @@ const pollers = startRuntimeInboxPollers({
     mailStore: store,
     submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
   },
+  eventInbox: {
+    eventInbox,
+    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+  },
 });
 
 function cleanup(): void {
@@ -144,6 +150,7 @@ function cleanup(): void {
     process.stdin.setRawMode(false);
   }
   store.close();
+  eventInbox.close();
 }
 
 process.on('SIGINT', () => {
