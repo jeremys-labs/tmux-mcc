@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { callOpenBrainTool, resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
 
@@ -14,9 +15,14 @@ interface ImportItem {
   sourceType: SourceType;
 }
 
-const agentsRoot = '/Volumes/Repo-Drive/agents';
-const oldOpenClawRoot = '/Users/jeremylahners/.openclaw';
-const claudeMemDb = '/Volumes/Repo-Drive/claude-mem/claude-mem.db';
+// No hardcoded machine paths — all roots are driven by env vars or HOME-relative defaults.
+// AGENTS_ROOT: path to the agents directory (e.g. /Volumes/Repo-Drive/agents). Optional —
+//   legacy per-agent file seeding and fact-DB reads are skipped when absent.
+// OLD_OPENCLAW_ROOT: legacy openclaw workspace root. Defaults to ~/.openclaw.
+// CLAUDE_MEM_DB: path to claude-mem.db. Optional — claude-mem import skipped when absent.
+const agentsRoot = process.env['AGENTS_ROOT'];
+const oldOpenClawRoot = process.env['OLD_OPENCLAW_ROOT'] ?? path.join(os.homedir(), '.openclaw');
+const claudeMemDb = process.env['CLAUDE_MEM_DB'];
 const maxContentLength = 7000;
 const supportedAgents = new Set([
   'eli',
@@ -70,10 +76,16 @@ function listFiles(root: string, predicate: (filePath: string) => boolean): stri
   return result.sort();
 }
 
+// Encode a directory path to the Claude Code project-dir key format
+// (same encoding Claude uses: replace every '/' and '.' with '-').
+export function toClaudeProjectKey(dir: string): string {
+  return dir.replace(/[/.]/g, '-');
+}
+
 function normalizedRef(filePath: string): string {
-  return filePath
-    .replace(agentsRoot, 'agents')
-    .replace(oldOpenClawRoot, 'openclaw');
+  let p = filePath;
+  if (agentsRoot) p = p.replace(agentsRoot, 'agents');
+  return p.replace(oldOpenClawRoot, 'openclaw');
 }
 
 function splitContent(content: string): string[] {
@@ -281,6 +293,7 @@ function addFile(items: ImportItem[], agent: string, filePath: string): void {
 }
 
 function currentAgentFiles(agent: string): string[] {
+  if (!agentsRoot) return [];
   const root = path.join(agentsRoot, agent);
   return listFiles(root, (filePath) => {
     if (!filePath.endsWith('.md')) return false;
@@ -322,9 +335,9 @@ function oldAgentFiles(agent: string): string[] {
   ];
 
   const claudeProjectRoots = [
-    path.join('/Users/jeremylahners/.claude/projects', `-Volumes-Repo-Drive-agents-${agent}`, 'memory'),
-    path.join('/Users/jeremylahners/.claude/projects', `-Users-jeremylahners--openclaw-workspace-${agent}`, 'memory'),
-  ];
+    agentsRoot && path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(agentsRoot, agent)), 'memory'),
+    path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(oldOpenClawRoot, `workspace-${agent}`)), 'memory'),
+  ].filter((p): p is string => !!p);
 
   const claudeFiles = claudeProjectRoots.flatMap((root) => listFiles(root, (filePath) => {
     if (!filePath.endsWith('.md')) return false;
@@ -430,7 +443,7 @@ function addChunkDb(items: ImportItem[], agent: string, dbPath: string): void {
 }
 
 function addClaudeMem(items: ImportItem[], agent: string): void {
-  if (!fs.existsSync(claudeMemDb)) return;
+  if (!claudeMemDb || !fs.existsSync(claudeMemDb)) return;
   const db = new Database(claudeMemDb, { readonly: true });
   const observations = db.prepare(`
     select id, type, title, subtitle, facts, narrative, concepts, text, created_at
@@ -525,10 +538,12 @@ function buildItems(agent: string): ImportItem[] {
     addFile(items, agent, realPath);
   }
 
-  addFactDb(items, agent, path.join(agentsRoot, agent, 'memory', 'agent_memory.db'), seenFacts);
+  if (agentsRoot) {
+    addFactDb(items, agent, path.join(agentsRoot, agent, 'memory', 'agent_memory.db'), seenFacts);
+    addChunkDb(items, agent, path.join(agentsRoot, agent, 'memory', `${agent}.sqlite`));
+  }
   addFactDb(items, agent, path.join(oldOpenClawRoot, 'workspace', 'memory', 'agent_memory.db'), seenFacts);
   addChunkDb(items, agent, path.join(oldOpenClawRoot, 'memory', `${agent}.sqlite`));
-  addChunkDb(items, agent, path.join(agentsRoot, agent, 'memory', `${agent}.sqlite`));
   addClaudeMem(items, agent);
 
   const seenContent = new Set<string>();
@@ -664,7 +679,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}
