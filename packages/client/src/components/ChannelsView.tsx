@@ -46,13 +46,25 @@ export function ChannelsView() {
           <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-text-secondary">
             Filter interactions
           </label>
-          <input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter interactions..."
-            className="w-full rounded-lg border border-white/10 bg-surface-input px-3 py-2 text-sm focus:outline-none focus:border-white/30 focus:ring-1 focus:ring-white/20"
-          />
+          <div className="relative">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') setFilter(''); }}
+              placeholder="Filter interactions..."
+              className="w-full rounded-lg border border-white/10 bg-surface-input px-3 py-2 pr-8 text-sm focus:outline-none focus:border-white/30 focus:ring-1 focus:ring-white/20"
+            />
+            {filter && (
+              <button
+                aria-label="Clear filter"
+                onClick={() => setFilter('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary transition-colors"
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

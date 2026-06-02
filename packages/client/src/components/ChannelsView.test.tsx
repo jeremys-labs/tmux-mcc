@@ -101,6 +101,82 @@ describe('ChannelsView', () => {
     expect(screen.getByText(/when agents start coordinating/i)).toBeTruthy();
   });
 
+  it('does not show a clear button when the filter is empty', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({ interactions: [], loading: false, fetch: vi.fn() })
+    );
+
+    render(<ChannelsView />);
+
+    expect(screen.queryByRole('button', { name: /clear filter/i })).toBeNull();
+  });
+
+  it('shows a clear button when the filter has text, and clicking it resets the filter', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            content: 'Please review the websocket retry flow.',
+            type: 'review',
+            timestamp: new Date('2026-04-11T19:45:00Z').getTime(),
+          },
+          {
+            from: 'Nova',
+            to: 'Isla',
+            content: 'Daily standup summary is ready.',
+            type: 'update',
+            timestamp: new Date('2026-04-11T19:15:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    const input = screen.getByPlaceholderText(/filter interactions/i);
+
+    fireEvent.change(input, { target: { value: 'Marcus' } });
+    expect(screen.queryByText(/Daily standup summary is ready./i)).toBeNull();
+
+    const clearBtn = screen.getByRole('button', { name: /clear filter/i });
+    expect(clearBtn).toBeTruthy();
+
+    fireEvent.click(clearBtn);
+    expect((input as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(/Daily standup summary is ready./i)).toBeTruthy();
+  });
+
+  it('clears the filter when Escape is pressed in the filter input', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            content: 'Please review the websocket retry flow.',
+            type: 'review',
+            timestamp: new Date('2026-04-11T19:45:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    const input = screen.getByPlaceholderText(/filter interactions/i);
+    fireEvent.change(input, { target: { value: 'something' } });
+    expect((input as HTMLInputElement).value).toBe('something');
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
   it('shows agent emoji when the agent key is known', () => {
     mockAgentStore.mockImplementation((selector: (state: any) => any) =>
       selector({
