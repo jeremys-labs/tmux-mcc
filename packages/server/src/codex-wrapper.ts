@@ -17,7 +17,7 @@ import { createCodexReadinessGate } from './services/runtime-codex-readiness.js'
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
-import { createEventInboxStore } from './services/event-inbox.js';
+import { createEventInboxStore } from '@agent-comms/event-inbox';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 

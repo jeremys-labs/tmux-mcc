@@ -3,8 +3,8 @@ import type { EventInboxRecord } from './event-inbox.js';
 import {
   deliverRuntimeEventInbox,
   enqueuePendingRuntimeEventInbox,
-  formatEventInboxForRuntime,
 } from './runtime-event-inbox.js';
+import { formatEventInboxForRuntime } from '@agent-comms/event-inbox';
 import { createRuntimeEventEmitter } from './runtime-events.js';
 
 vi.mock('fs', () => ({

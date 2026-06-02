@@ -22,8 +22,7 @@ import { createAgentStatusRouter } from './routes/agent-status.js';
 import { agentStatusBroadcaster } from './services/agent-status-broadcaster.js';
 import { createAvatarRouter } from './routes/avatars.js';
 import { createCronRouter } from './routes/cron.js';
-import { createWebhookRouter } from './routes/webhooks.js';
-import { createEventInboxStore } from './services/event-inbox.js';
+import { createEventInboxStore, createEventWebhookRouter } from '@agent-comms/event-inbox';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
@@ -99,7 +98,7 @@ app.use('/api/terminal', terminalRouter);
 app.use('/api', createAgentStatusRouter());
 app.use('/api', createAvatarRouter());
 app.use('/api', createCronRouter());
-app.use('/api', createWebhookRouter(eventInbox));
+app.use('/api', createEventWebhookRouter(eventInbox));
 
 // Serve built client (production)
 const clientDist = path.join(import.meta.dirname, '../../client/dist');

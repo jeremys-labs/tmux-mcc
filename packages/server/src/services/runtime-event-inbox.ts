@@ -1,8 +1,9 @@
 import fs from 'fs';
 import {
+  formatEventInboxForRuntime,
   type EventInboxRecord,
   type EventInboxStore,
-} from './event-inbox.js';
+} from '@agent-comms/event-inbox';
 import {
   runInboundRuntimeTurn,
   type RuntimeEventEmitter,
@@ -25,26 +26,6 @@ export interface EnqueuePendingRuntimeEventInboxInput extends Omit<RuntimeEventI
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
   fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
-}
-
-export function formatEventInboxForRuntime(event: EventInboxRecord): string {
-  const payload = JSON.stringify(event.payload, null, 2);
-  return [
-    `[Event Inbox] New ${event.source} event for ${event.ownerAgent}.`,
-    '',
-    `id: ${event.id}`,
-    `type: ${event.eventType}`,
-    `route: ${event.routeKey}`,
-    `priority: ${event.priority}`,
-    `risk: ${event.risk}`,
-    `summary: ${event.summary}`,
-    event.risk === 'medium' || event.risk === 'high'
-      ? 'guardrail: do not take actuation or external-write action unless the event policy explicitly allows it.'
-      : null,
-    '',
-    'payload:',
-    payload,
-  ].filter(Boolean).join('\n');
 }
 
 export async function deliverRuntimeEventInbox(input: RuntimeEventInboxDeliveryInput): Promise<void> {
