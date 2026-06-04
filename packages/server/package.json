@@ -12,6 +12,7 @@
     "open-brain:grooming-cluster": "tsx src/open-brain-grooming-cluster.ts",
     "open-brain:grooming-review": "tsx src/open-brain-grooming-review.ts",
     "open-brain:grooming-decisions": "tsx src/open-brain-grooming-decisions.ts",
+    "open-brain:operator-dashboard": "tsx src/open-brain-operator-dashboard.ts",
     "open-brain:memory-audit": "tsx src/open-brain-memory-audit.ts",
     "open-brain:recall-traces": "tsx src/open-brain-recall-traces.ts",
     "open-brain:runtime-health": "tsx src/open-brain-runtime-health.ts",
