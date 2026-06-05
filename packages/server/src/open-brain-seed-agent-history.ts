@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { callOpenBrainTool, resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js';
 
@@ -13,20 +14,18 @@ interface ImportItem {
   sourceType: SourceType;
 }
 
-const agentsRoot = '/Volumes/Repo-Drive/agents';
-const oldOpenClawRoot = '/Users/jeremylahners/.openclaw';
-const claudeMemDb = '/Volumes/Repo-Drive/claude-mem/claude-mem.db';
+const homeDir = process.env.HOME ?? '';
+const agentsRoot = process.env.MCC_AGENTS_ROOT ?? path.join(homeDir, 'agents');
+const oldOpenClawRoot = process.env.MCC_OPENCLAW_ROOT ?? path.join(homeDir, '.openclaw');
+const claudeMemDb = process.env.CLAUDE_MEM_DB ?? path.join(homeDir, 'claude-mem', 'claude-mem.db');
 const maxContentLength = 7000;
-const supportedAgents = new Set([
-  'eli',
-  'isla',
-  'lena',
-  'marcus',
-  'nova',
-  'remy',
-  'val',
-  'zara',
-]);
+
+export function discoverAgents(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root)
+    .filter((name) => fs.existsSync(path.join(root, name, 'CLAUDE.md')))
+    .sort();
+}
 
 function readArg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -154,9 +153,10 @@ function oldAgentFiles(agent: string): string[] {
     path.join(oldOpenClawRoot, 'workspace', 'memory', 'agents', `${agent}.backup.md`),
   ];
 
+  const claudeProjectsRoot = path.join(homeDir, '.claude', 'projects');
   const claudeProjectRoots = [
-    path.join('/Users/jeremylahners/.claude/projects', `-Volumes-Repo-Drive-agents-${agent}`, 'memory'),
-    path.join('/Users/jeremylahners/.claude/projects', `-Users-jeremylahners--openclaw-workspace-${agent}`, 'memory'),
+    path.join(claudeProjectsRoot, path.join(agentsRoot, agent).replace(/\//g, '-'), 'memory'),
+    path.join(claudeProjectsRoot, path.join(oldOpenClawRoot, `workspace-${agent}`).replace(/\//g, '-'), 'memory'),
   ];
 
   const claudeFiles = claudeProjectRoots.flatMap((root) => listFiles(root, (filePath) => {
@@ -375,8 +375,11 @@ function buildItems(agent: string): ImportItem[] {
 
 async function main(): Promise<void> {
   const agent = readArg('--agent');
-  if (!agent || !supportedAgents.has(agent)) {
-    throw new Error(`Usage: open-brain-seed-agent-history --agent ${[...supportedAgents].sort().join('|')} [--dry-run]`);
+  const knownAgents = discoverAgents(agentsRoot);
+  const agentDir = agent ? path.join(agentsRoot, agent) : '';
+  if (!agent || !fs.existsSync(path.join(agentDir, 'CLAUDE.md'))) {
+    const agentList = knownAgents.length > 0 ? knownAgents.join('|') : '<agent-name>';
+    throw new Error(`Usage: open-brain-seed-agent-history --agent ${agentList} [--dry-run]`);
   }
 
   const dryRun = hasFlag('--dry-run');
@@ -439,7 +442,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exit(1);
-});
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}
