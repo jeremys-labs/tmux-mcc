@@ -177,6 +177,102 @@ describe('ChannelsView', () => {
     expect((input as HTMLInputElement).value).toBe('');
   });
 
+  it('shows a no-match message (not the generic empty state) when filter matches nothing', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            content: 'Please review the websocket retry flow.',
+            type: 'review',
+            timestamp: new Date('2026-04-11T19:45:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    fireEvent.change(screen.getByPlaceholderText(/filter interactions/i), {
+      target: { value: 'zzznomatch' },
+    });
+
+    // Should NOT show the generic "no interactions yet" message
+    expect(screen.queryByText(/no recent agent interactions yet/i)).toBeNull();
+    // Should show a filter-specific message
+    expect(screen.getByText(/no interactions match/i)).toBeTruthy();
+  });
+
+  it('shows a clear-filter link in the no-match state that resets the filter', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            content: 'Please review the websocket retry flow.',
+            type: 'review',
+            timestamp: new Date('2026-04-11T19:45:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    const input = screen.getByPlaceholderText(/filter interactions/i);
+    fireEvent.change(input, { target: { value: 'zzznomatch' } });
+
+    // The no-match empty state shows an inline "clear the filter" link-button
+    const clearLink = screen.getByText(/clear the filter/i);
+    fireEvent.click(clearLink);
+
+    expect((input as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(/Please review the websocket retry flow./i)).toBeTruthy();
+  });
+
+  it('shows "X of Y interactions" count when filter is active and has results', () => {
+    mockChannelStore.mockImplementation((selector: (state: any) => any) =>
+      selector({
+        interactions: [
+          {
+            from: 'Marcus',
+            to: 'Eli',
+            content: 'Please review the websocket retry flow.',
+            type: 'review',
+            timestamp: new Date('2026-04-11T19:45:00Z').getTime(),
+          },
+          {
+            from: 'Nova',
+            to: 'Isla',
+            content: 'Daily standup summary is ready.',
+            type: 'update',
+            timestamp: new Date('2026-04-11T19:15:00Z').getTime(),
+          },
+        ],
+        loading: false,
+        fetch: vi.fn(),
+      })
+    );
+
+    render(<ChannelsView />);
+
+    // Without filter: shows total count only
+    expect(screen.getByText(/showing 2 recent interactions/i)).toBeTruthy();
+
+    // With active filter matching 1 of 2
+    fireEvent.change(screen.getByPlaceholderText(/filter interactions/i), {
+      target: { value: 'Marcus' },
+    });
+
+    expect(screen.getByText(/1 of 2/i)).toBeTruthy();
+  });
+
   it('shows agent emoji when the agent key is known', () => {
     mockAgentStore.mockImplementation((selector: (state: any) => any) =>
       selector({

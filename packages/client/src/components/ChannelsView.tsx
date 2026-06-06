@@ -70,7 +70,7 @@ export function ChannelsView() {
 
       {loading ? (
         <div className="flex flex-1 items-center justify-center text-sm text-text-secondary">Loading recent channel activity...</div>
-      ) : filteredInteractions.length === 0 ? (
+      ) : interactions.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
           <div className="mb-3 text-4xl">📭</div>
           <h3 className="text-base font-semibold text-text-primary">No recent agent interactions yet</h3>
@@ -78,10 +78,28 @@ export function ChannelsView() {
             When agents start coordinating, handoffs and updates will appear here automatically.
           </p>
         </div>
+      ) : filteredInteractions.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <div className="mb-3 text-4xl">🔍</div>
+          <h3 className="text-base font-semibold text-text-primary">No interactions match your filter</h3>
+          <p className="mt-2 max-w-md text-sm text-text-secondary">
+            Try a different term or{' '}
+            <button
+              aria-label="Clear filter"
+              onClick={() => setFilter('')}
+              className="text-accent underline hover:text-accent/80 transition-colors"
+            >
+              clear the filter
+            </button>{' '}
+            to see all interactions.
+          </p>
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto pr-1">
           <div className="mb-3 text-xs text-text-secondary">
-            Showing {filteredInteractions.length} recent interaction{filteredInteractions.length === 1 ? '' : 's'}
+            {filter.trim()
+              ? `Showing ${filteredInteractions.length} of ${interactions.length} interaction${interactions.length === 1 ? '' : 's'}`
+              : `Showing ${filteredInteractions.length} recent interaction${filteredInteractions.length === 1 ? '' : 's'}`}
           </div>
           <div className="space-y-3">
             {filteredInteractions.map((interaction, index) => (
