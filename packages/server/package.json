@@ -37,7 +37,10 @@
   "dependencies": {
     "@agent-comms/a2a-client": "file:../../../agent-comms/packages/a2a-client",
     "@agent-comms/discord-bridge": "file:../../../agent-comms/packages/discord-bridge",
+    "@agent-comms/event-inbox": "file:../../../agent-comms/packages/event-inbox",
     "@agent-comms/mailbox": "file:../../../agent-comms/packages/mailbox",
+    "@agent-system/agent-memory": "file:../../../agent-memory",
+    "@agent-system/agent-skills": "file:../../../agent-skills",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",

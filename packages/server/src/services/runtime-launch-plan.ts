@@ -22,6 +22,11 @@ export type RuntimeLaunchPlan = {
   env: Record<string, string>;
 };
 
+const SERVICE_MEMORY_ENV = {
+  AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
+  AGENT_MEMORY_SERVICE_MODE: 'service',
+};
+
 export function parseSupportedRuntime(value: string): SupportedRuntime {
   if (value === 'claude' || value === 'codex') return value;
   throw new Error(`Unsupported runtime: ${value}`);
@@ -54,6 +59,7 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
       cwd: input.agentDir,
       env: {
         CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
+        ...SERVICE_MEMORY_ENV,
       },
     };
   }
@@ -70,6 +76,7 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
     cwd: input.agentDir,
     env: {
       CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
+      ...SERVICE_MEMORY_ENV,
     },
   };
 }

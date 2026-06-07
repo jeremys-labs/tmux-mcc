@@ -25,6 +25,8 @@ describe('runtime launch plan', () => {
       cwd: agentDir,
       env: {
         CONTENT_ROOT: '/Users/jeremy/.tmux-mcc',
+        AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
+        AGENT_MEMORY_SERVICE_MODE: 'service',
       },
     });
     expect(plan.args).toEqual([
@@ -73,6 +75,8 @@ describe('runtime launch plan', () => {
       cwd: agentDir,
       env: {
         CONTENT_ROOT: '/Users/jeremy/.tmux-mcc',
+        AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
+        AGENT_MEMORY_SERVICE_MODE: 'service',
       },
     });
     expect(plan.args).toEqual([
