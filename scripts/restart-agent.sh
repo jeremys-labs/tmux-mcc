@@ -2,9 +2,8 @@
 
 set -euo pipefail
 
-SESSION="${TMUX_SESSION:-agents}"
 AGENTS_DIR="${AGENTS_DIR:-/Volumes/Repo-Drive/agents}"
-REPO_ROOT="${MCC_TMUX_ROOT:-/Volumes/Repo-Drive/src/mcc-tmux}"
+SUPERVISOR_URL="${AGENT_SUPERVISOR_URL:-http://127.0.0.1:4318}"
 FORCE_DISRUPTION=0
 
 if [[ $# -lt 1 ]]; then
@@ -18,47 +17,35 @@ for arg in "$@"; do
   [[ "$arg" == "--force" ]] && FORCE_DISRUPTION=1
 done
 
-source "${REPO_ROOT}/scripts/lib/protect-working.sh"
-
-agent_dir="${AGENTS_DIR}/${agent}"
-runtime_file="${agent_dir}/.runtime"
-tmux_target="${SESSION}:${agent}"
-
-[[ -d "$agent_dir" ]] || { echo "Agent directory not found: $agent_dir" >&2; exit 1; }
-[[ -f "${agent_dir}/launch.sh" ]] || { echo "Launcher not found: ${agent_dir}/launch.sh" >&2; exit 1; }
-tmux list-panes -t "$tmux_target" >/dev/null 2>&1 || { echo "tmux target not found: $tmux_target" >&2; exit 1; }
-
-runtime="$(tr -d '\n' < "$runtime_file" 2>/dev/null || true)"
-[[ "$runtime" == "claude" || "$runtime" == "codex" ]] || {
-  echo "Cannot determine current runtime for $agent" >&2
+[[ -d "${AGENTS_DIR}/${agent}" ]] || {
+  echo "Agent directory not found: ${AGENTS_DIR}/${agent}" >&2
   exit 1
 }
 
-protect_working_check "$agent" "$FORCE_DISRUPTION"
+request_id="restart-${agent}-$(date +%s)-$$"
+body="$(
+  jq -cn \
+    --arg requestId "$request_id" \
+    --arg agent "$agent" \
+    --argjson force "$([[ "$FORCE_DISRUPTION" == "1" ]] && echo true || echo false)" \
+    '{requestId: $requestId, operation: "restart", agent: $agent, force: $force}'
+)"
+response_file="$(mktemp)"
+trap 'rm -f "$response_file"' EXIT
 
-echo "Restarting $agent on $runtime via $tmux_target"
-tmux set-option -p -t "$tmux_target" remain-on-exit on
-tmux send-keys -t "$tmux_target" "/exit" Enter
+http_status="$(
+  curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+    -X POST "${SUPERVISOR_URL}/v1/commands" \
+    -H 'content-type: application/json' \
+    --data "$body" || true
+)"
 
-for _ in $(seq 1 40); do
-  if tmux display-message -p -t "$tmux_target" '#{pane_dead}' 2>/dev/null | grep -q '^1$'; then
-    break
-  fi
-  sleep 0.5
-done
+if [[ "$http_status" == "200" ]]; then
+  jq -r '"Restarted: \(.agent) (\(.runtime)) via agent-supervisor"' "$response_file"
+  exit 0
+fi
 
-tmux respawn-pane -k -t "$tmux_target" -c "$agent_dir" "./launch.sh --runtime $runtime"
-tmux set-option -p -u -t "$tmux_target" remain-on-exit
-
-for _ in $(seq 1 60); do
-  if curl -fsS "${AGENT_SUPERVISOR_URL:-http://127.0.0.1:4318}/v1/agents" \
-    | jq -e --arg agent "$agent" '.agents[] | select(.agent == $agent and .process.status == "running")' \
-    >/dev/null; then
-    echo "Restarted: $agent ($runtime)"
-    exit 0
-  fi
-  sleep 1
-done
-
-echo "Agent did not return healthy within 60 seconds: $agent" >&2
+reason="$(jq -r '.detail // .error // "agent-supervisor unavailable"' "$response_file" 2>/dev/null || cat "$response_file")"
+echo "REFUSED: supervisor restart for $agent failed: $reason" >&2
+[[ "$http_status" == "409" ]] && echo "Pass --force only with Jeremy's explicit override." >&2
 exit 1
