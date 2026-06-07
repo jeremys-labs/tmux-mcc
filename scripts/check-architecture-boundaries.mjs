@@ -7,7 +7,7 @@ const sourceRoots = [
   path.join(repoRoot, 'packages', 'client', 'src'),
 ];
 const forbidden = [
-  { pattern: /agent-memory\/src|agent-supervisor\/src/, reason: 'consume service/package contracts, not implementation source' },
+  { pattern: /agent-(?:memory|supervisor|harness)\/src/, reason: 'consume service/package contracts, not implementation source' },
   { pattern: /from ['"][^'"]*\/packages\/server\/src\//, reason: 'do not import MCC server internals across ownership boundaries' },
 ];
 
