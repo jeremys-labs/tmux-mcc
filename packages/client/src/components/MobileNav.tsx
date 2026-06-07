@@ -4,6 +4,7 @@ import { useUIStore } from '../stores/uiStore';
 import { useAgentStatusStore } from '../stores/agentStatusStore';
 import { useActiveAgent } from '../hooks/useActiveAgent';
 import { AgentAvatar } from './AgentAvatar';
+import { useSupervisorStatusStore } from '../stores/supervisorStatusStore';
 
 const VIEW_ICONS: Record<string, string> = {
   office: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4',
@@ -19,6 +20,7 @@ export function MobileNav() {
   const setView = useUIStore((s) => s.setView);
   const navigate = useNavigate();
   const statuses = useAgentStatusStore((s) => s.statuses);
+  const supervisorStatuses = useSupervisorStatusStore((s) => s.agents);
 
   const agentKeys = Object.keys(agents).sort((a, b) => {
     const order = { awaiting_input: 0, thinking: 1, idle: 2 };
@@ -32,6 +34,10 @@ export function MobileNav() {
         {agentKeys.map((key) => {
           const isActive = activeAgentKey === key && !activeView;
           const status = statuses[key];
+          const supervisorStatus = supervisorStatuses[key];
+          const unhealthy = Boolean(supervisorStatus && (
+            supervisorStatus.process.status !== 'running' || supervisorStatus.progress.status === 'hung'
+          ));
           return (
             <div key={key} className="relative shrink-0">
               <button
@@ -48,6 +54,9 @@ export function MobileNav() {
               )}
               {status === 'thinking' && (
                 <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-yellow-400 pointer-events-none" />
+              )}
+              {unhealthy && (
+                <span className="absolute bottom-0 left-0 w-3 h-3 rounded-full bg-red-500 ring-2 ring-surface-raised pointer-events-none" />
               )}
             </div>
           );

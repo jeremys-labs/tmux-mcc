@@ -6,7 +6,7 @@ SESSION="${TMUX_SESSION:-agents}"
 AGENTS_DIR="${AGENTS_DIR:-/Volumes/Repo-Drive/agents}"
 
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 <agent> <claude|codex> [reason...]" >&2
+  echo "Usage: $0 <agent> <claude|codex> [--force] [reason...]" >&2
   exit 1
 fi
 
@@ -22,7 +22,16 @@ fi
 agent="$1"
 target="$2"
 shift 2
-reason="${*:-user requested}"
+force_disruption=0
+reason_parts=()
+for arg in "$@"; do
+  if [[ "$arg" == "--force" ]]; then
+    force_disruption=1
+  else
+    reason_parts+=("$arg")
+  fi
+done
+reason="${reason_parts[*]:-user requested}"
 
 case "$target" in
   claude|codex) ;;
@@ -38,6 +47,7 @@ handoff_file="${agent_dir}/.runtime-handoff.md"
 runtime_file="${agent_dir}/.runtime"
 tmux_target="${SESSION}:${agent}"
 repo_root="${MCC_TMUX_ROOT:-/Volumes/Repo-Drive/src/mcc-tmux}"
+source "${repo_root}/scripts/lib/protect-working.sh"
 
 if [[ ! -d "$agent_dir" ]]; then
   echo "Agent directory not found: $agent_dir" >&2
@@ -67,6 +77,8 @@ if [[ "$current_runtime" == "$target" ]]; then
   echo "Already on $target for $agent"
   exit 0
 fi
+
+protect_working_check "$agent" "$force_disruption"
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "tmux session not found: $SESSION" >&2

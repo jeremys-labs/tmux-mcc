@@ -2,6 +2,7 @@ import { useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, useParams } from 'react-router-dom';
 import { useConfig } from './hooks/useConfig';
 import { useAgentStatusStream } from './hooks/useAgentStatusStream';
+import { useSupervisorStatus } from './hooks/useSupervisorStatus';
 import { useUIStore } from './stores/uiStore';
 import { useAgentStore } from './stores/agentStore';
 import { useConnectionStore } from './stores/connectionStore';
@@ -19,6 +20,7 @@ const OfficeCanvas = lazy(() => import('./canvas/OfficeCanvas').then(m => ({ def
 export default function App() {
   useConfig();
   useAgentStatusStream();
+  useSupervisorStatus();
   const loading = useAgentStore((s) => s.loading);
   const error = useAgentStore((s) => s.error);
   const setGatewayStatus = useConnectionStore((s) => s.setGatewayStatus);

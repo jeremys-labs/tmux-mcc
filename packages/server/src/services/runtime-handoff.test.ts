@@ -84,6 +84,16 @@ describe('runtime handoff', () => {
       'esac',
       '',
     ].join('\n'), { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, 'curl'), [
+      '#!/usr/bin/env bash',
+      'output=""',
+      'while [[ $# -gt 0 ]]; do',
+      '  if [[ "$1" == "--output" ]]; then output="$2"; shift 2; else shift; fi',
+      'done',
+      'printf \'{"agent":"eli","safeToDisrupt":true,"forced":false,"state":"idle","reason":"agent is idle"}\' > "$output"',
+      'printf 200',
+      '',
+    ].join('\n'), { mode: 0o755 });
 
     const result = spawnSync('bash', [path.join(repoRoot, 'scripts/switch-runtime.sh'), 'eli', 'codex', 'test switch'], {
       cwd: repoRoot,

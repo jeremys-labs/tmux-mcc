@@ -5,13 +5,25 @@
 # Usage:
 #   ./scripts/stop-mcc.sh              # stop server + client only
 #   ./scripts/stop-mcc.sh --all        # also kill the agents tmux session
+#   ./scripts/stop-mcc.sh --all --force # explicit override for working agents
 
 set -euo pipefail
 
 KILL_AGENTS=false
+FORCE_DISRUPTION=0
 for arg in "$@"; do
   [[ "$arg" == "--all" ]] && KILL_AGENTS=true
+  [[ "$arg" == "--force" ]] && FORCE_DISRUPTION=1
 done
+
+MCC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${MCC_DIR}/scripts/lib/protect-working.sh"
+
+if $KILL_AGENTS && tmux has-session -t agents 2>/dev/null; then
+  while IFS= read -r agent; do
+    protect_working_check "$agent" "$FORCE_DISRUPTION"
+  done < <(tmux list-windows -t agents -F '#{window_name}')
+fi
 
 echo "=== MCC Shutdown ==="
 

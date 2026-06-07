@@ -6,6 +6,7 @@ import { useAgentStatusStore } from '../stores/agentStatusStore';
 import { useActiveAgent } from '../hooks/useActiveAgent';
 import type { AgentStatus } from '../stores/agentStatusStore';
 import { AgentAvatar } from './AgentAvatar';
+import { useSupervisorStatusStore } from '../stores/supervisorStatusStore';
 
 const VIEW_ICONS: Record<string, string> = {
   office: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4',
@@ -21,7 +22,11 @@ function AgentRailButton({ agentKey }: { agentKey: string }) {
   const clearView = useUIStore((s) => s.clearView);
   const navigate = useNavigate();
   const status = useAgentStatusStore((s) => s.statuses[agentKey]);
+  const supervisorStatus = useSupervisorStatusStore((s) => s.agents[agentKey]);
   const isActive = activeAgentKey === agentKey;
+  const unhealthy = Boolean(supervisorStatus && (
+    supervisorStatus.process.status !== 'running' || supervisorStatus.progress.status === 'hung'
+  ));
 
   if (!agent) return null;
 
@@ -29,7 +34,7 @@ function AgentRailButton({ agentKey }: { agentKey: string }) {
     <div className="relative">
       <button
         onClick={() => { navigate(`/agent/${agentKey}`); clearView(); }}
-        title={agent.name}
+        title={unhealthy ? `${agent.name}: ${supervisorStatus?.progress.detail ?? 'runtime unavailable'}` : agent.name}
         className={[
           'rounded-full transition-opacity duration-150',
           isActive ? 'opacity-100 ring-2 ring-accent ring-offset-1 ring-offset-surface' : 'opacity-60 hover:opacity-100',
@@ -44,6 +49,9 @@ function AgentRailButton({ agentKey }: { agentKey: string }) {
       )}
       {status === 'thinking' && (
         <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-yellow-400 pointer-events-none" />
+      )}
+      {unhealthy && (
+        <span className="absolute bottom-0 left-0 w-3.5 h-3.5 rounded-full bg-red-500 ring-2 ring-surface pointer-events-none" />
       )}
     </div>
   );
