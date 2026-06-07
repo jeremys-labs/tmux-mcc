@@ -36,7 +36,9 @@ export function MobileNav() {
           const status = statuses[key];
           const supervisorStatus = supervisorStatuses[key];
           const unhealthy = Boolean(supervisorStatus && (
-            supervisorStatus.process.status !== 'running' || supervisorStatus.progress.status === 'hung'
+            supervisorStatus.process.status !== 'running'
+            || supervisorStatus.progress.status === 'hung'
+            || supervisorStatus.progress.status === 'blocked'
           ));
           return (
             <div key={key} className="relative shrink-0">

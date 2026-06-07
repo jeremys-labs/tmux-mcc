@@ -25,7 +25,9 @@ function AgentRailButton({ agentKey }: { agentKey: string }) {
   const supervisorStatus = useSupervisorStatusStore((s) => s.agents[agentKey]);
   const isActive = activeAgentKey === agentKey;
   const unhealthy = Boolean(supervisorStatus && (
-    supervisorStatus.process.status !== 'running' || supervisorStatus.progress.status === 'hung'
+    supervisorStatus.process.status !== 'running'
+    || supervisorStatus.progress.status === 'hung'
+    || supervisorStatus.progress.status === 'blocked'
   ));
 
   if (!agent) return null;
