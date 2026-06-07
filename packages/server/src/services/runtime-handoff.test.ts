@@ -63,34 +63,40 @@ describe('runtime handoff', () => {
     expect(fs.readFileSync(consumedRuntimeHandoffPath(tmpDir), 'utf8')).toContain('consumed_at: 2026-05-11T13:01:00.000Z');
   });
 
-  it('switch-runtime prepares handoff without prewriting the target runtime', () => {
+  it('switch-runtime delegates to the supervisor without prewriting the target runtime', () => {
+    // Runtime switches were delegated to the agent-supervisor (commit "Delegate
+    // runtime switches to supervisor"): switch-runtime.sh now POSTs a command to
+    // the supervisor, which owns writing the handoff (.runtime-handoff.md) and
+    // respawning the tmux pane. Those effects are covered by the supervisor's own
+    // handoff/lifecycle tests; here we assert the script's remaining contract —
+    // it delegates the correct command and never prewrites .runtime.
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const repoRoot = path.resolve(thisDir, '../../../..');
     const agentsRoot = path.join(tmpDir, 'agents');
     const agentDir = path.join(agentsRoot, 'eli');
     const fakeBin = path.join(tmpDir, 'bin');
-    const tmuxLog = path.join(tmpDir, 'tmux.log');
+    const requestLog = path.join(tmpDir, 'supervisor-request.log');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.mkdirSync(fakeBin, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'launch.sh'), '#!/usr/bin/env bash\nexit 0\n');
     fs.writeFileSync(path.join(agentDir, '.runtime'), 'claude\n');
-    fs.writeFileSync(path.join(fakeBin, 'tmux'), [
-      '#!/usr/bin/env bash',
-      `printf '%s\\n' "$*" >> ${JSON.stringify(tmuxLog)}`,
-      'case "$1" in',
-      '  has-session|list-panes|set-option|send-keys|respawn-pane) exit 0 ;;',
-      '  display-message) echo 1; exit 0 ;;',
-      '  *) exit 0 ;;',
-      'esac',
-      '',
-    ].join('\n'), { mode: 0o755 });
+    // Fake curl: record the POSTed command body and URL, return a 200
+    // command-result so the script reports success.
     fs.writeFileSync(path.join(fakeBin, 'curl'), [
       '#!/usr/bin/env bash',
       'output=""',
+      'data=""',
+      'url=""',
       'while [[ $# -gt 0 ]]; do',
-      '  if [[ "$1" == "--output" ]]; then output="$2"; shift 2; else shift; fi',
+      '  case "$1" in',
+      '    --output) output="$2"; shift 2 ;;',
+      '    --data) data="$2"; shift 2 ;;',
+      '    http://*|https://*) url="$1"; shift ;;',
+      '    *) shift ;;',
+      '  esac',
       'done',
-      'printf \'{"agent":"eli","safeToDisrupt":true,"forced":false,"state":"idle","reason":"agent is idle"}\' > "$output"',
+      `printf '%s\\n%s\\n' "$url" "$data" >> ${JSON.stringify(requestLog)}`,
+      'printf \'{"agent":"eli","runtime":"codex","status":"switch-prepared"}\' > "$output"',
       'printf 200',
       '',
     ].join('\n'), { mode: 0o755 });
@@ -108,14 +114,19 @@ describe('runtime handoff', () => {
     });
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    // The script must not prewrite the target runtime — the supervisor flips it
+    // as part of the restart.
     expect(fs.readFileSync(path.join(agentDir, '.runtime'), 'utf8')).toBe('claude\n');
-    expect(loadPendingRuntimeHandoff(agentDir)?.handoff).toMatchObject({
-      schema_version: 1,
+    // It delegated the correct switch-runtime command to the supervisor.
+    const request = fs.readFileSync(requestLog, 'utf8');
+    expect(request).toContain('/v1/commands');
+    const body = JSON.parse(request.trim().split('\n').slice(1).join('\n')) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      operation: 'switch-runtime',
       agent: 'eli',
-      from_runtime: 'claude',
-      to_runtime: 'codex',
+      runtime: 'codex',
       reason: 'test switch',
+      force: false,
     });
-    expect(fs.readFileSync(tmuxLog, 'utf8')).toContain('respawn-pane');
   });
 });
