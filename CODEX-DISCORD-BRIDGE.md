@@ -70,10 +70,10 @@ Backward compatibility remains in place for the older single-binding shape:
 }
 ```
 
-The helper script for a single agent still works:
+To start the gateway for a single agent:
 
 ```bash
-./scripts/start-codex-discord-bridge.sh zara
+./scripts/start-codex-discord-gateway.sh zara
 ```
 
 To run a multi-binding gateway, export all referenced token env vars and run:
@@ -92,7 +92,7 @@ If agents already have working Claude Discord setups, you can reuse those instea
 Single agent:
 
 ```bash
-./scripts/start-codex-discord-bridge.sh zara
+./scripts/start-codex-discord-gateway.sh zara
 ```
 
 Multiple agents:
