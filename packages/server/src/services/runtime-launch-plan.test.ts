@@ -16,6 +16,7 @@ describe('runtime launch plan', () => {
       runtime: 'claude',
       mccRoot,
       homeDir: '/Users/jeremy',
+      env: {},
     });
 
     expect(plan).toMatchObject({
@@ -66,6 +67,7 @@ describe('runtime launch plan', () => {
       runtime: 'codex',
       mccRoot,
       homeDir: '/Users/jeremy',
+      env: {},
     });
 
     expect(plan).toMatchObject({
@@ -93,6 +95,40 @@ describe('runtime launch plan', () => {
       '--',
       '--dangerously-bypass-approvals-and-sandbox',
     ]);
+  });
+
+  it('lets the harness env stage the memory-service mode (shadow-first cutover)', () => {
+    const plan = buildRuntimeLaunchPlan({
+      agent: 'enzo',
+      agentDir,
+      runtime: 'claude',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      env: {
+        AGENT_MEMORY_SERVICE_MODE: 'shadow',
+        AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
+        AGENT_MEMORY_SERVICE_TOKEN: 'staging-token',
+      },
+    });
+
+    expect(plan.env).toMatchObject({
+      AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
+      AGENT_MEMORY_SERVICE_MODE: 'shadow',
+      AGENT_MEMORY_SERVICE_TOKEN: 'staging-token',
+    });
+  });
+
+  it('omits the service token when the harness env does not set one', () => {
+    const plan = buildRuntimeLaunchPlan({
+      agent: 'enzo',
+      agentDir,
+      runtime: 'claude',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      env: {},
+    });
+
+    expect(plan.env).not.toHaveProperty('AGENT_MEMORY_SERVICE_TOKEN');
   });
 
   it('rejects unsupported runtimes before launch', () => {
