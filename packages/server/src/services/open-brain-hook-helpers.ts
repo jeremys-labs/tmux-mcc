@@ -133,6 +133,7 @@ export function formatRuntimeContextOutput(
 }
 
 const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_SESSION_START_TIMEOUT_MS = 16000;
 
 function withTimeout<T>(promise: Promise<T> | T, timeoutMs: number, label: string): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve(promise);
@@ -161,7 +162,10 @@ export async function runOpenBrainHarnessHook(
   handlers: RunOpenBrainHookHandlers,
 ): Promise<string> {
   const agentKey = inferAgentKey(input.payload, { cwd: input.cwd, env: input.env });
-  const timeoutMs = Number.isFinite(input.timeoutMs) ? (input.timeoutMs as number) : DEFAULT_TIMEOUT_MS;
+  const defaultTimeoutMs = input.command === 'session-start'
+    ? DEFAULT_SESSION_START_TIMEOUT_MS
+    : DEFAULT_TIMEOUT_MS;
+  const timeoutMs = Number.isFinite(input.timeoutMs) ? (input.timeoutMs as number) : defaultTimeoutMs;
 
   try {
     if (input.command === 'session-start') {

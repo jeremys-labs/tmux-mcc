@@ -67,6 +67,25 @@ describe('scheduled runtime jobs', () => {
     expect(fs.existsSync(path.join(f.agentDir, '.mcp.json'))).toBe(false);
   });
 
+  it('stamps scheduled Discord metadata into the runtime environment', () => {
+    const f = fixture();
+    const plan = buildScheduledRuntimeJobPlan({
+      agent: 'isla',
+      agentDir: f.agentDir,
+      runtime: 'codex',
+      prompt: 'Ask Jeremy what he ate',
+      scheduledJobId: 'daily-food-check',
+      scheduledJobLabel: 'Daily food check-in',
+      awaitingReply: true,
+      codexBin: 'codex-test',
+    });
+
+    expect(plan.env.SCHEDULED_JOB_ID).toBe('daily-food-check');
+    expect(plan.env.SCHEDULED_JOB_LABEL).toBe('Daily food check-in');
+    expect(plan.env.SCHEDULED_DISCORD_SOURCE).toBe('scheduled_runtime');
+    expect(plan.env.SCHEDULED_AWAITING_REPLY).toBe('1');
+  });
+
   it('uses explicit executor over runtime marker', () => {
     const f = fixture();
     fs.writeFileSync(path.join(f.agentDir, '.runtime'), 'codex\n');

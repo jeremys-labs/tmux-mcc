@@ -12,9 +12,13 @@ type ParsedArgs = {
   executor?: string;
   runtime?: string;
   model?: string;
+  effort?: string;
   promptFile: string;
   appendSystemPromptFile?: string;
   discordStateDir?: string;
+  scheduledJobId?: string;
+  scheduledJobLabel?: string;
+  awaitingReply: boolean;
   dryRun: boolean;
 };
 
@@ -23,6 +27,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     agent: '',
     agentDir: process.cwd(),
     promptFile: '',
+    awaitingReply: process.env.SCHEDULED_AWAITING_REPLY === '1',
     dryRun: false,
   };
   const args = [...argv];
@@ -33,9 +38,13 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (current === '--executor') parsed.executor = args.shift() ?? '';
     else if (current === '--runtime') parsed.runtime = args.shift() ?? '';
     else if (current === '--model') parsed.model = args.shift() ?? '';
+    else if (current === '--effort') parsed.effort = args.shift() ?? '';
     else if (current === '--prompt-file') parsed.promptFile = args.shift() ?? '';
     else if (current === '--append-system-prompt-file') parsed.appendSystemPromptFile = args.shift() ?? '';
     else if (current === '--discord-state-dir') parsed.discordStateDir = args.shift() ?? '';
+    else if (current === '--scheduled-job-id') parsed.scheduledJobId = args.shift() ?? '';
+    else if (current === '--scheduled-job-label') parsed.scheduledJobLabel = args.shift() ?? '';
+    else if (current === '--awaiting-reply') parsed.awaitingReply = true;
     else if (current === '--dry-run') parsed.dryRun = true;
     else throw new Error(`Unknown argument: ${current}`);
   }
@@ -61,6 +70,9 @@ const plan = buildScheduledRuntimeJobPlan({
   model: parsed.model,
   appendSystemPrompt,
   discordStateDir: parsed.discordStateDir,
+  scheduledJobId: parsed.scheduledJobId ?? process.env.SCHEDULED_JOB_ID,
+  scheduledJobLabel: parsed.scheduledJobLabel ?? process.env.SCHEDULED_JOB_LABEL,
+  awaitingReply: parsed.awaitingReply,
 });
 
 if (parsed.dryRun) {

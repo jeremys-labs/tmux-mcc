@@ -2,20 +2,32 @@ import fs from 'fs';
 import crypto from 'node:crypto';
 import path from 'path';
 import type { AgentMailMessage } from '@agent-comms/mailbox';
+import { callAgentMemoryServiceTool } from '@agent-system/agent-memory';
 import type { CodexBridgeInboxEntry } from '../types/codex-bridge.js';
 
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_OPEN_BRAIN_ACCESS_KEY_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/mcp-access-key.txt';
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
+const DEFAULT_AGENT_MEMORY_SHADOW_TRACE_PATH = '/Volumes/Repo-Drive/agents/SHARED/agent-memory-shadow.jsonl';
 
 export interface OpenBrainRuntimeConfig {
   agentId: string;
+  agentKey?: string;
   endpointUrl: string;
   agentMemoryKey: string;
+  serviceUrl?: string;
+  serviceToken?: string;
+  serviceMode?: 'embedded' | 'shadow' | 'service';
 }
 
 interface ToolCallResult {
   text: string;
+}
+
+interface OpenBrainToolCallOptions {
+  attemptTimeoutMs?: number;
+  maxAttempts?: number;
+  retryDelayMs?: number;
 }
 
 function parseEnvFile(text: string): Record<string, string> {
@@ -55,10 +67,26 @@ function resolveAgentMemoryEnvPath(agentKey: string): string {
 export function resolveOpenBrainRuntimeConfig(agentKey: string): OpenBrainRuntimeConfig | null {
   if (process.env.OPEN_BRAIN_RUNTIME_DISABLED === '1') return null;
 
+  const serviceUrl = process.env.AGENT_MEMORY_SERVICE_URL;
+  const serviceToken = process.env.AGENT_MEMORY_SERVICE_TOKEN;
+  const serviceMode = serviceUrl
+    ? process.env.AGENT_MEMORY_SERVICE_MODE === 'shadow' ? 'shadow' : 'service'
+    : 'embedded';
   const openBrainEnvPath = process.env.OPEN_BRAIN_ENV_PATH ?? DEFAULT_OPEN_BRAIN_ENV_PATH;
   const accessKeyPath = process.env.OPEN_BRAIN_ACCESS_KEY_PATH ?? DEFAULT_OPEN_BRAIN_ACCESS_KEY_PATH;
   const openBrainEnv = readEnvFile(openBrainEnvPath);
   const agentEnv = readEnvFile(resolveAgentMemoryEnvPath(agentKey));
+  if ((!openBrainEnv || !agentEnv) && serviceUrl) {
+    return {
+      agentId: agentKey,
+      agentKey,
+      endpointUrl: '',
+      agentMemoryKey: '',
+      serviceUrl,
+      serviceToken,
+      serviceMode,
+    };
+  }
   if (!openBrainEnv || !agentEnv) return null;
 
   const projectUrl = openBrainEnv.SUPABASE_PROJECT_URL;
@@ -70,7 +98,15 @@ export function resolveOpenBrainRuntimeConfig(agentKey: string): OpenBrainRuntim
   const url = new URL('/functions/v1/open-brain-mcp', projectUrl);
   url.searchParams.set('key', mcpAccessKey);
   url.searchParams.set('agent_key', agentMemoryKey);
-  return { agentId, endpointUrl: url.toString(), agentMemoryKey };
+  return {
+    agentId,
+    agentKey,
+    endpointUrl: url.toString(),
+    agentMemoryKey,
+    serviceUrl,
+    serviceToken,
+    serviceMode,
+  };
 }
 
 export function resolveOpenBrainGroomingConfig(): OpenBrainRuntimeConfig | null {
@@ -130,37 +166,139 @@ function parseMcpResponse(raw: string): ToolCallResult {
   return { text: '' };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableOpenBrainError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError' || error.name === 'TimeoutError') return true;
+  if (error.message === 'fetch failed') return true;
+  return /Open Brain \S+ failed: (?:408|425|429|5\d\d)\b/.test(error.message);
+}
+
 export async function callOpenBrainTool(
   config: OpenBrainRuntimeConfig,
   name: string,
   args: Record<string, unknown>,
+  options: OpenBrainToolCallOptions = {},
 ): Promise<ToolCallResult> {
-  const response = await fetch(config.endpointUrl, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json, text/event-stream',
-      'Content-Type': 'application/json',
-      'x-agent-memory-key': config.agentMemoryKey,
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      method: 'tools/call',
-      params: {
-        name,
-        arguments: {
-          agent_key: config.agentMemoryKey,
-          ...args,
-        },
-      },
-    }),
-  });
-
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`Open Brain ${name} failed: ${response.status} ${body}`);
+  if (config.serviceUrl && config.serviceMode === 'service') {
+    return callAgentMemoryServiceTool(
+      { serviceUrl: config.serviceUrl, serviceToken: config.serviceToken },
+      config.agentKey ?? config.agentId,
+      name,
+      args,
+      options,
+    );
   }
-  return parseMcpResponse(body);
+
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 1));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 250);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(config.endpointUrl, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json, text/event-stream',
+          'Content-Type': 'application/json',
+          'x-agent-memory-key': config.agentMemoryKey,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          method: 'tools/call',
+          params: {
+            name,
+            arguments: {
+              agent_key: config.agentMemoryKey,
+              ...args,
+            },
+          },
+        }),
+        signal: options.attemptTimeoutMs
+          ? AbortSignal.timeout(options.attemptTimeoutMs)
+          : undefined,
+      });
+
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`Open Brain ${name} failed: ${response.status} ${body}`);
+      }
+      const result = parseMcpResponse(body);
+      if (config.serviceUrl && config.serviceMode === 'shadow' && name === 'search_agent_memory') {
+        void compareShadowSearch(config, name, args, options, result.text);
+      }
+      return result;
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetryableOpenBrainError(error)) throw error;
+      process.stderr.write(
+        `[open-brain] ${name} transient failure; retrying attempt ${attempt + 1}/${maxAttempts}: ${String(error)}\n`,
+      );
+      await sleep(retryDelayMs * attempt);
+    }
+  }
+
+  throw new Error(`Open Brain ${name} failed without an attempt`);
+}
+
+async function compareShadowSearch(
+  config: OpenBrainRuntimeConfig,
+  name: string,
+  args: Record<string, unknown>,
+  options: OpenBrainToolCallOptions,
+  embeddedText: string,
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const embeddedHash = crypto.createHash('sha256').update(embeddedText).digest('hex');
+  try {
+    const shadow = await callAgentMemoryServiceTool(
+      { serviceUrl: config.serviceUrl as string, serviceToken: config.serviceToken },
+      config.agentKey ?? config.agentId,
+      name,
+      args,
+      options,
+    );
+    const serviceHash = crypto.createHash('sha256').update(shadow.text).digest('hex');
+    const matched = serviceHash === embeddedHash;
+    appendShadowTrace({
+      timestamp,
+      agent: config.agentKey ?? config.agentId,
+      operation: name,
+      status: matched ? 'match' : 'mismatch',
+      embedded_bytes: Buffer.byteLength(embeddedText),
+      service_bytes: Buffer.byteLength(shadow.text),
+      embedded_sha256: embeddedHash,
+      service_sha256: serviceHash,
+    });
+    if (!matched) {
+      process.stderr.write(
+        `[agent-memory-shadow] retrieval mismatch agent=${config.agentId} embedded_bytes=${Buffer.byteLength(embeddedText)} service_bytes=${Buffer.byteLength(shadow.text)}\n`,
+      );
+    }
+  } catch (error) {
+    appendShadowTrace({
+      timestamp,
+      agent: config.agentKey ?? config.agentId,
+      operation: name,
+      status: 'failure',
+      embedded_bytes: Buffer.byteLength(embeddedText),
+      embedded_sha256: embeddedHash,
+      error: String(error),
+    });
+    process.stderr.write(`[agent-memory-shadow] retrieval failed agent=${config.agentId}: ${String(error)}\n`);
+  }
+}
+
+function appendShadowTrace(record: Record<string, unknown>): void {
+  const tracePath = process.env.AGENT_MEMORY_SHADOW_TRACE_PATH ?? DEFAULT_AGENT_MEMORY_SHADOW_TRACE_PATH;
+  try {
+    fs.mkdirSync(path.dirname(tracePath), { recursive: true });
+    fs.appendFileSync(tracePath, `${JSON.stringify(record)}\n`);
+  } catch (error) {
+    process.stderr.write(`[agent-memory-shadow] trace write failed: ${String(error)}\n`);
+  }
 }
 
 export async function searchStartupMemory(config: OpenBrainRuntimeConfig): Promise<string> {
@@ -178,6 +316,10 @@ export async function searchStartupMemory(config: OpenBrainRuntimeConfig): Promi
     ].join(' '),
     limit: 8,
     threshold: 0.1,
+  }, {
+    attemptTimeoutMs: 7000,
+    maxAttempts: 2,
+    retryDelayMs: 250,
   });
   return result.text;
 }

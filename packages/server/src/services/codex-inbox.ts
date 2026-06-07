@@ -106,11 +106,16 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
   ];
   if (entry.authorId) attrs.push(`user_id="${entry.authorId}"`);
   if (entry.threadId) attrs.push(`thread_id="${entry.threadId}"`);
+  if (entry.referencedMessageId) attrs.push(`referenced_message_id="${entry.referencedMessageId}"`);
 
   return [
     `[Messaging Gateway] Discord message routed for ${entry.agentKey}.`,
     '',
     `<channel ${attrs.join(' ')}>${content}</channel>`,
+    ...(entry.referencedMessageContent ? [
+      '',
+      `<reply_reference message_id="${escapeAttribute(entry.referencedMessageId ?? '')}">${escapeAttribute(entry.referencedMessageContent.replace(/\s+/g, ' ').trim())}</reply_reference>`,
+    ] : []),
     ...(attachmentLines.length > 0 ? ['', '<attachments>', ...attachmentLines, '</attachments>'] : []),
     '',
     `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,

@@ -73,6 +73,23 @@ describe('open brain grooming review', () => {
     expect(classification.action).toBe('needs_review');
   });
 
+  it('auto-ignores operator grooming decision replies instead of storing them as memory candidates', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: [
+        'Grooming decisions:',
+        'discord:1512076060643168437 - Ignore',
+        'agent-mail:msg_1b12zcem - agent-only memory',
+        'agent-mail:msg_7x47tbbn - Promote to shared-team',
+        'agent-mail:msg_yk3c6hf3 - project memory',
+      ].join('\n'),
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_ignore');
+    expect(classification.reason).toContain('operator grooming-decision reply');
+  });
+
   it('auto-promotes project agent-mail as project context', () => {
     const classification = classifyRawCapture({
       ...row,
@@ -84,14 +101,26 @@ describe('open brain grooming review', () => {
     expect(classification.scope).toBe('project');
   });
 
-  it('ignores legacy own-agent claude_prompt raw captures after direct capture rollout', () => {
+  it('routes inbound runtime claude_prompt captures through normal private grooming', () => {
     const classification = classifyRawCapture({
       ...row,
       content: 'What tire sizes are on a 2019 Honda Insight Touring?',
       metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'claude_prompt', confidence: 'medium' },
     });
 
-    expect(classification.action).toBe('auto_ignore');
+    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.scope).toBe('private_agent');
+  });
+
+  it('routes inbound runtime Discord captures through normal private grooming', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'Traveling this week. No weighing until Friday.',
+      metadata: { ...row.metadata, project: 'agent-runtime', source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_promote_private');
+    expect(classification.scope).toBe('private_agent');
   });
 
   it('ignores legacy own-agent discord_reply raw captures after direct capture rollout', () => {

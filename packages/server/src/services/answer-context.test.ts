@@ -223,6 +223,10 @@ describe('answer context', () => {
       agent: 'lena',
       chat_ids: ['1492537718876672130'],
       prompt_excerpt: 'Send a Discord message to chat_id 1492537718876672130 asking Jeremy for his morning weigh-in.',
+      sent_message_id: 'sent-weigh-in',
+      sent_text: 'What was your morning weigh-in?',
+      awaiting_reply: true,
+      source: 'scheduled_runtime',
     })}\n${JSON.stringify({
       timestamp: '2026-05-05T11:30:00.000Z',
       job_id: 'other-chat-job',
@@ -236,12 +240,16 @@ describe('answer context', () => {
       agentKey: 'lena',
       source: 'discord',
       text: '<channel source="discord" chat_id="1492537718876672130" message_id="m1">218.6</channel>',
+      referencedMessageId: 'sent-weigh-in',
       agentsRoot: tmpDir,
       now: new Date('2026-05-05T12:00:00.000Z'),
     });
 
     expect(context).toContain('<domain_state domain="scheduled_discord_outbox">');
     expect(context).toContain('Daily 7:30am weigh-in prompt');
+    expect(context).toContain('awaiting_reply=true');
+    expect(context).toContain('sent_message_id=sent-weigh-in');
+    expect(context).toContain('What was your morning weigh-in?');
     expect(context).toContain('asking Jeremy for his morning weigh-in');
     expect(context).not.toContain('Do not include this.');
   });
@@ -402,6 +410,24 @@ describe('answer context', () => {
       project: 'agent:eli',
       authority: 'context',
     }]);
+  });
+
+  it('surfaces a visible degraded marker when memory retrieval fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+    const context = await buildAnswerContext({
+      agentKey: 'nova',
+      source: 'discord',
+      text: 'What was I working on?',
+      openBrainConfig: {
+        agentId: 'nova',
+        endpointUrl: 'https://example.test/open-brain',
+        agentMemoryKey: 'agent-secret',
+      },
+    });
+
+    expect(context).toContain('Memory retrieval is currently unavailable.');
+    expect(context).toContain('<governed_memory>');
   });
 
   it('adds recent activity fallback search on fresh session first turn', async () => {

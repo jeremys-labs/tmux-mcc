@@ -45,6 +45,86 @@ describe('open brain runtime', () => {
     expect(config?.endpointUrl).toContain('agent_key=agent-secret');
   });
 
+  it('resolves service-only config without exposing per-agent credentials to the client', () => {
+    process.env.OPEN_BRAIN_ENV_PATH = path.join(tmpDir, 'missing-ob1.env');
+    process.env.AGENT_MEMORY_ENV_PATH = path.join(tmpDir, 'missing-memory.env');
+    process.env.AGENT_MEMORY_SERVICE_URL = 'http://127.0.0.1:4317';
+    process.env.AGENT_MEMORY_SERVICE_TOKEN = 'service-secret';
+
+    expect(resolveOpenBrainRuntimeConfig('nova')).toEqual({
+      agentId: 'nova',
+      agentKey: 'nova',
+      endpointUrl: '',
+      agentMemoryKey: '',
+      serviceUrl: 'http://127.0.0.1:4317',
+      serviceToken: 'service-secret',
+      serviceMode: 'service',
+    });
+  });
+
+  it('routes runtime memory calls through the independent service in service mode', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => '{"text":"service recall"}',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await callOpenBrainTool(
+      {
+        agentId: 'nova',
+        endpointUrl: '',
+        agentMemoryKey: '',
+        serviceUrl: 'http://127.0.0.1:4317',
+        serviceToken: 'service-secret',
+        serviceMode: 'service',
+      },
+      'search_agent_memory',
+      { query: 'current work' },
+    );
+
+    expect(result.text).toBe('service recall');
+    expect(fetchMock.mock.calls[0][0].toString()).toBe('http://127.0.0.1:4317/v1/tool');
+  });
+
+  it('records content-free parity evidence for shadow retrievals', async () => {
+    const tracePath = path.join(tmpDir, 'shadow.jsonl');
+    process.env.AGENT_MEMORY_SHADOW_TRACE_PATH = tracePath;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'data: {"result":{"content":[{"type":"text","text":"same recall"}]}}\n',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => '{"text":"same recall"}',
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callOpenBrainTool(
+      {
+        agentId: 'nova',
+        agentKey: 'nova',
+        endpointUrl: 'https://example.test/open-brain',
+        agentMemoryKey: 'agent-secret',
+        serviceUrl: 'http://127.0.0.1:4317',
+        serviceMode: 'shadow',
+      },
+      'search_agent_memory',
+      { query: 'current work' },
+    );
+    await vi.waitFor(() => expect(fs.existsSync(tracePath)).toBe(true));
+
+    const trace = JSON.parse(fs.readFileSync(tracePath, 'utf8').trim());
+    expect(trace).toMatchObject({
+      agent: 'nova',
+      operation: 'search_agent_memory',
+      status: 'match',
+      embedded_bytes: 11,
+      service_bytes: 11,
+    });
+    expect(JSON.stringify(trace)).not.toContain('same recall');
+  });
+
   it('parses streamable MCP responses', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -80,6 +160,43 @@ describe('open brain runtime', () => {
       'capture_agent_memory',
       { agent_id: 'jordan' },
     )).rejects.toThrow('Agent "jordan" is not enabled');
+  });
+
+  it('retries transient search failures and then succeeds', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'data: {"result":{"content":[{"type":"text","text":"recalled"}]},"jsonrpc":"2.0","id":1}\n\n',
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await callOpenBrainTool(
+      { agentId: 'nova', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'search_agent_memory',
+      { query: 'startup' },
+      { maxAttempts: 2, retryDelayMs: 0 },
+    );
+
+    expect(result.text).toBe('recalled');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry permanent authentication failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => '{"error":"Invalid or missing access key"}',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(callOpenBrainTool(
+      { agentId: 'nova', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'search_agent_memory',
+      { query: 'startup' },
+      { maxAttempts: 2, retryDelayMs: 0 },
+    )).rejects.toThrow('401');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('formats startup recall as injectable context', () => {

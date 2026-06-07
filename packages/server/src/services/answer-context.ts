@@ -11,6 +11,7 @@ const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_SCHEDULED_DISCORD_OUTBOX_PATH = '/Volumes/Repo-Drive/agents/SHARED/scheduled-discord-outbox.jsonl';
 const DEFAULT_OPEN_BRAIN_RECALL_TRACE_PATH = '/Volumes/Repo-Drive/agents/SHARED/open-brain-recall-traces.jsonl';
+const MEMORY_UNAVAILABLE_MARKER = 'Memory retrieval is currently unavailable. Proceed without recalled memory and do not interpret this as an empty memory result.';
 const DEFAULT_JEREMY_TIMEZONE_PATH = '/Volumes/Repo-Drive/agents/SHARED/jeremy-timezone.json';
 const DEFAULT_JEREMY_TIMEZONE = 'America/New_York';
 const DEFAULT_JEREMY_TIMEZONE_LABEL = 'Home (Charlotte)';
@@ -21,6 +22,9 @@ export interface BuildAnswerContextInput {
   agentKey: string;
   source: InboundTurnSource;
   text: string;
+  chatId?: string;
+  messageId?: string;
+  referencedMessageId?: string;
   subject?: string;
   project?: string | null;
   freshSessionFirstTurn?: boolean;
@@ -41,6 +45,11 @@ interface ScheduledDiscordOutboxRecord {
   agent?: string;
   chat_ids?: string[];
   prompt_excerpt?: string;
+  sent_message_id?: string;
+  sent_text?: string;
+  reply_to?: string;
+  source?: string;
+  awaiting_reply?: boolean;
 }
 
 interface OpenBrainRestConfig {
@@ -273,6 +282,7 @@ function readScheduledDiscordOutbox(
   agentKey: string,
   chatId: string,
   now: Date,
+  referencedMessageId?: string,
   filePath = process.env.SCHEDULED_DISCORD_OUTBOX_PATH ?? DEFAULT_SCHEDULED_DISCORD_OUTBOX_PATH,
 ): ScheduledDiscordOutboxRecord[] {
   if (!chatId) return [];
@@ -284,7 +294,7 @@ function readScheduledDiscordOutbox(
   }
 
   const maxAgeMs = 7 * 24 * 60 * 60 * 1000;
-  return text
+  const records = text
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
@@ -301,19 +311,50 @@ function readScheduledDiscordOutbox(
       if (!record.timestamp) return false;
       const ts = new Date(record.timestamp).getTime();
       return Number.isFinite(ts) && now.getTime() - ts <= maxAgeMs;
-    })
-    .slice(-5)
-    .reverse();
+    });
+
+  const referenced = referencedMessageId
+    ? records.filter((record) => record.sent_message_id === referencedMessageId)
+    : [];
+  const recentAwaiting = records
+    .filter((record) => record.sent_message_id !== referencedMessageId)
+    .filter((record) => record.awaiting_reply)
+    .filter((record) => {
+      if (!record.timestamp) return false;
+      const ts = new Date(record.timestamp).getTime();
+      return Number.isFinite(ts) && now.getTime() - ts <= 3 * 60 * 60 * 1000;
+    });
+  const recentOther = records
+    .filter((record) => record.sent_message_id !== referencedMessageId)
+    .filter((record) => !record.awaiting_reply)
+    .filter((record) => record.sent_text)
+    .filter((record) => {
+      if (!record.timestamp) return false;
+      const ts = new Date(record.timestamp).getTime();
+      return Number.isFinite(ts) && now.getTime() - ts <= 60 * 60 * 1000;
+    });
+
+  const newestFirst = (items: ScheduledDiscordOutboxRecord[]) => items.slice(-5).reverse();
+  return [
+    ...newestFirst(referenced),
+    ...newestFirst(recentAwaiting),
+    ...newestFirst(recentOther),
+  ].slice(0, 5);
 }
 
 function formatScheduledDiscordOutbox(records: ScheduledDiscordOutboxRecord[]): string {
   if (records.length === 0) return '';
   return records.map((record) => [
     `time=${record.timestamp ?? 'unknown'}`,
+    `source=${record.source ?? 'scheduled_discord_outbox'}`,
     `job=${record.label ?? record.job_id ?? 'unknown'}`,
     `job_id=${record.job_id ?? 'unknown'}`,
-    `scheduled_prompt=${compactText(record.prompt_excerpt ?? '', 900)}`,
-  ].join('\n')).join('\n\n');
+    `awaiting_reply=${record.awaiting_reply ? 'true' : 'false'}`,
+    record.sent_message_id ? `sent_message_id=${record.sent_message_id}` : null,
+    record.reply_to ? `reply_to=${record.reply_to}` : null,
+    record.sent_text ? `sent_text=${compactText(record.sent_text, 1200)}` : null,
+    record.prompt_excerpt ? `scheduled_prompt=${compactText(record.prompt_excerpt, 900)}` : null,
+  ].filter(Boolean).join('\n')).join('\n\n');
 }
 
 function parseEnvFile(text: string): Record<string, string> {
@@ -803,7 +844,10 @@ async function safeSearchAgentMemory(
   const startedAt = new Date();
   const query = typeof args.query === 'string' ? args.query : '';
   try {
-    const result = await callOpenBrainTool(config, 'search_agent_memory', args);
+    const result = await callOpenBrainTool(config, 'search_agent_memory', args, {
+      maxAttempts: 2,
+      retryDelayMs: 100,
+    });
     if (traceInput) {
       const results = parseSearchAgentMemoryTrace(result.text);
       writeRecallTrace({
@@ -840,7 +884,10 @@ async function safeSearchAgentMemory(
         results: [],
       });
     }
-    return '';
+    process.stderr.write(
+      `[answer-context] search_agent_memory failed for ${traceInput?.agentKey ?? config.agentId}: ${String(error)}\n`,
+    );
+    return MEMORY_UNAVAILABLE_MARKER;
   }
 }
 
@@ -870,7 +917,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
   ]);
   const semanticResult = compactOB1Results(rawSemanticResult, input.text, semanticThreshold, input.project);
   const compactRecentResult = compactOB1Results(recentResult, input.text, semanticThreshold, input.project);
-  const sections = [
+  const sections = [...new Set([
     semanticResult,
     compactRecentResult.trim()
       ? [
@@ -878,7 +925,7 @@ async function searchAnswerMemory(input: BuildAnswerContextInput): Promise<strin
         compactRecentResult,
       ].join('\n')
       : '',
-  ].filter((section) => section.trim());
+  ].filter((section) => section.trim()))];
   return compactText(sections.join('\n\n'), sectionCap);
 }
 
@@ -981,9 +1028,9 @@ export function formatAnswerContext(input: {
 export async function buildAnswerContext(input: BuildAnswerContextInput): Promise<string> {
   const agentsRoot = input.agentsRoot ?? process.env.AGENTS_ROOT ?? DEFAULT_AGENTS_ROOT;
   const now = input.now ?? new Date();
-  const chatId = input.source === 'discord' ? parseDiscordChatId(input.text) : '';
+  const chatId = input.source === 'discord' ? (input.chatId ?? parseDiscordChatId(input.text)) : '';
   const scheduledDiscordOutbox = formatScheduledDiscordOutbox(
-    readScheduledDiscordOutbox(input.agentKey, chatId, now),
+    readScheduledDiscordOutbox(input.agentKey, chatId, now, input.referencedMessageId),
   );
   const [memoryText, domainContexts] = await Promise.all([
     searchAnswerMemory(input),

@@ -9,6 +9,7 @@ import {
   enqueuePendingRuntimeDiscordInbox,
 } from './runtime-discord-inbox.js';
 import { createRuntimeEventEmitter } from './runtime-events.js';
+import { buildAnswerContext } from './answer-context.js';
 
 vi.mock('./answer-context.js', () => ({
   buildAnswerContext: vi.fn(async () => '[Answer Context]\nKnown context.'),
@@ -45,6 +46,7 @@ describe('runtime discord inbox delivery', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-discord-inbox-'));
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -77,6 +79,33 @@ describe('runtime discord inbox delivery', () => {
 
     expect(order).toEqual(['onInboundMessage', 'beforeAgentTurn', 'submit', 'afterAgentTurn']);
     expect(readInboxCursor(tmpDir, 'enzo').lineCount).toBe(1);
+  });
+
+  it('passes Discord chat and reply-reference metadata into answer-context', async () => {
+    const item = entry({
+      id: 'reply_1',
+      channelId: 'channel_99',
+      referencedMessageId: 'scheduled_question_1',
+    });
+    writeInbox(tmpDir, 'enzo', [item]);
+
+    await deliverRuntimeDiscordInbox({
+      agentKey: 'enzo',
+      contentRoot: tmpDir,
+      entry: item,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt: vi.fn(async () => {}),
+      runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+    });
+
+    expect(buildAnswerContext).toHaveBeenCalledWith(expect.objectContaining({
+      agentKey: 'enzo',
+      source: 'discord',
+      text: 'Keep going on Enzo.',
+      chatId: 'channel_99',
+      messageId: 'reply_1',
+      referencedMessageId: 'scheduled_question_1',
+    }));
   });
 
   it('does not advance the inbox cursor when prompt submission fails', async () => {

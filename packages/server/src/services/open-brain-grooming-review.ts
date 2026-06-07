@@ -1,4 +1,7 @@
+import fs from 'fs';
 import { callOpenBrainTool, resolveOpenBrainGroomingConfig, resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
+
+const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 
 export type GroomingReviewAction = 'promote' | 'deprecate' | 'ignore';
 export type PromotionScope = 'private_agent' | 'project' | 'shared_team';
@@ -35,6 +38,30 @@ export interface GroomingCluster {
   rows: GroomingReviewRow[];
 }
 
+function parseEnvFile(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+  }
+  return env;
+}
+
+function readOpenBrainRestConfig(): { projectUrl: string; serviceKey: string } | null {
+  try {
+    const envPath = process.env.OPEN_BRAIN_ENV_PATH ?? DEFAULT_OPEN_BRAIN_ENV_PATH;
+    const env = parseEnvFile(fs.readFileSync(envPath, 'utf8'));
+    const projectUrl = env.SUPABASE_PROJECT_URL;
+    const serviceKey = env.SUPABASE_SECRET_KEY;
+    return projectUrl && serviceKey ? { projectUrl, serviceKey } : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface GroomingClusterClassification {
   action: GroomingClusterAction;
   reason: string;
@@ -67,6 +94,19 @@ function stripInjectedContext(text: string): string {
   stripped = stripped.replace(/\[Answer Context\][\s\S]*?(?=(?:<channel\b|<command-name>|$))/gi, ' ');
   stripped = stripped.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, ' ');
   return stripped.trim();
+}
+
+function isGroomingDecisionReply(content: string): boolean {
+  if (/^grooming decisions?:/i.test(content)) return true;
+
+  const sourceRefDecisionLines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(?:discord:\d+|agent-mail:msg_[a-z0-9]+)/i.test(line));
+  if (sourceRefDecisionLines.length < 2) return false;
+
+  const decisionTerms = /\b(ignore|agent-only memory|private_agent|private agent|project memory|shared[-_ ]team|promote|deprecate)\b/i;
+  return sourceRefDecisionLines.filter((line) => decisionTerms.test(line)).length >= 2;
 }
 
 function metadataString(row: GroomingReviewRow, key: string): string {
@@ -189,6 +229,13 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
     return { action: 'auto_ignore', reason: 'transient acknowledgement/status message' };
   }
 
+  if (isGroomingDecisionReply(content)) {
+    return {
+      action: 'auto_ignore',
+      reason: 'operator grooming-decision reply; decisions are applied as review metadata, not stored as durable memory',
+    };
+  }
+
   if (
     /\bsource_of_truth\b/.test(content) ||
     /\bshared[_ -]?team\b/.test(content) ||
@@ -213,8 +260,14 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
     return { action: 'auto_ignore', reason: 'routine Claude hook heartbeat/tool telemetry' };
   }
 
+  if (project === 'agent-runtime' && sourceType === 'discord_reply') {
+    return { action: 'auto_ignore', reason: 'outbound runtime transport capture' };
+  }
+
   if (project === 'agent-runtime') {
-    return { action: 'auto_ignore', reason: 'runtime transport/status capture' };
+    if (sourceType !== 'discord' && sourceType !== 'claude_prompt') {
+      return { action: 'auto_ignore', reason: 'runtime transport/status capture' };
+    }
   }
 
   // rawContent retained for future heuristics; reference to keep linters happy.
@@ -323,6 +376,24 @@ export async function patchThoughtMetadata(id: string, metadata: Record<string, 
     agent_id: groomingConfig.agentId,
     source_ref: sourceRef,
     metadata_patch: metadata,
+  }).catch(async (error) => {
+    if (!String(error).includes('No raw_capture found')) throw error;
+    const rest = readOpenBrainRestConfig();
+    if (!rest) throw error;
+    const url = new URL('/rest/v1/thoughts', rest.projectUrl);
+    url.searchParams.set('id', `eq.${id}`);
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        apikey: rest.serviceKey,
+        Authorization: `Bearer ${rest.serviceKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ metadata }),
+    });
+    if (!response.ok) {
+      throw new Error(`Fallback raw_capture metadata patch failed for ${sourceRef}: ${response.status} ${await response.text()}`);
+    }
   });
 }
 

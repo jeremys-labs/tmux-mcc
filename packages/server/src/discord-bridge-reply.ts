@@ -3,6 +3,7 @@ export {};
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { normalizeInlineDiscordText } from './services/discord-reply-text.js';
 
 type Args = {
   agent?: string;
@@ -53,6 +54,10 @@ function parseArgs(argv: string[]): Args {
 }
 
 const args = parseArgs(process.argv.slice(2));
+if (args.text !== undefined) {
+  args.text = normalizeInlineDiscordText(args.text);
+}
+
 if (args.textFile) {
   if (!path.isAbsolute(args.textFile)) {
     console.error(`--text-file must be an absolute path: ${args.textFile}`);
@@ -93,6 +98,10 @@ const payload = JSON.stringify({
   ...(args.text ? { text: args.text } : {}),
   ...(args.files.length > 0 ? { files: args.files } : {}),
   ...(args.replyTo ? { reply_to: args.replyTo } : {}),
+  ...(process.env.SCHEDULED_DISCORD_SOURCE ? { source: process.env.SCHEDULED_DISCORD_SOURCE } : {}),
+  ...(process.env.SCHEDULED_JOB_ID ? { job_id: process.env.SCHEDULED_JOB_ID } : {}),
+  ...(process.env.SCHEDULED_JOB_LABEL ? { label: process.env.SCHEDULED_JOB_LABEL } : {}),
+  ...(process.env.SCHEDULED_AWAITING_REPLY === '1' ? { awaiting_reply: true } : {}),
 });
 
 const body = await new Promise<string>((resolve, reject) => {

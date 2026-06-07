@@ -55,6 +55,9 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
         agentKey,
         source: 'discord',
         text: entry.content,
+        chatId: entry.channelId,
+        messageId: entry.id,
+        referencedMessageId: entry.referencedMessageId,
         openBrainConfig,
       }).catch((error) => {
         appendRuntimeLog(runtimeLogPath, `answer-context discord error ${entry.id}: ${String(error)}`);

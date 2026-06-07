@@ -68,6 +68,23 @@ describe('codex bridge router', () => {
     expect(routed?.threadId).toBe('12345');
   });
 
+  it('preserves Discord reply-reference metadata', () => {
+    const routed = routeDiscordMessage(config as any, {
+      id: 'm-reply',
+      channel_id: '1492892431543308439',
+      content: '218.6',
+      author: { id: 'user1', username: 'Jeremy' },
+      referenced_message: {
+        id: 'scheduled-question-1',
+        content: 'What was your morning weigh-in?',
+        author: { id: 'bot-user', username: 'Lena' },
+      },
+    });
+
+    expect(routed?.referencedMessageId).toBe('scheduled-question-1');
+    expect(routed?.referencedMessageContent).toBe('What was your morning weigh-in?');
+  });
+
   it('ignores bot messages by default', () => {
     const routed = routeDiscordMessage(config as any, {
       id: 'm5',

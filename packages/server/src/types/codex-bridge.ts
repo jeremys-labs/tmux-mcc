@@ -34,6 +34,7 @@ export interface DiscordMessageEvent {
   timestamp?: string;
   referenced_message?: {
     id?: string;
+    content?: string;
     author?: {
       id?: string;
       username?: string;
@@ -60,6 +61,8 @@ export interface CodexBridgeInboxEntry {
   content: string;
   attachments?: CodexBridgeAttachment[];
   timestamp: string;
+  referencedMessageId?: string;
+  referencedMessageContent?: string;
 }
 
 export interface CodexBridgeAttachment {

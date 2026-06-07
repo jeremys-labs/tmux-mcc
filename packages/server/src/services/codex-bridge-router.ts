@@ -51,6 +51,8 @@ export function routeDiscordMessage(
       size: attachment.size,
     })),
     timestamp: event.timestamp ?? new Date().toISOString(),
+    referencedMessageId: event.referenced_message?.id,
+    referencedMessageContent: event.referenced_message?.content,
   };
 }
 

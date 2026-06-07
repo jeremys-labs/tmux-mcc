@@ -11,6 +11,9 @@ export type ScheduledRuntimeJobInput = {
   model?: string;
   appendSystemPrompt?: string;
   discordStateDir?: string;
+  scheduledJobId?: string;
+  scheduledJobLabel?: string;
+  awaitingReply?: boolean;
   claudeBin?: string;
   codexBin?: string;
 };
@@ -48,6 +51,16 @@ export function buildScheduledRuntimeJobPlan(input: ScheduledRuntimeJobInput): S
   const env: Record<string, string> = {};
   if (input.discordStateDir) {
     env.DISCORD_STATE_DIR = input.discordStateDir;
+  }
+  if (input.scheduledJobId) {
+    env.SCHEDULED_JOB_ID = input.scheduledJobId;
+    env.SCHEDULED_DISCORD_SOURCE = 'scheduled_runtime';
+  }
+  if (input.scheduledJobLabel) {
+    env.SCHEDULED_JOB_LABEL = input.scheduledJobLabel;
+  }
+  if (input.awaitingReply) {
+    env.SCHEDULED_AWAITING_REPLY = '1';
   }
 
   if (input.runtime === 'codex') {
