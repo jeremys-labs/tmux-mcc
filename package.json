@@ -9,7 +9,9 @@
     "test": "npm run test --workspace=@mcc-tmux/server && npm run test --workspace=@mcc-tmux/client",
     "test:server": "npm run test --workspace=@mcc-tmux/server",
     "test:client": "npm run test --workspace=@mcc-tmux/client",
-    "test:e2e": "npx playwright test --config packages/client/playwright.config.ts"
+    "test:e2e": "npx playwright test --config packages/client/playwright.config.ts",
+    "agent-memory:check": "npm --prefix ../agent-memory run check",
+    "architecture:check": "node scripts/check-architecture-boundaries.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"
