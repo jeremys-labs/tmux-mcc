@@ -11,6 +11,7 @@ export type RuntimeLaunchPlanInput = {
   mccRoot?: string;
   homeDir?: string;
   model?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export type RuntimeLaunchPlan = {
@@ -22,10 +23,24 @@ export type RuntimeLaunchPlan = {
   env: Record<string, string>;
 };
 
-const SERVICE_MEMORY_ENV = {
-  AGENT_MEMORY_SERVICE_URL: 'http://127.0.0.1:4317',
-  AGENT_MEMORY_SERVICE_MODE: 'service',
-};
+const DEFAULT_AGENT_MEMORY_SERVICE_URL = 'http://127.0.0.1:4317';
+const DEFAULT_AGENT_MEMORY_SERVICE_MODE = 'service';
+
+// Resolves the agent-memory service env injected into each launched runtime.
+// Defaults to the live service in authoritative `service` mode, but lets the
+// harness environment override the URL/mode so a cutover can be staged safely
+// (e.g. AGENT_MEMORY_SERVICE_MODE=shadow to validate retrieval parity against
+// the embedded path before flipping the service authoritative).
+function resolveServiceMemoryEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const serviceEnv: Record<string, string> = {
+    AGENT_MEMORY_SERVICE_URL: env.AGENT_MEMORY_SERVICE_URL ?? DEFAULT_AGENT_MEMORY_SERVICE_URL,
+    AGENT_MEMORY_SERVICE_MODE: env.AGENT_MEMORY_SERVICE_MODE ?? DEFAULT_AGENT_MEMORY_SERVICE_MODE,
+  };
+  if (env.AGENT_MEMORY_SERVICE_TOKEN) {
+    serviceEnv.AGENT_MEMORY_SERVICE_TOKEN = env.AGENT_MEMORY_SERVICE_TOKEN;
+  }
+  return serviceEnv;
+}
 
 export function parseSupportedRuntime(value: string): SupportedRuntime {
   if (value === 'claude' || value === 'codex') return value;
@@ -35,6 +50,7 @@ export function parseSupportedRuntime(value: string): SupportedRuntime {
 export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLaunchPlan {
   const mccRoot = input.mccRoot ?? path.resolve(import.meta.dirname, '../../../..');
   const homeDir = input.homeDir ?? os.homedir();
+  const serviceMemoryEnv = resolveServiceMemoryEnv(input.env ?? process.env);
   const baseArgs = [
     'run',
     input.runtime === 'claude' ? 'run:claude-wrapper' : 'run:codex-wrapper',
@@ -59,7 +75,7 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
       cwd: input.agentDir,
       env: {
         CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
-        ...SERVICE_MEMORY_ENV,
+        ...serviceMemoryEnv,
       },
     };
   }
@@ -76,7 +92,7 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
     cwd: input.agentDir,
     env: {
       CONTENT_ROOT: path.join(homeDir, '.tmux-mcc'),
-      ...SERVICE_MEMORY_ENV,
+      ...serviceMemoryEnv,
     },
   };
 }
