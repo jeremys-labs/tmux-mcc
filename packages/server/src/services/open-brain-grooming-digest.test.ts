@@ -61,6 +61,31 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('No memory was promoted or deprecated automatically.');
   });
 
+  it('excludes restricted Cellebrite rows from the raw-capture grooming digest', () => {
+    const rows: RawCaptureRow[] = [{
+      created_at: '2026-06-01T17:00:00.000Z',
+      content: 'Sensitive Cellebrite work item',
+      metadata: {
+        scope: 'restricted',
+        restriction: 'cellebrite',
+        source_type: 'discord',
+        source_ref: 'discord:restricted',
+        project: 'cellebrite',
+      },
+    }];
+
+    const digest = buildGroomingDigest(rows, {
+      sinceIso: '2026-06-01T00:00:00.000Z',
+      generatedAtIso: '2026-06-01T18:00:00.000Z',
+      channelId: 'c1',
+    });
+
+    expect(digest).toContain('Raw captures: 0');
+    expect(digest).toContain('No raw captures are waiting for review');
+    expect(digest).not.toContain('Sensitive Cellebrite');
+    expect(digest).not.toContain('discord:restricted');
+  });
+
   it('formats a scheduled grooming digest with action summary and review candidates', () => {
     const row: GroomingReviewRow = {
       id: 'row-1',
@@ -126,6 +151,56 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('Debug refs: discord:1');
     expect(digest).not.toContain('Content column:');
     expect(digest).not.toContain('Raw capture candidate.');
+  });
+
+  it('excludes restricted Cellebrite rows and review candidates from scheduled and decision digests', () => {
+    const candidate = {
+      kind: 'item' as const,
+      key: 'discord:restricted',
+      sourceRef: 'discord:restricted',
+      project: 'cellebrite',
+      text: 'Sensitive Cellebrite work item.',
+      reason: 'restricted',
+      recommendedAction: 'Do not promote.',
+      proposedMemory: 'Sensitive Cellebrite work item.',
+      evidence: ['restricted evidence'],
+      restricted: true,
+    };
+    const row: RawCaptureRow = {
+      created_at: '2026-06-01T17:00:00.000Z',
+      content: 'Sensitive Cellebrite work item',
+      metadata: { scope: 'restricted', restriction: 'cellebrite', project: 'cellebrite' },
+    };
+
+    const scheduled = buildScheduledGroomingDigest(
+      [row],
+      [],
+      [],
+      {
+        sinceIso: '2026-06-01T00:00:00.000Z',
+        generatedAtIso: '2026-06-01T18:00:00.000Z',
+        channelId: 'c1',
+      },
+      {
+        itemAutoIgnored: 0,
+        itemAutoPromotedPrivate: 0,
+        itemAutoPromotedProject: 0,
+        itemNeedsReview: 0,
+        clusterIgnored: 0,
+        clusterSkipped: 0,
+        clusterAutoPromotedPrivate: 0,
+        clusterAutoPromotedProject: 0,
+        clusterNeedsReview: 0,
+      },
+      [candidate],
+    );
+    const pending = buildPendingReviewDigest([candidate], '2026-06-01T18:00:00.000Z');
+
+    expect(scheduled).toContain('Raw captures: 0');
+    expect(scheduled).toContain('No human review candidates');
+    expect(scheduled).not.toContain('Sensitive Cellebrite');
+    expect(pending).toContain('Pending decisions: 0');
+    expect(pending).not.toContain('Sensitive Cellebrite');
   });
 
   it('alerts after repeated classifier failure cycles', () => {

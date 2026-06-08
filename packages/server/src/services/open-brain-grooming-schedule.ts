@@ -19,6 +19,7 @@ import {
   type GroomingDigestOptions,
   type RawCaptureRow,
 } from './open-brain-grooming-digest.js';
+import { filterRestrictedRows } from './open-brain-restrictions.js';
 
 export interface GroomingItemPlan {
   row: GroomingReviewRow;
@@ -52,6 +53,11 @@ export interface GroomingScheduledCandidate {
   recommendedAction: string;
   proposedMemory: string;
   evidence: string[];
+  // True when the candidate derives from restricted (e.g. Cellebrite) data. Such
+  // candidates must never be rendered into a digest (these post to Discord) nor be
+  // eligible for auto-promotion. Defense-in-depth alongside the fetch-level row
+  // filter (restricted rows are excluded before they become candidates).
+  restricted?: boolean;
 }
 
 export interface GroomingScheduledResult {
@@ -401,11 +407,15 @@ export function buildScheduledGroomingDigest(
   reviewCandidates: GroomingScheduledCandidate[],
   classifierFailureCycles = 0,
 ): string {
+  // Restricted data must never reach a Discord-posted digest: filter both the raw
+  // rows and any restricted review candidates before rendering.
+  const visibleRows = filterRestrictedRows(rows);
+  const visibleCandidates = reviewCandidates.filter((candidate) => !candidate.restricted);
   const lines = [
     `OB1 memory grooming digest - ${options.generatedAtIso.slice(0, 10)}`,
     '',
     `Window: ${options.sinceIso} to ${options.generatedAtIso}`,
-    `Raw captures: ${rows.length}`,
+    `Raw captures: ${visibleRows.length}`,
     '',
     'Action summary:',
     ...formatSummary(summary).map((line) => `- ${line}`),
@@ -416,10 +426,10 @@ export function buildScheduledGroomingDigest(
     lines.push(`Classifier alert: OB1 classifier failed ${classifierFailureCycles} consecutive grooming cycles. Rows are staying in raw_capture and will retry.`);
   }
 
-  if (reviewCandidates.length > 0) {
+  if (visibleCandidates.length > 0) {
     lines.push('');
     lines.push('Needs your decision:');
-    for (const candidate of reviewCandidates.slice(0, options.maxItems ?? 12)) {
+    for (const candidate of visibleCandidates.slice(0, options.maxItems ?? 12)) {
       const summary = reviewSummary(candidate);
       lines.push(`- Review: ${summary.review}`);
       if (summary.content) lines.push(`  Content: ${summary.content}`);
@@ -428,8 +438,8 @@ export function buildScheduledGroomingDigest(
       lines.push(`  Scope/project: ${candidate.project}`);
       lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
     }
-    if (reviewCandidates.length > (options.maxItems ?? 12)) {
-      lines.push(`- ... ${reviewCandidates.length - (options.maxItems ?? 12)} more candidates omitted from this digest.`);
+    if (visibleCandidates.length > (options.maxItems ?? 12)) {
+      lines.push(`- ... ${visibleCandidates.length - (options.maxItems ?? 12)} more candidates omitted from this digest.`);
     }
     lines.push('');
     lines.push('Review commands:');
@@ -451,16 +461,18 @@ export function buildPendingReviewDigest(
   generatedAtIso: string,
   maxItems = 12,
 ): string {
+  // Restricted candidates must never reach the Discord-posted decision digest.
+  const visibleCandidates = reviewCandidates.filter((candidate) => !candidate.restricted);
   const lines = [
     `OB1 memory decision digest - ${generatedAtIso.slice(0, 10)}`,
     '',
-    `Pending decisions: ${reviewCandidates.length}`,
+    `Pending decisions: ${visibleCandidates.length}`,
   ];
 
-  if (reviewCandidates.length > 0) {
+  if (visibleCandidates.length > 0) {
     lines.push('');
     lines.push('Needs your decision:');
-    for (const candidate of reviewCandidates.slice(0, maxItems)) {
+    for (const candidate of visibleCandidates.slice(0, maxItems)) {
       const summary = reviewSummary(candidate);
       lines.push(`- Review: ${summary.review}`);
       if (summary.content) lines.push(`  Content: ${summary.content}`);
@@ -469,8 +481,8 @@ export function buildPendingReviewDigest(
       lines.push(`  Scope/project: ${candidate.project}`);
       lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
     }
-    if (reviewCandidates.length > maxItems) {
-      lines.push(`- ... ${reviewCandidates.length - maxItems} more candidates omitted from this digest.`);
+    if (visibleCandidates.length > maxItems) {
+      lines.push(`- ... ${visibleCandidates.length - maxItems} more candidates omitted from this digest.`);
     }
     lines.push('');
     lines.push('Review commands:');

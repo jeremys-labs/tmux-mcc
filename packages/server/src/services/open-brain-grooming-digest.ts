@@ -3,6 +3,7 @@ import path from 'path';
 import { resolveContentRoot } from '../config.js';
 import { callOpenBrainTool, resolveOpenBrainGroomingConfig } from './open-brain-runtime.js';
 import { logDirectDiscordSendFailure } from './discord-direct-send.js';
+import { filterRestrictedRows } from './open-brain-restrictions.js';
 
 const DEFAULT_DISCORD_ENV_PATH = '/Volumes/Repo-Drive/agents/eli/.claude/discord/.env';
 const DEFAULT_DIGEST_CHANNEL_ID = '1491979880747765810';
@@ -135,7 +136,7 @@ export async function fetchRawCapturesSince(sinceIso: string, limit = 80): Promi
     limit,
   });
   const parsed = JSON.parse(result.text) as { rows?: RawCaptureRow[] };
-  return parsed.rows ?? [];
+  return filterRestrictedRows(parsed.rows ?? []);
 }
 
 export async function fetchRawCapturesBySourceRefs(sourceRefs: string[]): Promise<RawCaptureRow[]> {
@@ -156,7 +157,7 @@ export async function fetchRawCapturesBySourceRefs(sourceRefs: string[]): Promis
     const row = JSON.parse(result.text) as RawCaptureRow | null;
     if (row) rows.push(row);
   }
-  return rows;
+  return filterRestrictedRows(rows);
 }
 
 function compactLine(text: string, maxLength: number): string {
@@ -188,18 +189,22 @@ function formatCounts(counts: Map<string, number>): string {
 }
 
 export function buildGroomingDigest(rows: RawCaptureRow[], options: GroomingDigestOptions): string {
-  const limited = rows.slice(0, options.maxItems ?? 12);
-  const sourceCounts = formatCounts(countBy(rows, (row) => row.metadata?.source_type ?? 'unknown'));
-  const projectCounts = formatCounts(countBy(rows, (row) => row.metadata?.project ?? 'unknown'));
+  // Restricted rows (e.g. Cellebrite scope='restricted') must never be rendered
+  // into a digest — these post to Discord (a third-party platform). Filter at the
+  // render boundary as defense-in-depth even though fetch* now also filter.
+  const visibleRows = filterRestrictedRows(rows);
+  const limited = visibleRows.slice(0, options.maxItems ?? 12);
+  const sourceCounts = formatCounts(countBy(visibleRows, (row) => row.metadata?.source_type ?? 'unknown'));
+  const projectCounts = formatCounts(countBy(visibleRows, (row) => row.metadata?.project ?? 'unknown'));
 
   const lines = [
     `OB1 memory grooming digest - ${options.generatedAtIso.slice(0, 10)}`,
     '',
     `Window: ${options.sinceIso} to ${options.generatedAtIso}`,
-    `Raw captures: ${rows.length}`,
+    `Raw captures: ${visibleRows.length}`,
   ];
 
-  if (rows.length > 0) {
+  if (visibleRows.length > 0) {
     lines.push(`Sources: ${sourceCounts || 'none'}`);
     lines.push(`Projects: ${projectCounts || 'none'}`);
     lines.push('');
@@ -210,8 +215,8 @@ export function buildGroomingDigest(rows: RawCaptureRow[], options: GroomingDige
       const text = compactLine(extractCandidateText(row), 170);
       lines.push(`- ${sourceRef} [${project}]: ${text}`);
     }
-    if (rows.length > limited.length) {
-      lines.push(`- ... ${rows.length - limited.length} more raw captures omitted from this digest.`);
+    if (visibleRows.length > limited.length) {
+      lines.push(`- ... ${visibleRows.length - limited.length} more raw captures omitted from this digest.`);
     }
     lines.push('');
     lines.push('Review commands:');
