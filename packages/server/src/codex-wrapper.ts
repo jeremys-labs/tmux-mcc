@@ -15,6 +15,7 @@ import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
+import { appendInjectionJournalEntry } from './services/runtime-injection-journal.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
 
@@ -113,7 +114,14 @@ taskQueue.enqueue(async () => {
   await injectPendingRuntimeHandoff({
     workspace: cwd,
     events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
+    submitHandoff: async (prompt) => {
+      await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'handoff',
+        promptLength: prompt.length,
+      });
+    },
   });
 });
 
@@ -130,8 +138,13 @@ const pollers = startRuntimeInboxPollers({
       if (readinessResult === 'timeout') {
         fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for bluebubbles ${entry.id}; injecting anyway\n`);
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt.length} chars\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'bluebubbles',
+        promptLength: prompt.length,
+      });
     },
   },
   discord: {
@@ -140,8 +153,13 @@ const pollers = startRuntimeInboxPollers({
       if (readinessResult === 'timeout') {
         fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for discord ${entry.id}; injecting anyway\n`);
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting ${entry.id}: ${prompt}\n`);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting discord ${entry.id}: ${prompt.length} chars\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'discord',
+        promptLength: prompt.length,
+      });
     },
   },
   agentMail: {
@@ -151,8 +169,13 @@ const pollers = startRuntimeInboxPollers({
       if (readinessResult === 'timeout') {
         fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for mail ${message.id}; injecting anyway\n`);
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt.length} chars\n`);
       await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'agent-mail',
+        promptLength: prompt.length,
+      });
     },
   },
 });

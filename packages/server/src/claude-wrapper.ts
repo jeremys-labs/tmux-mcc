@@ -17,6 +17,7 @@ import {
   writePreSessionPromptFile,
 } from './services/runtime-pre-session.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
+import { appendInjectionJournalEntry } from './services/runtime-injection-journal.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
 
@@ -108,7 +109,14 @@ taskQueue.enqueue(async () => {
   await injectPendingRuntimeHandoff({
     workspace: cwd,
     events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
+    submitHandoff: async (prompt) => {
+      await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'handoff',
+        promptLength: prompt.length,
+      });
+    },
   });
 });
 
@@ -120,7 +128,14 @@ const pollers = startRuntimeInboxPollers({
   runtimeLogPath,
   enqueue: taskQueue.enqueue,
   blueBubbles: {
-    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    submitPrompt: async (prompt) => {
+      await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'bluebubbles',
+        promptLength: prompt.length,
+      });
+    },
   },
   discord: {
     submitPrompt: async (prompt, entry) => {
@@ -129,11 +144,23 @@ const pollers = startRuntimeInboxPollers({
         await injectModelSwitch(term, switchResult.model);
       }
       await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'discord',
+        promptLength: prompt.length,
+      });
     },
   },
   agentMail: {
     mailStore: store,
-    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    submitPrompt: async (prompt) => {
+      await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'agent-mail',
+        promptLength: prompt.length,
+      });
+    },
   },
 });
 
