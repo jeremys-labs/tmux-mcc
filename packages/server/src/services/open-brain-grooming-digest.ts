@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { resolveContentRoot } from '../config.js';
 import { callOpenBrainTool, resolveOpenBrainGroomingConfig } from './open-brain-runtime.js';
+import { logDirectDiscordSendFailure } from './discord-direct-send.js';
 
 const DEFAULT_DISCORD_ENV_PATH = '/Volumes/Repo-Drive/agents/eli/.claude/discord/.env';
 const DEFAULT_DIGEST_CHANNEL_ID = '1491979880747765810';
@@ -262,7 +263,7 @@ export async function sendDiscordDigest(text: string, channelId = resolveDigestC
   }
 }
 
-async function sendDiscordChunkWithRetry(
+export async function sendDiscordChunkWithRetry(
   channelId: string,
   token: string,
   chunk: string,
@@ -270,6 +271,8 @@ async function sendDiscordChunkWithRetry(
 ): Promise<void> {
   let attempt = 0;
   let lastError = '';
+  let lastStatus = 0;
+  let lastBody = '';
   while (attempt < maxAttempts) {
     attempt += 1;
     const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
@@ -283,6 +286,8 @@ async function sendDiscordChunkWithRetry(
     const body = await response.text();
     if (response.ok) return;
     lastError = `${response.status} ${body}`;
+    lastStatus = response.status;
+    lastBody = body;
 
     let delayMs = Math.min(2000 * 2 ** (attempt - 1), 15000);
     if (response.status === 429) {
@@ -295,11 +300,14 @@ async function sendDiscordChunkWithRetry(
         // fall through to backoff default
       }
     } else if (response.status < 500 && response.status !== 429) {
-      // non-retryable client error
+      // non-retryable client error — emit the standardized oracle line, then throw.
+      logDirectDiscordSendFailure('grooming-digest', channelId, lastStatus, lastBody);
       throw new Error(`Discord digest send failed: ${lastError}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
+  // Exhausted retries — emit the standardized oracle line, then throw.
+  logDirectDiscordSendFailure('grooming-digest', channelId, lastStatus, lastBody);
   throw new Error(`Discord digest send failed after ${maxAttempts} attempts: ${lastError}`);
 }
