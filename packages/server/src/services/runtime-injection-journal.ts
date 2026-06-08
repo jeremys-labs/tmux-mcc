@@ -37,8 +37,12 @@ export function appendInjectionJournalEntry(
   agentKey: string,
   entry: InjectionJournalEntry,
 ): void {
-  const journalPath = resolveInjectionJournalPath(contentRoot, agentKey);
-  fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-  rotateIfNeeded(journalPath);
-  fs.appendFileSync(journalPath, `${JSON.stringify(entry)}\n`);
+  try {
+    const journalPath = resolveInjectionJournalPath(contentRoot, agentKey);
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    rotateIfNeeded(journalPath);
+    fs.appendFileSync(journalPath, `${JSON.stringify(entry)}\n`);
+  } catch {
+    // best-effort — observability must never break the injection path it observes
+  }
 }
