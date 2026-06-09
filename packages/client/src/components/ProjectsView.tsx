@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProjectStore, type Project } from '../stores/projectStore';
 import { useUIStore } from '../stores/uiStore';
@@ -97,12 +97,23 @@ export function ProjectsView() {
   const loading = useProjectStore((s) => s.loading);
   const error = useProjectStore((s) => s.error);
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const [filter, setFilter] = useState('');
 
   useEffect(() => {
     fetchProjects();
     const interval = setInterval(fetchProjects, 5 * 60_000);
     return () => clearInterval(interval);
   }, [fetchProjects]);
+
+  const filteredProjects = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return projects;
+    return projects.filter((p) =>
+      [p.name, p.ownerName, p.summary, p.nextStep, p.blocker]
+        .filter(Boolean)
+        .some((v) => v!.toLowerCase().includes(query))
+    );
+  }, [filter, projects]);
 
   if (loading) {
     return (
@@ -120,31 +131,78 @@ export function ProjectsView() {
     );
   }
 
+  const isFiltering = filter.trim().length > 0;
+  const noMatch = isFiltering && filteredProjects.length === 0;
+
   return (
     <div className="h-full w-full overflow-auto p-4 md:p-6">
-      <div className="mb-5 flex items-start justify-between gap-2">
+      <div className="mb-5 flex items-start justify-between gap-3">
         <div>
           <h1 className="text-base font-semibold text-text-primary">Projects</h1>
-          <p className="text-xs text-text-secondary mt-0.5">{projects.length} project{projects.length !== 1 ? 's' : ''} · Click a card to chat with the owner</p>
+          <p className="text-xs text-text-secondary mt-0.5">
+            {isFiltering
+              ? `${filteredProjects.length} of ${projects.length} projects`
+              : `${projects.length} project${projects.length !== 1 ? 's' : ''} · Click a card to chat with the owner`}
+          </p>
         </div>
-        <button
-          onClick={() => fetchProjects()}
-          title="Refresh projects"
-          className="shrink-0 p-1.5 rounded text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Search filter */}
+          <div className="relative">
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') setFilter(''); }}
+              placeholder="Search projects..."
+              className="w-44 rounded-lg border border-white/10 bg-surface-input px-3 py-1.5 pr-7 text-xs focus:outline-none focus:border-white/30 focus:ring-1 focus:ring-white/20"
+            />
+            {filter && (
+              <button
+                aria-label="Clear search"
+                onClick={() => setFilter('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary transition-colors"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          {/* Refresh */}
+          <button
+            onClick={() => fetchProjects()}
+            title="Refresh projects"
+            className="p-1.5 rounded text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* Kanban board — horizontal scroll on desktop, stacked on mobile */}
-      <div className="flex flex-col gap-6 md:flex-row md:gap-4 md:items-start">
-        {COLUMNS.map((col) => {
-          const colProjects = projects.filter((p) => col.statuses.includes(p.status));
-          return <KanbanColumn key={col.id} column={col} projects={colProjects} />;
-        })}
-      </div>
+      {noMatch ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="mb-3 text-4xl">🔍</div>
+          <h3 className="text-base font-semibold text-text-primary">No projects match your search</h3>
+          <p className="mt-2 max-w-md text-sm text-text-secondary">
+            Try a different term or{' '}
+            <button
+              onClick={() => setFilter('')}
+              className="text-accent underline hover:text-accent/80 transition-colors"
+            >
+              clear the search
+            </button>{' '}
+            to see all projects.
+          </p>
+        </div>
+      ) : (
+        /* Kanban board — horizontal scroll on desktop, stacked on mobile */
+        <div className="flex flex-col gap-6 md:flex-row md:gap-4 md:items-start">
+          {COLUMNS.map((col) => {
+            const colProjects = filteredProjects.filter((p) => col.statuses.includes(p.status));
+            return <KanbanColumn key={col.id} column={col} projects={colProjects} />;
+          })}
+        </div>
+      )}
     </div>
   );
 }
