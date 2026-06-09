@@ -223,7 +223,8 @@ export function classifyRawCapture(row: GroomingReviewRow): GroomingClassificati
 
   if (
     !content ||
-    /^(ok|okay|thanks|thank you|great|excellent|agreed|proceed|done|yes|no)[.! ]*$/.test(content) ||
+    /^(ok|okay|thanks|thank you|great|excellent|agreed|proceed|done|yes|no|perfect|exactly|sounds good|lgtm|ship it|go ahead|go with that|go for it|do it|approved|correct|got it|understood|confirmed|noted|will do|on it)[.!, ]*$/.test(content) ||
+    /^[a-c][.,!]?\s*(please\.?|works\.?|that works\.?|sounds good\.?|let's do it\.?)?[.!]?\s*$/.test(content) ||
     /\b(are you online|hey buddy|still in process)\b/.test(content)
   ) {
     return { action: 'auto_ignore', reason: 'transient acknowledgement/status message' };
