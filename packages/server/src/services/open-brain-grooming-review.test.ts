@@ -63,6 +63,40 @@ describe('open brain grooming review', () => {
     expect(classification.action).toBe('auto_ignore');
   });
 
+  it.each([
+    'sounds good',
+    'lgtm',
+    'ship it',
+    'go ahead',
+    'go with that',
+    'confirmed',
+    'will do',
+    'on it',
+    'A please',
+    'a please',
+    'b works',
+    'C.',
+    'a. please',
+  ])('auto-ignores extended ack/choice-reply pattern: %s', (content) => {
+    const classification = classifyRawCapture({
+      ...row,
+      content,
+      metadata: { ...row.metadata, source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).toBe('auto_ignore');
+  });
+
+  it('does not auto-ignore a choice reply with substantive follow-on content', () => {
+    const classification = classifyRawCapture({
+      ...row,
+      content: 'A please. We have a target architecture — let\'s do it.',
+      metadata: { ...row.metadata, source_type: 'discord', confidence: 'medium' },
+    });
+
+    expect(classification.action).not.toBe('auto_ignore');
+  });
+
   it('routes shared-team or source-of-truth content to review', () => {
     const classification = classifyRawCapture({
       ...row,
