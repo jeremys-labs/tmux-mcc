@@ -32,10 +32,26 @@ describe('detectModelSwitch', () => {
     expect(result).toEqual({ matched: true, model: 'opus' });
   });
 
+  it('detects "switch to fable"', () => {
+    const result = detectModelSwitch('Switch to Fable');
+    expect(result).toEqual({ matched: true, model: 'claude-fable-5' });
+  });
+
+  it('detects "use fable 5"', () => {
+    const result = detectModelSwitch('use fable 5');
+    expect(result).toEqual({ matched: true, model: 'claude-fable-5' });
+  });
+
+  it('detects "switch to opus 4.8"', () => {
+    const result = detectModelSwitch('switch to opus 4.8');
+    expect(result).toEqual({ matched: true, model: 'opus' });
+  });
+
   it('does not match unrelated messages', () => {
     expect(detectModelSwitch('How is the project going?')).toEqual({ matched: false });
     expect(detectModelSwitch('What model are you running on?')).toEqual({ matched: false });
     expect(detectModelSwitch('The opus of beethoven is great')).toEqual({ matched: false });
+    expect(detectModelSwitch('That story is quite a fable')).toEqual({ matched: false });
   });
 
   it('does not match without a trigger verb', () => {

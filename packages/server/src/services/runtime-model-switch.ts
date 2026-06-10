@@ -9,13 +9,16 @@ const MODEL_ALIASES: Record<string, string> = {
   opus: 'opus',
   'opus 4.6': 'claude-opus-4-6',
   'opus 4.7': 'opus',
+  'opus 4.8': 'opus',
   sonnet: 'sonnet',
   'sonnet 4.6': 'sonnet',
   haiku: 'haiku',
   'haiku 4.5': 'haiku',
+  fable: 'claude-fable-5',
+  'fable 5': 'claude-fable-5',
 };
 
-const SWITCH_PATTERN = /\b(?:switch|change|set)\b.*?\b(?:to|model)\b.*?\b(opus(?:\s+4\.[67])?|sonnet(?:\s+4\.6)?|haiku(?:\s+4\.5)?)\b|\buse\b.*?\b(opus(?:\s+4\.[67])?|sonnet(?:\s+4\.6)?|haiku(?:\s+4\.5)?)\b/i;
+const SWITCH_PATTERN = /\b(?:switch|change|set)\b.*?\b(?:to|model)\b.*?\b(opus(?:\s+4\.[678])?|sonnet(?:\s+4\.6)?|haiku(?:\s+4\.5)?|fable(?:\s+5)?)\b|\buse\b.*?\b(opus(?:\s+4\.[678])?|sonnet(?:\s+4\.6)?|haiku(?:\s+4\.5)?|fable(?:\s+5)?)\b/i;
 
 export function detectModelSwitch(text: string): ModelSwitchResult {
   const match = text.match(SWITCH_PATTERN);
