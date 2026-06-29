@@ -25,6 +25,8 @@ export interface PreSessionPrompt {
   hasSoul: boolean;
   /** Whether OB1 startup memory was included. */
   hasMemory: boolean;
+  /** Whether an In-Flight section from the agent index was included. */
+  hasInFlight: boolean;
 }
 
 function readSoul(agentKey: string, agentsRoot: string): string {
@@ -34,6 +36,35 @@ function readSoul(agentKey: string, agentsRoot: string): string {
   } catch {
     return '';
   }
+}
+
+// Reads the "## In Flight" section from the agent's memory index and returns a
+// formatted block for pre-session injection. Returns empty string when the
+// section is absent, unreadable, or contains no bullet entries (i.e. only the
+// empty placeholder written by the Loop 4 rule).
+// Index convention: {agentsRoot}/{agentKey}/memory/agents/{agentKey}/index.md
+// Regression anchor: 2026-06-28 — Eli review (msg_6e3cgtdc) dropped for 10 h
+// because no startup signal existed; Loop 4 shipped the write discipline, this
+// makes the recovery structural.
+function readInFlightSection(agentKey: string, agentsRoot: string): string {
+  const indexPath = path.join(
+    agentsRoot, agentKey, 'memory', 'agents', agentKey, 'index.md',
+  );
+  let content: string;
+  try {
+    content = fs.readFileSync(indexPath, 'utf8');
+  } catch {
+    return '';
+  }
+
+  // Extract the ## In Flight section up to the next --- separator or ## heading.
+  const match = content.match(/^## In Flight\n([\s\S]*?)(?=\n---|\n## )/m);
+  if (!match) return '';
+
+  // Only inject when there are actual bullet entries; skip the empty placeholder.
+  if (!/^- /m.test(match[1])) return '';
+
+  return `[In-Flight Work] Active tasks from your agent index:\n\n## In Flight\n${match[1].trimEnd()}`;
 }
 
 export async function buildPreSessionPrompt(
@@ -56,6 +87,8 @@ export async function buildPreSessionPrompt(
     }
   }
 
+  const inFlightBlock = readInFlightSection(input.agentKey, agentsRoot);
+
   const sections: string[] = [];
   if (soul) {
     sections.push(soul);
@@ -63,11 +96,15 @@ export async function buildPreSessionPrompt(
   if (memoryBlock) {
     sections.push(memoryBlock);
   }
+  if (inFlightBlock) {
+    sections.push(inFlightBlock);
+  }
 
   return {
     text: sections.join('\n\n'),
     hasSoul: Boolean(soul),
     hasMemory: Boolean(memoryBlock),
+    hasInFlight: Boolean(inFlightBlock),
   };
 }
 

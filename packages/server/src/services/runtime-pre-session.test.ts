@@ -100,6 +100,101 @@ describe('buildPreSessionPrompt', () => {
   });
 });
 
+describe('readInFlightSection / In-Flight injection', () => {
+  function writeIndex(agentKey: string, body: string): void {
+    const dir = path.join(tmp, agentKey, 'memory', 'agents', agentKey);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'index.md'), body);
+  }
+
+  it('injects In-Flight block when the section has bullet entries', async () => {
+    writeIndex('marcus', [
+      '# Marcus Index',
+      '',
+      '## In Flight',
+      '',
+      'Tasks started but not yet shipped or explicitly blocked. Clear each entry when done.',
+      '',
+      '- Reviewing `eli/loop5-scheduler-run-result-log` (f743f37) — started 10:10 AM, verdict owed to Eli',
+      '',
+      '---',
+      '',
+      '## Other Section',
+    ].join('\n'));
+
+    const result = await buildPreSessionPrompt({
+      agentKey: 'marcus',
+      runtime: 'claude',
+      agentsRoot: tmp,
+      openBrainConfig: null,
+    });
+
+    expect(result.hasInFlight).toBe(true);
+    expect(result.text).toContain('[In-Flight Work]');
+    expect(result.text).toContain('eli/loop5-scheduler-run-result-log');
+  });
+
+  it('does not inject when In-Flight section contains only the empty placeholder', async () => {
+    writeIndex('marcus', [
+      '# Marcus Index',
+      '',
+      '## In Flight',
+      '',
+      'Tasks started but not yet shipped or explicitly blocked. Clear each entry when done.',
+      '',
+      '_(none)_',
+      '',
+      '---',
+    ].join('\n'));
+
+    const result = await buildPreSessionPrompt({
+      agentKey: 'marcus',
+      runtime: 'claude',
+      agentsRoot: tmp,
+      openBrainConfig: null,
+    });
+
+    expect(result.hasInFlight).toBe(false);
+    expect(result.text).not.toContain('[In-Flight Work]');
+  });
+
+  it('does not inject and does not throw when no index file exists', async () => {
+    const result = await buildPreSessionPrompt({
+      agentKey: 'marcus',
+      runtime: 'claude',
+      agentsRoot: tmp,
+      openBrainConfig: null,
+    });
+
+    expect(result.hasInFlight).toBe(false);
+    expect(result.text).toBe('');
+  });
+
+  it('appends In-Flight block after soul and memory sections', async () => {
+    writeSoul('marcus', 'SOUL-CONTENT');
+    writeIndex('marcus', [
+      '## In Flight',
+      '',
+      '- Active task A',
+      '',
+      '---',
+    ].join('\n'));
+
+    const result = await buildPreSessionPrompt({
+      agentKey: 'marcus',
+      runtime: 'claude',
+      agentsRoot: tmp,
+      openBrainConfig: null,
+    });
+
+    expect(result.hasSoul).toBe(true);
+    expect(result.hasInFlight).toBe(true);
+    const soulPos = result.text.indexOf('SOUL-CONTENT');
+    const inflightPos = result.text.indexOf('[In-Flight Work]');
+    expect(soulPos).toBeLessThan(inflightPos);
+  });
+});
+
 describe('writePreSessionContextSidecar', () => {
   it('writes the JSON sidecar without creating a .txt file', () => {
     writePreSessionContextSidecar({
