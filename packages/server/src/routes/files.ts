@@ -8,6 +8,15 @@ interface DirEntry {
   size?: number;
 }
 
+// Resolves `segments` under `baseDir` and returns the absolute path only if it
+// stays within baseDir. Guards against `..`-traversal in route params reaching
+// arbitrary files (e.g. `.env`, credentials) via readdir/sendFile/rename.
+function resolveWithinDir(baseDir: string, ...segments: string[]): string | null {
+  const resolved = path.resolve(baseDir, ...segments);
+  if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) return null;
+  return resolved;
+}
+
 export function createFileRoutes(contentRoot: string, docsDir: string): Router {
   const router = Router();
   const filesDir = path.join(contentRoot, 'files');
@@ -90,7 +99,11 @@ export function createFileRoutes(contentRoot: string, docsDir: string): Router {
       res.status(400).json({ error: 'Invalid folder' });
       return;
     }
-    const filePath = path.join(filesDir, folder as string, filename as string);
+    const filePath = resolveWithinDir(filesDir, folder as string, filename as string);
+    if (!filePath) {
+      res.status(400).json({ error: 'Invalid path' });
+      return;
+    }
     if (!fs.existsSync(filePath)) {
       res.status(404).json({ error: 'File not found' });
       return;
@@ -127,12 +140,20 @@ export function createFileRoutes(contentRoot: string, docsDir: string): Router {
   router.post('/files/:folder/:filename/move', (req, res) => {
     const { folder, filename } = req.params;
     const { to } = req.body;
+    if (!['inbox', 'approved', 'archive'].includes(folder as string)) {
+      res.status(400).json({ error: 'Invalid folder' });
+      return;
+    }
     if (!['inbox', 'approved', 'archive'].includes(to)) {
       res.status(400).json({ error: 'Invalid destination' });
       return;
     }
-    const src = path.join(filesDir, folder as string, filename as string);
-    const dest = path.join(filesDir, to, filename as string);
+    const src = resolveWithinDir(filesDir, folder as string, filename as string);
+    const dest = src ? resolveWithinDir(filesDir, to, filename as string) : null;
+    if (!src || !dest) {
+      res.status(400).json({ error: 'Invalid path' });
+      return;
+    }
     try {
       fs.renameSync(src, dest);
       res.json({ ok: true });
