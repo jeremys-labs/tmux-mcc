@@ -1,9 +1,10 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import {
   A2A_TERMINAL_STATES,
   appendAuditRow,
   getTask,
-  readPendingRows,
   resolveA2APaths,
   tokenFingerprint,
   readTokenFile,
@@ -30,6 +31,60 @@ export function computeNextPollDelay(attempts: number): number {
   return 120_000;
 }
 
+/** Atomic write: tmp file + rename, mirroring the task-ledger helper. A crash or
+ * SIGTERM mid-write can only leave an orphaned .tmp file, never a truncated
+ * poll-state.json / pending.jsonl that wedges the next tick. */
+function atomicWriteFile(filePath: string, content: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, filePath);
+}
+
+/** Local, crash-tolerant reader for pending.jsonl. A producer crashing mid-
+ * append (a2a-client's appendPendingRow) leaves a truncated trailing line;
+ * skip it with a warning and process the intact rows instead of throwing and
+ * wedging every pending task until a human repairs the file. */
+export function readPendingRowsResilient(paths: A2APaths, log: (line: string) => void): A2APendingTaskRow[] {
+  if (!fs.existsSync(paths.pendingFile)) return [];
+  const rows: A2APendingTaskRow[] = [];
+  for (const line of fs.readFileSync(paths.pendingFile, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      rows.push(JSON.parse(line) as A2APendingTaskRow);
+    } catch {
+      log(`skipping malformed pending row: ${line.slice(0, 120)}`);
+    }
+  }
+  return rows;
+}
+
+function deliveredFilePath(paths: A2APaths): string {
+  return path.join(paths.a2aDir, 'delivered.jsonl');
+}
+
+/** Durable set of taskIds already delivered, so a crash between mail send and
+ * pending cleanup doesn't re-deliver the same result on the next tick. */
+function readDeliveredIds(paths: A2APaths): Set<string> {
+  const ids = new Set<string>();
+  const file = deliveredFilePath(paths);
+  if (!fs.existsSync(file)) return ids;
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      ids.add((JSON.parse(line) as { taskId: string }).taskId);
+    } catch {
+      // ignore a torn trailing marker line
+    }
+  }
+  return ids;
+}
+
+function recordDelivered(taskId: string, paths: A2APaths): void {
+  fs.mkdirSync(paths.a2aDir, { recursive: true });
+  fs.appendFileSync(deliveredFilePath(paths), `${JSON.stringify({ taskId, ts: new Date().toISOString() })}\n`);
+}
+
 export function readA2APollState(paths: A2APaths): PollStateMap {
   const filePath = `${paths.a2aDir}/poll-state.json`;
   try {
@@ -40,14 +95,12 @@ export function readA2APollState(paths: A2APaths): PollStateMap {
 }
 
 export function writeA2APollState(paths: A2APaths, state: PollStateMap): void {
-  fs.mkdirSync(paths.a2aDir, { recursive: true });
-  fs.writeFileSync(`${paths.a2aDir}/poll-state.json`, JSON.stringify(state, null, 2));
+  atomicWriteFile(`${paths.a2aDir}/poll-state.json`, JSON.stringify(state, null, 2));
 }
 
 export function writePendingRows(rows: A2APendingTaskRow[], paths: A2APaths): void {
-  fs.mkdirSync(paths.a2aDir, { recursive: true });
   const content = rows.map((r) => JSON.stringify(r)).join('\n');
-  fs.writeFileSync(paths.pendingFile, rows.length ? `${content}\n` : '');
+  atomicWriteFile(paths.pendingFile, rows.length ? `${content}\n` : '');
 }
 
 function peerFromRow(row: A2APendingTaskRow): A2APeer {
@@ -108,29 +161,44 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
     if (logPath) fs.appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`);
   };
 
-  const pending = readPendingRows(paths);
+  const pending = readPendingRowsResilient(paths, log);
   if (!pending.length) return;
 
   const pollState = readA2APollState(paths);
+  const delivered = readDeliveredIds(paths);
   const now = new Date();
-  const remaining: A2APendingTaskRow[] = [];
+  // ids finished this tick (delivered terminal or expired) — the only rows we
+  // remove from pending. Everything else is left in place so a concurrent
+  // append is never erased.
+  const handledIds = new Set<string>();
 
   const mailStore = options.mailStore ?? createAgentMailStore();
   const ownsMailStore = !options.mailStore;
 
   try {
     for (const row of pending) {
+      // Idempotency: a prior tick may have delivered this task but crashed
+      // before pruning pending.jsonl. The durable marker lets us drop the row
+      // without re-sending the result.
+      if (delivered.has(row.taskId)) {
+        log(`task ${row.taskId} already delivered; dropping stale pending row`);
+        handledIds.add(row.id);
+        delete pollState[row.id];
+        continue;
+      }
+
       if (now > new Date(row.expiresAt)) {
         log(`task ${row.taskId} expired (peer=${row.peer})`);
         appendAuditRow({ event: 'timeout', ts: now.toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: '' }, paths);
+        recordDelivered(row.taskId, paths);
         deliverResult(row, 'expired', undefined, mailStore);
+        handledIds.add(row.id);
         delete pollState[row.id];
         continue;
       }
 
       const state = pollState[row.id] ?? { attempts: 0, nextPollAfter: now.toISOString() };
       if (new Date(state.nextPollAfter) > now) {
-        remaining.push(row);
         continue;
       }
 
@@ -140,7 +208,6 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
       } catch (err) {
         log(`token read error for ${row.taskId}: ${String(err)}`);
         appendAuditRow({ event: 'error', ts: now.toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: '' }, paths);
-        remaining.push(row);
         continue;
       }
 
@@ -154,7 +221,6 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
         appendAuditRow({ event: 'error', ts: now.toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: fp }, paths);
         const delay = computeNextPollDelay(state.attempts + 1);
         pollState[row.id] = { attempts: state.attempts + 1, nextPollAfter: new Date(now.getTime() + delay).toISOString() };
-        remaining.push(row);
         continue;
       }
 
@@ -162,19 +228,33 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
       log(`poll ${row.taskId} state=${result.state} attempts=${state.attempts + 1}`);
 
       if (A2A_TERMINAL_STATES.has(result.state)) {
+        // Durable delivered-marker before the pending prune (and before the row
+        // is considered handled) so a crash here can't silently re-deliver.
+        recordDelivered(row.taskId, paths);
         deliverResult(row, result.state, result.text, mailStore);
         appendAuditRow({ event: 'deliver', ts: new Date().toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: fp, state: result.state }, paths);
+        handledIds.add(row.id);
         delete pollState[row.id];
       } else {
         const delay = computeNextPollDelay(state.attempts + 1);
         pollState[row.id] = { attempts: state.attempts + 1, nextPollAfter: new Date(now.getTime() + delay).toISOString() };
-        remaining.push(row);
       }
     }
   } finally {
     if (ownsMailStore) mailStore.close();
   }
 
-  writePendingRows(remaining, paths);
+  // Append-only reconcile: re-read pending fresh so any row a producer appended
+  // during the (up to 2-min) poll window survives, and remove only the ids we
+  // finished. Replaces the blind full-rewrite that erased concurrent appends.
+  const survivors = readPendingRowsResilient(paths, log).filter((r) => !handledIds.has(r.id));
+  writePendingRows(survivors, paths);
+
+  // Prune orphaned pollState keys — rows that vanished non-terminally (handled,
+  // expired, or externally removed) would otherwise leak state forever (L1).
+  const liveIds = new Set(survivors.map((r) => r.id));
+  for (const key of Object.keys(pollState)) {
+    if (!liveIds.has(key)) delete pollState[key];
+  }
   writeA2APollState(paths, pollState);
 }
