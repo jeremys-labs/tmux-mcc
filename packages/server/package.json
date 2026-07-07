@@ -28,6 +28,7 @@
     "runtime-launch": "tsx src/runtime-launch.ts",
     "runtime-scheduled-job": "tsx src/runtime-scheduled-job.ts",
     "recall-health-canary": "tsx src/recall-health-canary.ts",
+    "skill:propose": "tsx src/skill-propose.ts",
     "skill:promote": "tsx src/skill-promote.ts",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",

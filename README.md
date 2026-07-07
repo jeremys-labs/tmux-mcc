@@ -221,15 +221,28 @@ Pending skill proposals are inert until reviewed and promoted:
 - Shared proposals: `/Volumes/Repo-Drive/agents/SHARED/pending/skills/<skill>.md`
 
 The answer-context skill snapshot excludes anything under `pending/skills` from
-the invocable skill list. After review, promote a pending file into the live
-`skills/<skill>/SKILL.md` layout with:
+the invocable skill list. Agents propose a skill by writing only to the pending
+area:
+
+```bash
+npm run skill:propose --workspace=@mcc-tmux/server -- --agent <agent> --name <skill> --description "<when to use it>" --body-file /absolute/path/body.md
+npm run skill:propose --workspace=@mcc-tmux/server -- --shared --name <skill> --description "<when to use it>" --body-stdin
+```
+
+The proposal command writes frontmatter plus body text to `pending/skills`,
+refuses unsafe names, existing pending files, live-skill collisions, and body
+content that already contains frontmatter. It prints the snapshot version and
+confirms the proposal remains inert.
+
+After review, promote a pending file into the live `skills/<skill>/SKILL.md`
+layout with:
 
 ```bash
 npm run skill:promote --workspace=@mcc-tmux/server -- --agent <agent> --name <skill>
 npm run skill:promote --workspace=@mcc-tmux/server -- --shared --name <skill>
 ```
 
-The command prints the before/after snapshot version and skill count. It refuses
+The promotion command prints the before/after snapshot version and skill count. It refuses
 unsafe names, frontmatter name mismatches, missing pending files, and overwrites
 of existing live skills.
 
