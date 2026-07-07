@@ -213,6 +213,26 @@ Maps agents to LLM models for display in the chat header:
 └── assets/                         # Custom sprite sheets (optional)
 ```
 
+### Skill Promotion
+
+Pending skill proposals are inert until reviewed and promoted:
+
+- Agent-scoped proposals: `/Volumes/Repo-Drive/agents/<agent>/pending/skills/<skill>.md`
+- Shared proposals: `/Volumes/Repo-Drive/agents/SHARED/pending/skills/<skill>.md`
+
+The answer-context skill snapshot excludes anything under `pending/skills` from
+the invocable skill list. After review, promote a pending file into the live
+`skills/<skill>/SKILL.md` layout with:
+
+```bash
+npm run skill:promote --workspace=@mcc-tmux/server -- --agent <agent> --name <skill>
+npm run skill:promote --workspace=@mcc-tmux/server -- --shared --name <skill>
+```
+
+The command prints the before/after snapshot version and skill count. It refuses
+unsafe names, frontmatter name mismatches, missing pending files, and overwrites
+of existing live skills.
+
 ---
 
 ## Environment Variables
