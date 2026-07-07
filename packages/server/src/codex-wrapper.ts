@@ -18,6 +18,7 @@ import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { openEventInboxStore } from './services/event-inbox-store.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -32,6 +33,7 @@ const taskQueue = createRuntimeTaskQueue({
   defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
 });
 const mailStore = createAgentMailStore();
+const eventInboxStore = openEventInboxStore(contentRoot);
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -159,12 +161,17 @@ const pollers = startRuntimeInboxPollers({
     mailStore,
     submitPrompt: (prompt, message) => injectionGate.deliver(prompt, message.id, 'mail'),
   },
+  eventInbox: {
+    eventInbox: eventInboxStore,
+    submitPrompt: (prompt, event) => injectionGate.deliver(prompt, String(event.id), 'event_inbox'),
+  },
 });
 
 function cleanup(): void {
   pollers.stop();
   process.stdout.off('resize', resize);
   mailStore.close();
+  eventInboxStore.close();
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const enqueueDiscord = vi.fn();
 const enqueueAgentMail = vi.fn();
 const enqueueBlueBubbles = vi.fn();
+const enqueueEventInbox = vi.fn();
 const injectHandoff = vi.fn();
 
 vi.mock('./runtime-discord-inbox.js', () => ({
@@ -13,6 +14,9 @@ vi.mock('./runtime-agent-mail.js', () => ({
 }));
 vi.mock('./runtime-bluebubbles-inbox.js', () => ({
   enqueuePendingRuntimeBlueBubblesInbox: (input: unknown) => enqueueBlueBubbles(input),
+}));
+vi.mock('./runtime-event-inbox.js', () => ({
+  enqueuePendingRuntimeEventInbox: (input: unknown) => enqueueEventInbox(input),
 }));
 vi.mock('./runtime-handoff-injection.js', () => ({
   injectPendingRuntimeHandoff: (input: unknown) => injectHandoff(input),
@@ -34,15 +38,20 @@ function baseInput(overrides: Partial<Parameters<typeof startRuntimeInboxPollers
       submitPrompt: vi.fn(async () => {}),
     },
     blueBubbles: { submitPrompt: vi.fn(async () => {}) },
+    eventInbox: {
+      eventInbox: { ackEvent: vi.fn(), listInbox: vi.fn() } as never,
+      submitPrompt: vi.fn(async () => {}),
+    },
     ...overrides,
   };
 }
 
 describe('startRuntimeInboxPollers', () => {
-  it('schedules a periodic tick that invokes all three pollers', () => {
+  it('schedules a periodic tick that invokes all four pollers', () => {
     enqueueDiscord.mockClear();
     enqueueAgentMail.mockClear();
     enqueueBlueBubbles.mockClear();
+    enqueueEventInbox.mockClear();
 
     let registered: (() => void) | null = null;
     const fakeHandle = {} as NodeJS.Timeout;
@@ -64,11 +73,13 @@ describe('startRuntimeInboxPollers', () => {
     expect(enqueueBlueBubbles).toHaveBeenCalledTimes(1);
     expect(enqueueDiscord).toHaveBeenCalledTimes(1);
     expect(enqueueAgentMail).toHaveBeenCalledTimes(1);
+    expect(enqueueEventInbox).toHaveBeenCalledTimes(1);
 
     handle.tick();
     expect(enqueueBlueBubbles).toHaveBeenCalledTimes(2);
     expect(enqueueDiscord).toHaveBeenCalledTimes(2);
     expect(enqueueAgentMail).toHaveBeenCalledTimes(2);
+    expect(enqueueEventInbox).toHaveBeenCalledTimes(2);
 
     handle.stop();
     expect(clearIntervalImpl).toHaveBeenCalledWith(fakeHandle);

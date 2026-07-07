@@ -11,6 +11,10 @@ import {
   type EnqueuePendingRuntimeDiscordInboxInput,
 } from './runtime-discord-inbox.js';
 import {
+  enqueuePendingRuntimeEventInbox,
+  type EnqueuePendingRuntimeEventInboxInput,
+} from './runtime-event-inbox.js';
+import {
   injectPendingRuntimeHandoff,
   type RuntimeHandoffInjectionInput,
 } from './runtime-handoff-injection.js';
@@ -22,6 +26,7 @@ export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivere
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
+type EventInboxPollerArgs = Pick<EnqueuePendingRuntimeEventInboxInput, 'eventInbox' | 'submitPrompt'>;
 type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
 
 export interface RuntimeInboxPollersInput {
@@ -34,6 +39,7 @@ export interface RuntimeInboxPollersInput {
   discord: DiscordPollerArgs;
   agentMail: AgentMailPollerArgs;
   blueBubbles: BlueBubblesPollerArgs;
+  eventInbox: EventInboxPollerArgs;
   /**
    * Optional pending-handoff injection. When present, each tick re-attempts the handoff
    * until it is delivered (or there is nothing pending). A deferred attempt — the injection
@@ -63,6 +69,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
     discord,
     agentMail,
     blueBubbles,
+    eventInbox,
     handoff,
     intervalMs = DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS,
     setIntervalImpl = setInterval,
@@ -72,6 +79,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredDiscordIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredAgentMailIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+  const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
 
   let handoffSettled = false;
   let handoffInFlight = false;
@@ -130,6 +138,16 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       openBrainConfig,
       runtimeLogPath,
       submitPrompt: agentMail.submitPrompt,
+      enqueue,
+    });
+
+    enqueuePendingRuntimeEventInbox({
+      agentKey,
+      eventInbox: eventInbox.eventInbox,
+      deliveredIds: deliveredEventInboxIds,
+      events,
+      runtimeLogPath,
+      submitPrompt: eventInbox.submitPrompt,
       enqueue,
     });
   };

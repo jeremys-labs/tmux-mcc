@@ -19,6 +19,7 @@ import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { openEventInboxStore } from './services/event-inbox-store.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -28,6 +29,7 @@ ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
+const eventInboxStore = openEventInboxStore(contentRoot);
 const taskQueue = createRuntimeTaskQueue({
   defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
 });
@@ -151,6 +153,13 @@ const pollers = startRuntimeInboxPollers({
       await stdinGate.run(() => submitRuntimePrompt(term, prompt));
     },
   },
+  eventInbox: {
+    eventInbox: eventInboxStore,
+    submitPrompt: async (prompt, event) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+    },
+  },
 });
 
 function cleanup(): void {
@@ -160,6 +169,7 @@ function cleanup(): void {
     process.stdin.setRawMode(false);
   }
   store.close();
+  eventInboxStore.close();
 }
 
 process.on('SIGINT', () => {
