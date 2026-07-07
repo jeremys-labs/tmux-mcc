@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeTaskQueue } from './runtime-task-queue.js';
 
 describe('runtime task queue', () => {
@@ -89,6 +89,33 @@ describe('runtime task queue', () => {
 
     expect(seen).toEqual(['after-override']);
   }, 1000);
+
+  it('runs onTimeout when a task is abandoned for exceeding its timeout', async () => {
+    const queue = createRuntimeTaskQueue();
+    const onTimeout = vi.fn();
+
+    queue.enqueue(
+      async () => new Promise<void>(() => { /* never resolves */ }),
+      { timeoutMs: 20, onTimeout },
+    );
+
+    await queue.idle();
+
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  }, 1000);
+
+  it('does not run onTimeout when the task completes before the timeout', async () => {
+    const queue = createRuntimeTaskQueue();
+    const onTimeout = vi.fn();
+
+    queue.enqueue(async () => { /* resolves immediately */ }, { timeoutMs: 1000, onTimeout });
+
+    await queue.idle();
+    // Give any leaked timer a chance to fire before asserting it did not.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(onTimeout).not.toHaveBeenCalled();
+  });
 
   it('queueDepth reflects tasks pending and running', async () => {
     const queue = createRuntimeTaskQueue();
