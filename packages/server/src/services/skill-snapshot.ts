@@ -3,6 +3,8 @@ import {
   resolveSkillSnapshot,
   type SkillEntry,
 } from '@agent-system/agent-skills';
+import crypto from 'node:crypto';
+import path from 'node:path';
 
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 
@@ -17,6 +19,34 @@ export interface SkillSnapshot {
 interface SkillSnapshotOptions {
   agentKey: string;
   agentsRoot?: string;
+}
+
+function pendingSkillRoots(agentsRoot: string, agentKey: string): string[] {
+  return [
+    path.resolve(agentsRoot, agentKey, 'pending', 'skills'),
+    path.resolve(agentsRoot, 'SHARED', 'pending', 'skills'),
+  ];
+}
+
+function isWithinDir(candidate: string, dir: string): boolean {
+  const relative = path.relative(dir, path.resolve(candidate));
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+export function filterInvocableSkills(skills: SkillEntry[], options: SkillSnapshotOptions & { agentsRoot: string }): SkillEntry[] {
+  const roots = pendingSkillRoots(options.agentsRoot, options.agentKey);
+  return skills.filter((skill) => {
+    const underPendingRoot = roots.some((root) => isWithinDir(skill.location, root));
+    return !underPendingRoot;
+  });
+}
+
+function skillSnapshotVersion(skills: SkillEntry[]): string {
+  return crypto
+    .createHash('sha1')
+    .update(skills.map((skill) => `${skill.name}:${skill.location}`).join('|'))
+    .digest('hex')
+    .slice(0, 12);
 }
 
 function buildPrompt(agentKey: string, version: string, skills: SkillEntry[]): string {
@@ -49,15 +79,21 @@ export function isExplicitSkillRequest(promptText: string): boolean {
 }
 
 export function buildSkillSnapshot(options: SkillSnapshotOptions): SkillSnapshot {
-  const { skills, version } = resolveSkillSnapshot({
+  const agentsRoot = options.agentsRoot ?? DEFAULT_AGENTS_ROOT;
+  const { skills } = resolveSkillSnapshot({
     agentKey: options.agentKey,
-    agentsRoot: options.agentsRoot ?? DEFAULT_AGENTS_ROOT,
+    agentsRoot,
   });
+  const invocableSkills = filterInvocableSkills(skills, {
+    agentKey: options.agentKey,
+    agentsRoot,
+  });
+  const version = skillSnapshotVersion(invocableSkills);
 
   return {
     version,
-    skills,
-    prompt: buildPrompt(options.agentKey, version, skills),
+    skills: invocableSkills,
+    prompt: buildPrompt(options.agentKey, version, invocableSkills),
   };
 }
 
