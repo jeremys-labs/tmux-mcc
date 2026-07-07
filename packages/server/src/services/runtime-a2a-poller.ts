@@ -190,8 +190,12 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
       if (now > new Date(row.expiresAt)) {
         log(`task ${row.taskId} expired (peer=${row.peer})`);
         appendAuditRow({ event: 'timeout', ts: now.toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: '' }, paths);
-        recordDelivered(row.taskId, paths);
+        // Send first, then persist the marker: a crash between the two re-sends
+        // the notice next tick (at most one duplicate) rather than pruning the
+        // row with the mail never sent (silent loss). The delivered-set check at
+        // the top of the loop dedupes any such retry once the marker lands.
         deliverResult(row, 'expired', undefined, mailStore);
+        recordDelivered(row.taskId, paths);
         handledIds.add(row.id);
         delete pollState[row.id];
         continue;
@@ -228,10 +232,13 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
       log(`poll ${row.taskId} state=${result.state} attempts=${state.attempts + 1}`);
 
       if (A2A_TERMINAL_STATES.has(result.state)) {
-        // Durable delivered-marker before the pending prune (and before the row
-        // is considered handled) so a crash here can't silently re-deliver.
-        recordDelivered(row.taskId, paths);
+        // Send the result first, then write the durable marker. A crash in that
+        // window leaves the row in pending with no marker, so the next tick
+        // re-sends (one duplicate) instead of silently dropping an unsent
+        // result. Once the marker is written, the delivered-set check at the top
+        // of the loop dedupes any redelivery of this taskId.
         deliverResult(row, result.state, result.text, mailStore);
+        recordDelivered(row.taskId, paths);
         appendAuditRow({ event: 'deliver', ts: new Date().toISOString(), peer: row.peer, skillId: row.skillId, fromAgent: row.fromAgent, taskId: row.taskId, project: row.project, tokenFingerprint: fp, state: result.state }, paths);
         handledIds.add(row.id);
         delete pollState[row.id];

@@ -269,6 +269,32 @@ describe('runA2APollerTick', () => {
     mailStore.close();
   });
 
+  it('retries the send when it crashed between send and marker, then dedupes once the marker lands (M1)', async () => {
+    const paths = makePaths();
+    appendPendingRow(pendingRow({ tokenFile }), paths);
+
+    const mailStore = makeMailStore();
+    const getTaskImpl = vi.fn().mockResolvedValue(completedResult());
+
+    // Tick 1 sends the result and writes the marker.
+    await runA2APollerTick({ paths, mailStore, getTaskImpl });
+    expect(mailStore.listInbox({ agent: 'isla', status: 'new' })).toHaveLength(1);
+
+    // Simulate a crash BETWEEN send and marker: the mail went out but the marker
+    // never landed and the row was never pruned. The result must NOT be lost —
+    // the next tick has to re-send, not silently drop the row.
+    fs.rmSync(path.join(paths.a2aDir, 'delivered.jsonl'));
+    appendPendingRow(pendingRow({ tokenFile }), paths);
+    await runA2APollerTick({ paths, mailStore, getTaskImpl });
+    expect(mailStore.listInbox({ agent: 'isla', status: 'new' })).toHaveLength(2); // re-sent, no loss
+
+    // The marker is present again, so a further stray copy of the row is deduped.
+    appendPendingRow(pendingRow({ tokenFile }), paths);
+    await runA2APollerTick({ paths, mailStore, getTaskImpl });
+    expect(mailStore.listInbox({ agent: 'isla', status: 'new' })).toHaveLength(2); // no resend
+    mailStore.close();
+  });
+
   it('prunes an orphaned pollState entry (L1)', async () => {
     const paths = makePaths();
     appendPendingRow(pendingRow({ id: 'pending_live', tokenFile }), paths);
