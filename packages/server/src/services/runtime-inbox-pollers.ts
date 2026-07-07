@@ -14,28 +14,10 @@ import {
   injectPendingRuntimeHandoff,
   type RuntimeHandoffInjectionInput,
 } from './runtime-handoff-injection.js';
+import { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
-/** Upper bound on each channel's delivered-id dedup set on long-lived panes. */
-export const DEFAULT_DELIVERED_ID_CAP = 5_000;
-
-/**
- * A dedup set that evicts its oldest entry once it exceeds `max`, so the delivered-id sets on a
- * long-lived pane cannot grow without bound. Insertion order (guaranteed by Set) is eviction order.
- */
-export function createBoundedIdSet(max: number): Set<string> {
-  const set = new Set<string>();
-  const add = set.add.bind(set);
-  set.add = (value: string) => {
-    add(value);
-    if (set.size > max) {
-      const oldest = set.values().next().value;
-      if (oldest !== undefined) set.delete(oldest);
-    }
-    return set;
-  };
-  return set;
-}
+export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
@@ -111,6 +93,10 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
         } finally {
           handoffInFlight = false;
         }
+      }, {
+        // A timed-out attempt is abandoned before the finally runs; release the in-flight flag
+        // here so the handoff is retried instead of wedged as permanently in flight.
+        onTimeout: () => { handoffInFlight = false; },
       });
     }
 

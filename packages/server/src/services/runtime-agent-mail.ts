@@ -13,6 +13,8 @@ import {
   runInboundRuntimeTurn,
   type RuntimeEventEmitter,
 } from './runtime-events.js';
+import type { DeliveredIdSet } from './runtime-delivered-ids.js';
+import type { EnqueueOptions } from './runtime-task-queue.js';
 
 export interface RuntimeAgentMailDeliveryInput {
   agentKey: string;
@@ -26,8 +28,8 @@ export interface RuntimeAgentMailDeliveryInput {
 
 export interface EnqueuePendingRuntimeAgentMailInput extends Omit<RuntimeAgentMailDeliveryInput, 'message'> {
   mailStore: Pick<AgentMailStore, 'ackMessage' | 'listInbox'>;
-  deliveredIds: Set<string>;
-  enqueue: (task: () => Promise<void>) => void;
+  deliveredIds: DeliveredIdSet;
+  enqueue: (task: () => Promise<void>, opts?: EnqueueOptions) => void;
 }
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
@@ -85,10 +87,18 @@ export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgent
     input.enqueue(async () => {
       try {
         await deliverRuntimeAgentMail({ ...input, message });
+        // Delivered and acked (no longer 'new') — safe to let the cap evict this id.
+        input.deliveredIds.settle?.(message.id);
       } catch (error) {
         input.deliveredIds.delete(message.id);
         appendRuntimeLog(input.runtimeLogPath, `mail inject error ${message.id}: ${String(error)}`);
       }
+    }, {
+      onTimeout: () => {
+        // Timed-out delivery never acked (still 'new'); release the id so it is retried.
+        input.deliveredIds.delete(message.id);
+        appendRuntimeLog(input.runtimeLogPath, `mail inject timeout ${message.id}; releasing for retry`);
+      },
     });
   }
 }

@@ -5,6 +5,8 @@ import {
   runInboundRuntimeTurn,
   type RuntimeEventEmitter,
 } from './runtime-events.js';
+import type { DeliveredIdSet } from './runtime-delivered-ids.js';
+import type { EnqueueOptions } from './runtime-task-queue.js';
 import type { OpenBrainRuntimeConfig } from './open-brain-runtime.js';
 
 export interface BlueBubblesInboxEntry {
@@ -33,8 +35,8 @@ export interface RuntimeBlueBubblesInboxDeliveryInput {
 }
 
 export interface EnqueuePendingRuntimeBlueBubblesInboxInput extends Omit<RuntimeBlueBubblesInboxDeliveryInput, 'entry'> {
-  deliveredIds: Set<string>;
-  enqueue: (task: () => Promise<void>) => void;
+  deliveredIds: DeliveredIdSet;
+  enqueue: (task: () => Promise<void>, opts?: EnqueueOptions) => void;
 }
 
 function blueBubblesInboxDir(contentRoot: string): string {
@@ -174,10 +176,18 @@ export function enqueuePendingRuntimeBlueBubblesInbox(input: EnqueuePendingRunti
     input.enqueue(async () => {
       try {
         await deliverRuntimeBlueBubblesInbox({ ...input, entry });
+        // Delivered and acked (cursor advanced) — safe to let the cap evict this id.
+        input.deliveredIds.settle?.(entry.id);
       } catch (error) {
         input.deliveredIds.delete(entry.id);
         appendRuntimeLog(input.runtimeLogPath, `bluebubbles inject error ${entry.id}: ${String(error)}`);
       }
+    }, {
+      onTimeout: () => {
+        // Timed-out delivery never acked (cursor not advanced); release the id so it is retried.
+        input.deliveredIds.delete(entry.id);
+        appendRuntimeLog(input.runtimeLogPath, `bluebubbles inject timeout ${entry.id}; releasing for retry`);
+      },
     });
   }
 }

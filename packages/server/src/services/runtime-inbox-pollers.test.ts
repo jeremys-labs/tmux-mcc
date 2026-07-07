@@ -18,21 +18,7 @@ vi.mock('./runtime-handoff-injection.js', () => ({
   injectPendingRuntimeHandoff: (input: unknown) => injectHandoff(input),
 }));
 
-import { startRuntimeInboxPollers, createBoundedIdSet } from './runtime-inbox-pollers.js';
-
-describe('createBoundedIdSet', () => {
-  it('evicts the oldest id once the cap is exceeded', () => {
-    const set = createBoundedIdSet(3);
-    set.add('a');
-    set.add('b');
-    set.add('c');
-    set.add('d');
-
-    expect(set.has('a')).toBe(false); // oldest evicted
-    expect([...set]).toEqual(['b', 'c', 'd']);
-    expect(set.size).toBe(3);
-  });
-});
+import { startRuntimeInboxPollers } from './runtime-inbox-pollers.js';
 
 function baseInput(overrides: Partial<Parameters<typeof startRuntimeInboxPollers>[0]> = {}) {
   return {
@@ -207,9 +193,11 @@ describe('startRuntimeInboxPollers', () => {
     const mailSet = enqueueAgentMail.mock.calls[0][0].deliveredIds;
     const bbSet = enqueueBlueBubbles.mock.calls[0][0].deliveredIds;
 
-    expect(discordSet).toBeInstanceOf(Set);
-    expect(mailSet).toBeInstanceOf(Set);
-    expect(bbSet).toBeInstanceOf(Set);
+    for (const set of [discordSet, mailSet, bbSet]) {
+      expect(typeof set.has).toBe('function');
+      expect(typeof set.add).toBe('function');
+      expect(typeof set.settle).toBe('function'); // bounded DeliveredIdSet, not a bare Set
+    }
     expect(discordSet).not.toBe(mailSet);
     expect(discordSet).not.toBe(bbSet);
     expect(mailSet).not.toBe(bbSet);
