@@ -12,7 +12,16 @@ export interface RuntimeTaskQueue {
   idle(): Promise<void>;
 }
 
-export function createRuntimeTaskQueue(): RuntimeTaskQueue {
+export interface CreateRuntimeTaskQueueOptions {
+  /**
+   * Default per-task timeout applied when `enqueue` is not given an explicit `timeoutMs`.
+   * Guards against one hung injection task (e.g. a wedged network call) head-of-line-blocking
+   * every subsequent handoff and inbox delivery for the life of the pane.
+   */
+  defaultTimeoutMs?: number;
+}
+
+export function createRuntimeTaskQueue(options: CreateRuntimeTaskQueueOptions = {}): RuntimeTaskQueue {
   let chain: Promise<void> = Promise.resolve();
   let depth = 0;
 
@@ -29,7 +38,8 @@ export function createRuntimeTaskQueue(): RuntimeTaskQueue {
   return {
     enqueue(task, opts) {
       depth += 1;
-      const wrapped = opts?.timeoutMs ? withTimeout(task, opts.timeoutMs) : task;
+      const timeoutMs = opts?.timeoutMs ?? options.defaultTimeoutMs;
+      const wrapped = timeoutMs ? withTimeout(task, timeoutMs) : task;
       chain = chain
         .then(wrapped)
         .catch(() => undefined)

@@ -58,6 +58,38 @@ describe('runtime task queue', () => {
     expect(seen).toEqual(['after-stuck']);
   }, 1000);
 
+  it('applies a default timeout so a hung task cannot head-of-line-block the queue', async () => {
+    const queue = createRuntimeTaskQueue({ defaultTimeoutMs: 30 });
+    const seen: string[] = [];
+
+    // No per-task timeoutMs passed; the queue default must still bound it.
+    queue.enqueue(async () => new Promise<void>(() => { /* never resolves */ }));
+    queue.enqueue(async () => {
+      seen.push('after-hung');
+    });
+
+    await queue.idle();
+
+    expect(seen).toEqual(['after-hung']);
+  }, 1000);
+
+  it('lets a per-task timeout override the queue default', async () => {
+    const queue = createRuntimeTaskQueue({ defaultTimeoutMs: 1000 });
+    const seen: string[] = [];
+
+    queue.enqueue(
+      async () => new Promise<void>(() => { /* never resolves */ }),
+      { timeoutMs: 20 },
+    );
+    queue.enqueue(async () => {
+      seen.push('after-override');
+    });
+
+    await queue.idle();
+
+    expect(seen).toEqual(['after-override']);
+  }, 1000);
+
   it('queueDepth reflects tasks pending and running', async () => {
     const queue = createRuntimeTaskQueue();
 
