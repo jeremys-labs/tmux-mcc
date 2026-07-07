@@ -14,6 +14,7 @@ import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
 import { createCodexInjectionGate } from './services/runtime-codex-injection.js';
+import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -27,7 +28,9 @@ const contentRoot = resolveContentRoot();
 ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
-const taskQueue = createRuntimeTaskQueue();
+const taskQueue = createRuntimeTaskQueue({
+  defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
+});
 const mailStore = createAgentMailStore();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
@@ -35,7 +38,9 @@ const runtimeEvents = createRuntimeEventEmitter({
   runtime: 'codex',
   logPath: runtimeLogPath,
 });
-const readiness = createCodexReadinessGate();
+const readiness = createCodexReadinessGate({
+  onTransition: (state, marker) => appendRuntimeLog(`codex readiness gate -> ${state} (${marker})`),
+});
 const codexSubmitOptions = {
   chunkSize: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_SIZE ?? '160'),
   chunkDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '8'),
@@ -70,9 +75,10 @@ const term = pty.spawn('codex', codexArgs, {
   env: process.env as Record<string, string>,
 });
 
+const stdinGate = createStdinGate((data) => term.write(data));
 const injectionGate = createCodexInjectionGate({
   waitForWindow: waitForCodexInjectionWindow,
-  submit: (prompt) => submitRuntimePrompt(term, prompt, codexSubmitOptions),
+  submit: (prompt) => stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions)),
   retryBudget: unackedRetryBudget,
   log: appendRuntimeLog,
 });
@@ -92,7 +98,7 @@ if (process.stdin.isTTY) {
 }
 process.stdin.resume();
 process.stdin.on('data', (data) => {
-  term.write(data.toString());
+  stdinGate.passthrough(data.toString());
 });
 
 const resize = () => {
@@ -139,7 +145,7 @@ const pollers = startRuntimeInboxPollers({
         return false;
       }
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions));
       return true;
     },
   },
