@@ -10,13 +10,13 @@ import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js'
 import { appendRuntimeEventToLog, createRuntimeEventEmitter } from './services/runtime-events.js';
 import { createSharedActivitySink } from './services/runtime-shared-activity.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
-import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { detectModelSwitch, injectModelSwitch } from './services/runtime-model-switch.js';
 import {
   buildPreSessionPrompt,
   writePreSessionPromptFile,
 } from './services/runtime-pre-session.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
+import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
 
@@ -28,7 +28,9 @@ ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
-const taskQueue = createRuntimeTaskQueue();
+const taskQueue = createRuntimeTaskQueue({
+  defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
+});
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -70,6 +72,8 @@ const term = pty.spawn('claude', claudeArgs, {
   env: process.env as Record<string, string>,
 });
 
+const stdinGate = createStdinGate((data) => term.write(data));
+
 term.onData((data) => {
   process.stdout.write(data);
 });
@@ -91,7 +95,7 @@ if (process.stdin.isTTY) {
 }
 process.stdin.resume();
 process.stdin.on('data', (data) => {
-  term.write(data.toString());
+  stdinGate.passthrough(data.toString());
 });
 
 const resize = () => {
@@ -104,14 +108,6 @@ void runtimeEvents.emit('onRuntimeHealth', {
   metadata: { status: 'started' },
 });
 
-taskQueue.enqueue(async () => {
-  await injectPendingRuntimeHandoff({
-    workspace: cwd,
-    events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
-  });
-});
-
 const pollers = startRuntimeInboxPollers({
   agentKey,
   contentRoot,
@@ -119,21 +115,41 @@ const pollers = startRuntimeInboxPollers({
   openBrainConfig,
   runtimeLogPath,
   enqueue: taskQueue.enqueue,
+  handoff: {
+    workspace: cwd,
+    submitHandoff: async (prompt) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+    },
+  },
   blueBubbles: {
-    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    submitPrompt: async (prompt, entry) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+    },
   },
   discord: {
-    submitPrompt: async (prompt, entry) => {
+    submitPrompt: async (prompt, entry) => stdinGate.run(async () => {
       const switchResult = detectModelSwitch(entry.content);
       if (switchResult.matched && switchResult.model) {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} model switch requested via discord ${entry.id}: /model ${switchResult.model}\n`);
+        await runtimeEvents.emit('onModelSwitch', {
+          source: 'discord',
+          messageId: entry.id,
+          metadata: { model: switchResult.model },
+        });
         await injectModelSwitch(term, switchResult.model);
       }
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting discord ${entry.id}: ${prompt}\n`);
       await submitRuntimePrompt(term, prompt);
-    },
+    }),
   },
   agentMail: {
     mailStore: store,
-    submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
+    submitPrompt: async (prompt, message) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+    },
   },
 });
 

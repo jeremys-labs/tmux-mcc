@@ -8,6 +8,7 @@ export const RUNTIME_EVENT_NAMES = [
   'onRuntimeHealth',
   'onHandoffLoaded',
   'onHandoffConsumed',
+  'onModelSwitch',
 ] as const;
 
 export type RuntimeEventName = (typeof RUNTIME_EVENT_NAMES)[number];

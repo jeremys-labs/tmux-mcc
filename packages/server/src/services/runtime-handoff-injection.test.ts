@@ -53,12 +53,39 @@ describe('runtime handoff injection', () => {
       },
     });
 
-    expect(injected).toBe(true);
+    expect(injected).toBe('delivered');
     expect(submitted[0]).toContain('[Runtime Handoff]');
     expect(submitted[0]).toContain('runtime: claude -> codex');
     expect(fs.existsSync(runtimeHandoffPath(tmpDir))).toBe(false);
     expect(fs.existsSync(consumedRuntimeHandoffPath(tmpDir))).toBe(true);
     expect(seenEvents).toEqual(['onHandoffLoaded', 'onHandoffConsumed']);
+  });
+
+  it('leaves the handoff pending when the readiness gate never opens (busy pane)', async () => {
+    writeRuntimeHandoff(tmpDir, buildRuntimeHandoff({
+      agent: 'enzo',
+      fromRuntime: 'codex',
+      toRuntime: 'claude',
+      reason: 'busy pane',
+      workspace: tmpDir,
+    }));
+    const seenEvents: string[] = [];
+
+    const outcome = await injectPendingRuntimeHandoff({
+      workspace: tmpDir,
+      events: createRuntimeEventEmitter({
+        agent: 'enzo',
+        runtime: 'codex',
+        sinks: [(event) => seenEvents.push(event.name)],
+      }),
+      // Gate never opened: submit reports the handoff was NOT delivered.
+      submitHandoff: async () => false,
+    });
+
+    expect(outcome).toBe('deferred');
+    expect(fs.existsSync(runtimeHandoffPath(tmpDir))).toBe(true);
+    expect(fs.existsSync(consumedRuntimeHandoffPath(tmpDir))).toBe(false);
+    expect(seenEvents).toEqual(['onHandoffLoaded']);
   });
 
   it('leaves the handoff pending when submit fails', async () => {
@@ -91,6 +118,6 @@ describe('runtime handoff injection', () => {
       submitHandoff: vi.fn(),
     });
 
-    expect(injected).toBe(false);
+    expect(injected).toBe('empty');
   });
 });
