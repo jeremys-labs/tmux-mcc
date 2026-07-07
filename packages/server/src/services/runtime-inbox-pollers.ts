@@ -10,12 +10,17 @@ import {
   enqueuePendingRuntimeDiscordInbox,
   type EnqueuePendingRuntimeDiscordInboxInput,
 } from './runtime-discord-inbox.js';
+import {
+  injectPendingRuntimeHandoff,
+  type RuntimeHandoffInjectionInput,
+} from './runtime-handoff-injection.js';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
+type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
 
 export interface RuntimeInboxPollersInput {
   agentKey: string;
@@ -27,6 +32,12 @@ export interface RuntimeInboxPollersInput {
   discord: DiscordPollerArgs;
   agentMail: AgentMailPollerArgs;
   blueBubbles: BlueBubblesPollerArgs;
+  /**
+   * Optional pending-handoff injection. When present, each tick re-attempts the handoff
+   * until it is delivered (or there is nothing pending). A deferred attempt — the injection
+   * window never opened — is retried on the next tick rather than dropped.
+   */
+  handoff?: HandoffPollerArgs;
   intervalMs?: number;
   /** Override for the underlying timer (test seam). */
   setIntervalImpl?: (handler: () => void, ms: number) => NodeJS.Timeout;
@@ -50,6 +61,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
     discord,
     agentMail,
     blueBubbles,
+    handoff,
     intervalMs = DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS,
     setIntervalImpl = setInterval,
     clearIntervalImpl = clearInterval,
@@ -59,7 +71,29 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredAgentMailIds = new Set<string>();
   const deliveredBlueBubblesIds = new Set<string>();
 
+  let handoffSettled = false;
+  let handoffInFlight = false;
+
   const tick = () => {
+    if (handoff && !handoffSettled && !handoffInFlight) {
+      handoffInFlight = true;
+      enqueue(async () => {
+        try {
+          const outcome = await injectPendingRuntimeHandoff({
+            workspace: handoff.workspace,
+            events,
+            submitHandoff: handoff.submitHandoff,
+          });
+          // Only a deferred attempt (window never opened) is worth retrying.
+          if (outcome !== 'deferred') handoffSettled = true;
+        } catch {
+          // Submit threw — leave the file and retry on the next tick.
+        } finally {
+          handoffInFlight = false;
+        }
+      });
+    }
+
     enqueuePendingRuntimeBlueBubblesInbox({
       agentKey,
       contentRoot,

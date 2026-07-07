@@ -12,7 +12,6 @@ import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js'
 import { writePreSessionContextSidecar } from './services/runtime-pre-session.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
-import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
@@ -109,14 +108,6 @@ void runtimeEvents.emit('onRuntimeHealth', {
   metadata: { status: 'started' },
 });
 
-taskQueue.enqueue(async () => {
-  await injectPendingRuntimeHandoff({
-    workspace: cwd,
-    events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
-  });
-});
-
 const pollers = startRuntimeInboxPollers({
   agentKey,
   contentRoot,
@@ -124,6 +115,21 @@ const pollers = startRuntimeInboxPollers({
   openBrainConfig,
   runtimeLogPath,
   enqueue: taskQueue.enqueue,
+  handoff: {
+    workspace: cwd,
+    // Route the handoff through the same readiness gate the inbox paths use. If the
+    // window never opens the handoff is reported undelivered and left on disk for retry.
+    submitHandoff: async (prompt) => {
+      const readinessResult = await waitForCodexInjectionWindow();
+      if (readinessResult === 'timeout') {
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for handoff; leaving handoff pending for retry\n`);
+        return false;
+      }
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      return true;
+    },
+  },
   blueBubbles: {
     submitPrompt: async (prompt, entry) => {
       const readinessResult = await waitForCodexInjectionWindow();

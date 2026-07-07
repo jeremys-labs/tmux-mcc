@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const enqueueDiscord = vi.fn();
 const enqueueAgentMail = vi.fn();
 const enqueueBlueBubbles = vi.fn();
+const injectHandoff = vi.fn();
 
 vi.mock('./runtime-discord-inbox.js', () => ({
   enqueuePendingRuntimeDiscordInbox: (input: unknown) => enqueueDiscord(input),
@@ -12,6 +13,9 @@ vi.mock('./runtime-agent-mail.js', () => ({
 }));
 vi.mock('./runtime-bluebubbles-inbox.js', () => ({
   enqueuePendingRuntimeBlueBubblesInbox: (input: unknown) => enqueueBlueBubbles(input),
+}));
+vi.mock('./runtime-handoff-injection.js', () => ({
+  injectPendingRuntimeHandoff: (input: unknown) => injectHandoff(input),
 }));
 
 import { startRuntimeInboxPollers } from './runtime-inbox-pollers.js';
@@ -102,6 +106,73 @@ describe('startRuntimeInboxPollers', () => {
 
     expect(enqueueDiscord.mock.calls[0][0].contentRoot).toBe('/tmp/cr');
     expect(enqueueBlueBubbles.mock.calls[0][0].contentRoot).toBe('/tmp/cr');
+  });
+
+  it('retries handoff injection until it is delivered, then stops', async () => {
+    injectHandoff.mockReset();
+    // First tick: gate never opened (deferred). Second tick: delivered.
+    injectHandoff
+      .mockResolvedValueOnce('deferred')
+      .mockResolvedValueOnce('delivered');
+
+    const tasks: Array<() => Promise<void>> = [];
+    const enqueue = vi.fn((task: () => Promise<void>) => { tasks.push(task); });
+    const submitHandoff = vi.fn(async () => {});
+
+    const setIntervalImpl = vi.fn(() => ({} as NodeJS.Timeout));
+    const handle = startRuntimeInboxPollers(
+      baseInput({
+        enqueue,
+        setIntervalImpl,
+        clearIntervalImpl: vi.fn(),
+        handoff: { workspace: '/tmp/ws', submitHandoff },
+      }),
+    );
+
+    // Tick 1 → enqueues a handoff attempt.
+    handle.tick();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    await tasks.shift()!();
+    expect(injectHandoff).toHaveBeenCalledTimes(1);
+
+    // Tick 2 → deferred, so retries.
+    handle.tick();
+    await tasks.shift()!();
+    expect(injectHandoff).toHaveBeenCalledTimes(2);
+
+    // Tick 3 → already delivered, so no further handoff work.
+    handle.tick();
+    expect(tasks).toHaveLength(0);
+    expect(injectHandoff).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not re-enqueue a handoff attempt while one is in flight', async () => {
+    injectHandoff.mockReset();
+    let resolveInject!: (value: string) => void;
+    injectHandoff.mockReturnValue(new Promise<string>((r) => { resolveInject = r; }));
+
+    const tasks: Array<() => Promise<void>> = [];
+    const enqueue = vi.fn((task: () => Promise<void>) => { tasks.push(task); });
+
+    const handle = startRuntimeInboxPollers(
+      baseInput({
+        enqueue,
+        setIntervalImpl: vi.fn(() => ({} as NodeJS.Timeout)),
+        clearIntervalImpl: vi.fn(),
+        handoff: { workspace: '/tmp/ws', submitHandoff: vi.fn(async () => {}) },
+      }),
+    );
+
+    handle.tick();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const running = tasks.shift()!();
+
+    // Second tick while the first attempt is still pending → no new enqueue.
+    handle.tick();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+
+    resolveInject('delivered');
+    await running;
   });
 
   it('gives each channel its own deliveredIds set', () => {

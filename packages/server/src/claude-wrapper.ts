@@ -10,7 +10,6 @@ import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js'
 import { appendRuntimeEventToLog, createRuntimeEventEmitter } from './services/runtime-events.js';
 import { createSharedActivitySink } from './services/runtime-shared-activity.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
-import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { detectModelSwitch, injectModelSwitch } from './services/runtime-model-switch.js';
 import {
   buildPreSessionPrompt,
@@ -104,14 +103,6 @@ void runtimeEvents.emit('onRuntimeHealth', {
   metadata: { status: 'started' },
 });
 
-taskQueue.enqueue(async () => {
-  await injectPendingRuntimeHandoff({
-    workspace: cwd,
-    events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
-  });
-});
-
 const pollers = startRuntimeInboxPollers({
   agentKey,
   contentRoot,
@@ -119,6 +110,13 @@ const pollers = startRuntimeInboxPollers({
   openBrainConfig,
   runtimeLogPath,
   enqueue: taskQueue.enqueue,
+  handoff: {
+    workspace: cwd,
+    submitHandoff: async (prompt) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      await submitRuntimePrompt(term, prompt);
+    },
+  },
   blueBubbles: {
     submitPrompt: (prompt) => submitRuntimePrompt(term, prompt),
   },
