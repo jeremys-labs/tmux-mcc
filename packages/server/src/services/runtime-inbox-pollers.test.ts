@@ -18,7 +18,21 @@ vi.mock('./runtime-handoff-injection.js', () => ({
   injectPendingRuntimeHandoff: (input: unknown) => injectHandoff(input),
 }));
 
-import { startRuntimeInboxPollers } from './runtime-inbox-pollers.js';
+import { startRuntimeInboxPollers, createBoundedIdSet } from './runtime-inbox-pollers.js';
+
+describe('createBoundedIdSet', () => {
+  it('evicts the oldest id once the cap is exceeded', () => {
+    const set = createBoundedIdSet(3);
+    set.add('a');
+    set.add('b');
+    set.add('c');
+    set.add('d');
+
+    expect(set.has('a')).toBe(false); // oldest evicted
+    expect([...set]).toEqual(['b', 'c', 'd']);
+    expect(set.size).toBe(3);
+  });
+});
 
 function baseInput(overrides: Partial<Parameters<typeof startRuntimeInboxPollers>[0]> = {}) {
   return {

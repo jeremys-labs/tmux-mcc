@@ -16,6 +16,26 @@ import {
 } from './runtime-handoff-injection.js';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
+/** Upper bound on each channel's delivered-id dedup set on long-lived panes. */
+export const DEFAULT_DELIVERED_ID_CAP = 5_000;
+
+/**
+ * A dedup set that evicts its oldest entry once it exceeds `max`, so the delivered-id sets on a
+ * long-lived pane cannot grow without bound. Insertion order (guaranteed by Set) is eviction order.
+ */
+export function createBoundedIdSet(max: number): Set<string> {
+  const set = new Set<string>();
+  const add = set.add.bind(set);
+  set.add = (value: string) => {
+    add(value);
+    if (set.size > max) {
+      const oldest = set.values().next().value;
+      if (oldest !== undefined) set.delete(oldest);
+    }
+    return set;
+  };
+  return set;
+}
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
@@ -67,9 +87,9 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
     clearIntervalImpl = clearInterval,
   } = input;
 
-  const deliveredDiscordIds = new Set<string>();
-  const deliveredAgentMailIds = new Set<string>();
-  const deliveredBlueBubblesIds = new Set<string>();
+  const deliveredDiscordIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+  const deliveredAgentMailIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+  const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
 
   let handoffSettled = false;
   let handoffInFlight = false;
