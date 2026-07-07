@@ -22,6 +22,8 @@ import { createAgentStatusRouter } from './routes/agent-status.js';
 import { agentStatusBroadcaster } from './services/agent-status-broadcaster.js';
 import { createAvatarRouter } from './routes/avatars.js';
 import { createCronRouter } from './routes/cron.js';
+import { createEventWebhookRouter } from '@agent-comms/event-inbox';
+import { openEventInboxStore } from './services/event-inbox-store.js';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
 
@@ -71,9 +73,27 @@ for (const agentKey of Object.keys(config.agents)) {
 const dbPath = path.join(contentRoot, 'databases', 'chat.db');
 const db = createChatDB(dbPath);
 
+// Durable event inbox — written here by inbound webhooks, read/acked by the runtime pollers.
+const eventInbox = openEventInboxStore(contentRoot);
+
 // Express app
 const app = express();
 app.use(cors());
+
+// Event webhooks verify signatures over the raw request body, so they need a JSON parser that
+// captures the raw bytes. Mount it (and the router) before the global JSON parser so the
+// raw-capturing parser wins for these routes — express.json skips a body it has already parsed.
+app.use(
+  '/api/events',
+  express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    },
+  }),
+  createEventWebhookRouter(eventInbox),
+);
+
 app.use(express.json({ limit: '10mb' }));
 
 // Mount routes
@@ -146,6 +166,7 @@ function shutdown() {
   console.log('[Server] Shutting down...');
   stopVoiceHealthChecks();
   db.close();
+  eventInbox.close();
   server.close(() => {
     console.log('[Server] Stopped');
     process.exit(0);
