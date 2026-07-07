@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { EventInboxRecord } from './event-inbox.js';
+import { formatEventInboxForRuntime, type EventInboxRecord } from '@agent-comms/event-inbox';
 import {
   deliverRuntimeEventInbox,
   enqueuePendingRuntimeEventInbox,
 } from './runtime-event-inbox.js';
-import { formatEventInboxForRuntime } from '@agent-comms/event-inbox';
 import { createRuntimeEventEmitter } from './runtime-events.js';
 
 vi.mock('fs', () => ({
@@ -80,7 +79,7 @@ describe('runtime event-inbox delivery', () => {
   });
 
   it('dedupes queued pending events and releases the id on delivery failure', async () => {
-    const deliveredIds = new Set<number>();
+    const deliveredIds = new Set<string>();
     const queued: Array<() => Promise<void>> = [];
     const eventInbox = {
       listInbox: vi.fn(() => [event()]),
@@ -109,10 +108,42 @@ describe('runtime event-inbox delivery', () => {
     });
 
     expect(queued).toHaveLength(1);
-    expect(deliveredIds.has(7)).toBe(true);
+    expect(deliveredIds.has('7')).toBe(true);
 
     await queued[0]();
 
-    expect(deliveredIds.has(7)).toBe(false);
+    expect(deliveredIds.has('7')).toBe(false);
+  });
+
+  it('settles the id after successful delivery so the cap can evict it', async () => {
+    const settle = vi.fn();
+    const deliveredIds = {
+      has: () => false,
+      add: vi.fn(),
+      delete: vi.fn(),
+      settle,
+      size: 0,
+    };
+    const queued: Array<() => Promise<void>> = [];
+    const eventInbox = {
+      listInbox: vi.fn(() => [event()]),
+      ackEvent: vi.fn(),
+    };
+
+    enqueuePendingRuntimeEventInbox({
+      agentKey: 'hank',
+      eventInbox,
+      deliveredIds,
+      events: createRuntimeEventEmitter({ agent: 'hank', runtime: 'codex', sinks: [] }),
+      submitPrompt: async () => undefined,
+      runtimeLogPath: '/tmp/hank.log',
+      enqueue: (task) => queued.push(task),
+    });
+
+    await queued[0]();
+
+    expect(eventInbox.ackEvent).toHaveBeenCalledWith('hank', 7);
+    expect(settle).toHaveBeenCalledWith('7');
+    expect(deliveredIds.delete).not.toHaveBeenCalled();
   });
 });
