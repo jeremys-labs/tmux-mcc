@@ -13,6 +13,7 @@ import { writePreSessionContextSidecar } from './services/runtime-pre-session.js
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
+import { createCodexInjectionGate } from './services/runtime-codex-injection.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -41,6 +42,11 @@ const codexSubmitOptions = {
   submitDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS ?? '120'),
 };
 const readinessWaitTimeoutMs = Number(process.env.CODEX_WRAPPER_READINESS_WAIT_TIMEOUT_MS ?? '5000');
+const unackedRetryBudget = Number(process.env.CODEX_WRAPPER_UNACKED_RETRY_BUDGET ?? '3');
+
+function appendRuntimeLog(line: string): void {
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+}
 
 async function waitForCodexInjectionWindow(): Promise<'idle' | 'timeout'> {
   let timeout: NodeJS.Timeout | undefined;
@@ -62,6 +68,13 @@ const term = pty.spawn('codex', codexArgs, {
   rows: process.stdout.rows || 40,
   cwd,
   env: process.env as Record<string, string>,
+});
+
+const injectionGate = createCodexInjectionGate({
+  waitForWindow: waitForCodexInjectionWindow,
+  submit: (prompt) => submitRuntimePrompt(term, prompt, codexSubmitOptions),
+  retryBudget: unackedRetryBudget,
+  log: appendRuntimeLog,
 });
 
 term.onData((data) => {
@@ -131,35 +144,14 @@ const pollers = startRuntimeInboxPollers({
     },
   },
   blueBubbles: {
-    submitPrompt: async (prompt, entry) => {
-      const readinessResult = await waitForCodexInjectionWindow();
-      if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for bluebubbles ${entry.id}; injecting anyway\n`);
-      }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
-    },
+    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'bluebubbles'),
   },
   discord: {
-    submitPrompt: async (prompt, entry) => {
-      const readinessResult = await waitForCodexInjectionWindow();
-      if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for discord ${entry.id}; injecting anyway\n`);
-      }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting ${entry.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
-    },
+    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'discord'),
   },
   agentMail: {
     mailStore,
-    submitPrompt: async (prompt, message) => {
-      const readinessResult = await waitForCodexInjectionWindow();
-      if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for mail ${message.id}; injecting anyway\n`);
-      }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
-    },
+    submitPrompt: (prompt, message) => injectionGate.deliver(prompt, message.id, 'mail'),
   },
 });
 
