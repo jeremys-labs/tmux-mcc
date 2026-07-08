@@ -91,12 +91,17 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     return `<attachment index="${index}" ${details} url="${escapeAttribute(attachment.url)}" />`;
   });
   const replyTool = resolveDiscordReplyTool(entry.bindingName);
-  const bridgeReplyCommand = [
-    'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
-    `--agent ${entry.agentKey}`,
-    `--chat-id ${entry.channelId}`,
-    '--text-file /absolute/path/to/reply.txt',
-  ].join(' ');
+  // Agents with a reply.sh wrapper in their agent dir (small local models that
+  // fumble multi-flag CLIs) get a one-arg instruction instead of the npm form.
+  const agentReplyScript = path.join('/Volumes/Repo-Drive/agents', entry.agentKey, 'reply.sh');
+  const bridgeReplyCommand = fs.existsSync(agentReplyScript)
+    ? `cd ${path.dirname(agentReplyScript)} && ./reply.sh 'your reply text' ${entry.channelId}`
+    : [
+      'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
+      `--agent ${entry.agentKey}`,
+      `--chat-id ${entry.channelId}`,
+      '--text-file /absolute/path/to/reply.txt',
+    ].join(' ');
   const attrs = [
     'source="discord"',
     `chat_id="${entry.channelId}"`,
@@ -118,6 +123,8 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     ] : []),
     ...(attachmentLines.length > 0 ? ['', '<attachments>', ...attachmentLines, '</attachments>'] : []),
     '',
-    `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,
+    fs.existsSync(agentReplyScript)
+      ? `Reply by EXECUTING \`${bridgeReplyCommand}\` — one script, two quoted arguments, no npm/tsx/node. chat_id="${entry.channelId}". Reply on Discord, not only the local session.`
+      : `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,
   ].join('\n');
 }
