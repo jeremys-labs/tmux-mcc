@@ -95,7 +95,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
   // fumble multi-flag CLIs) get a one-arg instruction instead of the npm form.
   const agentReplyScript = path.join('/Volumes/Repo-Drive/agents', entry.agentKey, 'reply.sh');
   const bridgeReplyCommand = fs.existsSync(agentReplyScript)
-    ? `FIRST write your reply text into ${path.dirname(agentReplyScript)}/outbox.txt with your file tool, THEN execute: cd ${path.dirname(agentReplyScript)} && ./reply.sh ${entry.channelId}`
+    ? 'write your reply as your normal final message — plain text, no tool calls; the harness delivers it to Discord automatically'
     : [
       'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
       `--agent ${entry.agentKey}`,
@@ -124,7 +124,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
     ...(attachmentLines.length > 0 ? ['', '<attachments>', ...attachmentLines, '</attachments>'] : []),
     '',
     fs.existsSync(agentReplyScript)
-      ? `Reply in two steps: ${bridgeReplyCommand} — your prose goes in the FILE, never on the command line; no npm/tsx/node. chat_id="${entry.channelId}". Reply on Discord, not only the local session.`
+      ? `To reply: ${bridgeReplyCommand}. chat_id="${entry.channelId}".`
       : `Reply via \`${bridgeReplyCommand}\` (or \`--text\` for short shell-safe replies). chat_id="${entry.channelId}". Reply on Discord, not only the local session.`,
   ].join('\n');
 }
