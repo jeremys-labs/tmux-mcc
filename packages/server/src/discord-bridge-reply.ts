@@ -13,7 +13,19 @@ type Args = {
   textStdin: boolean;
   replyTo?: string;
   files: string[];
+  source?: string;
+  jobId?: string;
+  label?: string;
+  awaitingReply?: boolean;
+  expectAttachments?: number;
   socketPath: string;
+};
+
+type BridgeSendResponse = {
+  ok?: boolean;
+  id?: string;
+  bindingName?: string;
+  attachmentCount?: number;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -45,6 +57,20 @@ function parseArgs(argv: string[]): Args {
     } else if (item === '--file') {
       if (next) args.files.push(next);
       index += 1;
+    } else if (item === '--source') {
+      args.source = next;
+      index += 1;
+    } else if (item === '--job-id' || item === '--job_id') {
+      args.jobId = next;
+      index += 1;
+    } else if (item === '--label') {
+      args.label = next;
+      index += 1;
+    } else if (item === '--awaiting-reply' || item === '--awaiting_reply') {
+      args.awaitingReply = true;
+    } else if (item === '--expect-attachments' || item === '--expect-file-count') {
+      args.expectAttachments = Number(next);
+      index += 1;
     } else if (item === '--socket-path') {
       args.socketPath = next ?? args.socketPath;
       index += 1;
@@ -54,6 +80,41 @@ function parseArgs(argv: string[]): Args {
 }
 
 const args = parseArgs(process.argv.slice(2));
+
+function compactText(text: string | undefined, maxLength = 3000): string {
+  const collapsed = String(text || '').replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function appendScheduledDiscordOutbox(result: BridgeSendResponse): void {
+  const source = args.source ?? process.env.SCHEDULED_DISCORD_SOURCE;
+  const jobId = args.jobId ?? process.env.SCHEDULED_JOB_ID;
+  if (!source && !jobId) return;
+
+  const outboxPath = process.env.SCHEDULED_DISCORD_OUTBOX_PATH ?? '/Volumes/Repo-Drive/agents/SHARED/scheduled-discord-outbox.jsonl';
+  const record = {
+    timestamp: new Date().toISOString(),
+    source: source ?? 'discord_bridge_reply',
+    ...(jobId ? { job_id: jobId } : {}),
+    agent: args.agent ?? 'unknown',
+    chat_ids: args.chatId ? [args.chatId] : [],
+    sent_message_id: result.id ?? '',
+    sent_text: compactText(args.text),
+    awaiting_reply: Boolean(args.awaitingReply || process.env.SCHEDULED_AWAITING_REPLY === '1'),
+    ...(args.label ?? process.env.SCHEDULED_JOB_LABEL ? { label: args.label ?? process.env.SCHEDULED_JOB_LABEL } : {}),
+    ...(result.bindingName ? { binding_name: result.bindingName } : {}),
+    attachment_count: result.attachmentCount ?? 0,
+  };
+
+  try {
+    fs.mkdirSync(path.dirname(outboxPath), { recursive: true });
+    fs.appendFileSync(outboxPath, `${JSON.stringify(record)}\n`);
+  } catch (error) {
+    console.error(`warning: failed to append scheduled Discord outbox: ${String(error)}`);
+  }
+}
+
 if (args.text !== undefined) {
   args.text = normalizeInlineDiscordText(args.text);
 }
@@ -80,6 +141,11 @@ if (args.files.length > 10) {
   process.exit(1);
 }
 
+if (args.expectAttachments !== undefined && (!Number.isInteger(args.expectAttachments) || args.expectAttachments < 0)) {
+  console.error(`--expect-attachments must be a non-negative integer: ${args.expectAttachments}`);
+  process.exit(1);
+}
+
 for (const filePath of args.files) {
   if (!path.isAbsolute(filePath)) {
     console.error(`--file must be an absolute path: ${filePath}`);
@@ -92,17 +158,18 @@ for (const filePath of args.files) {
   }
 }
 
-const payload = JSON.stringify({
+const payloadObject = {
   agentKey: args.agent,
   chat_id: args.chatId,
   ...(args.text ? { text: args.text } : {}),
   ...(args.files.length > 0 ? { files: args.files } : {}),
   ...(args.replyTo ? { reply_to: args.replyTo } : {}),
-  ...(process.env.SCHEDULED_DISCORD_SOURCE ? { source: process.env.SCHEDULED_DISCORD_SOURCE } : {}),
-  ...(process.env.SCHEDULED_JOB_ID ? { job_id: process.env.SCHEDULED_JOB_ID } : {}),
-  ...(process.env.SCHEDULED_JOB_LABEL ? { label: process.env.SCHEDULED_JOB_LABEL } : {}),
-  ...(process.env.SCHEDULED_AWAITING_REPLY === '1' ? { awaiting_reply: true } : {}),
-});
+  ...(args.source ?? process.env.SCHEDULED_DISCORD_SOURCE ? { source: args.source ?? process.env.SCHEDULED_DISCORD_SOURCE } : {}),
+  ...(args.jobId ?? process.env.SCHEDULED_JOB_ID ? { job_id: args.jobId ?? process.env.SCHEDULED_JOB_ID } : {}),
+  ...(args.label ?? process.env.SCHEDULED_JOB_LABEL ? { label: args.label ?? process.env.SCHEDULED_JOB_LABEL } : {}),
+  ...(args.awaitingReply || process.env.SCHEDULED_AWAITING_REPLY === '1' ? { awaiting_reply: true } : {}),
+};
+const payload = JSON.stringify(payloadObject);
 
 const body = await new Promise<string>((resolve, reject) => {
   const req = http.request({
@@ -129,4 +196,11 @@ const body = await new Promise<string>((resolve, reject) => {
   req.end(payload);
 });
 
+const result = JSON.parse(body) as BridgeSendResponse;
+if (args.expectAttachments !== undefined && (result.attachmentCount ?? 0) < args.expectAttachments) {
+  console.error(`Discord send returned ${result.attachmentCount ?? 0} attachment(s); expected at least ${args.expectAttachments}. Response: ${body}`);
+  process.exit(1);
+}
+
+appendScheduledDiscordOutbox(result);
 console.log(body);
