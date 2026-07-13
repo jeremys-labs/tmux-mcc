@@ -18,6 +18,7 @@ import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { ensureCodexUpdateGuard } from './services/codex-update-guard.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 
@@ -75,6 +76,15 @@ async function waitForCodexInjectionWindow(): Promise<'idle' | 'timeout'> {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+// Boot hardening: a headless codex boot wedges on the interactive update
+// dialog unless check_for_update_on_startup=false is set at config root.
+const codexHome = process.env.CODEX_HOME ?? path.join(process.env.HOME ?? '', '.codex');
+const updateGuard = ensureCodexUpdateGuard(codexHome);
+appendRuntimeLog(`codex update guard: ${updateGuard.status}${updateGuard.patched ? ' -> injected check_for_update_on_startup=false' : ''} (${codexHome})`);
+if (updateGuard.status === 'explicitly-enabled' || updateGuard.status === 'no-config') {
+  appendRuntimeLog('codex update guard WARNING: startup update check not disabled — headless boot may wedge on the update dialog');
 }
 
 const term = pty.spawn('codex', codexArgs, {
