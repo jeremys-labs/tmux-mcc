@@ -34,7 +34,8 @@
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "replay-inbound": "tsx src/replay-inbound.ts"
   },
   "dependencies": {
     "@agent-comms/a2a-client": "file:../../../agent-comms/packages/a2a-client",
