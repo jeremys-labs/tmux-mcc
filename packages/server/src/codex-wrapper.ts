@@ -12,8 +12,9 @@ import { resolveOpenBrainRuntimeConfig } from './services/open-brain-runtime.js'
 import { writePreSessionContextSidecar } from './services/runtime-pre-session.js';
 import { createRuntimeEventEmitter } from './services/runtime-events.js';
 import { startRuntimeInboxPollers } from './services/runtime-inbox-pollers.js';
-import { injectPendingRuntimeHandoff } from './services/runtime-handoff-injection.js';
 import { createCodexReadinessGate } from './services/runtime-codex-readiness.js';
+import { createCodexInjectionGate } from './services/runtime-codex-injection.js';
+import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -27,7 +28,9 @@ const contentRoot = resolveContentRoot();
 ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
-const taskQueue = createRuntimeTaskQueue();
+const taskQueue = createRuntimeTaskQueue({
+  defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
+});
 const mailStore = createAgentMailStore();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
@@ -35,13 +38,20 @@ const runtimeEvents = createRuntimeEventEmitter({
   runtime: 'codex',
   logPath: runtimeLogPath,
 });
-const readiness = createCodexReadinessGate();
+const readiness = createCodexReadinessGate({
+  onTransition: (state, marker) => appendRuntimeLog(`codex readiness gate -> ${state} (${marker})`),
+});
 const codexSubmitOptions = {
   chunkSize: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_SIZE ?? '160'),
   chunkDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '8'),
   submitDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS ?? '120'),
 };
 const readinessWaitTimeoutMs = Number(process.env.CODEX_WRAPPER_READINESS_WAIT_TIMEOUT_MS ?? '5000');
+const unackedRetryBudget = Number(process.env.CODEX_WRAPPER_UNACKED_RETRY_BUDGET ?? '3');
+
+function appendRuntimeLog(line: string): void {
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+}
 
 function createCodexEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
@@ -75,6 +85,14 @@ const term = pty.spawn('codex', codexArgs, {
   env: createCodexEnv(process.env),
 });
 
+const stdinGate = createStdinGate((data) => term.write(data));
+const injectionGate = createCodexInjectionGate({
+  waitForWindow: waitForCodexInjectionWindow,
+  submit: (prompt) => stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions)),
+  retryBudget: unackedRetryBudget,
+  log: appendRuntimeLog,
+});
+
 term.onData((data) => {
   readiness.onData(data);
   process.stdout.write(data);
@@ -90,7 +108,7 @@ if (process.stdin.isTTY) {
 }
 process.stdin.resume();
 process.stdin.on('data', (data) => {
-  term.write(data.toString());
+  stdinGate.passthrough(data.toString());
 });
 
 const resize = () => {
@@ -119,14 +137,6 @@ void runtimeEvents.emit('onRuntimeHealth', {
   metadata: { status: 'started' },
 });
 
-taskQueue.enqueue(async () => {
-  await injectPendingRuntimeHandoff({
-    workspace: cwd,
-    events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
-  });
-});
-
 const pollers = startRuntimeInboxPollers({
   agentKey,
   contentRoot,
@@ -134,36 +144,30 @@ const pollers = startRuntimeInboxPollers({
   openBrainConfig,
   runtimeLogPath,
   enqueue: taskQueue.enqueue,
-  blueBubbles: {
-    submitPrompt: async (prompt, entry) => {
+  handoff: {
+    workspace: cwd,
+    // Route the handoff through the same readiness gate the inbox paths use. If the
+    // window never opens the handoff is reported undelivered and left on disk for retry.
+    submitHandoff: async (prompt) => {
       const readinessResult = await waitForCodexInjectionWindow();
       if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for bluebubbles ${entry.id}; injecting anyway\n`);
+        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for handoff; leaving handoff pending for retry\n`);
+        return false;
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions));
+      return true;
     },
   },
+  blueBubbles: {
+    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'bluebubbles'),
+  },
   discord: {
-    submitPrompt: async (prompt, entry) => {
-      const readinessResult = await waitForCodexInjectionWindow();
-      if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for discord ${entry.id}; injecting anyway\n`);
-      }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting ${entry.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
-    },
+    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'discord'),
   },
   agentMail: {
     mailStore,
-    submitPrompt: async (prompt, message) => {
-      const readinessResult = await waitForCodexInjectionWindow();
-      if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for mail ${message.id}; injecting anyway\n`);
-      }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt, codexSubmitOptions);
-    },
+    submitPrompt: (prompt, message) => injectionGate.deliver(prompt, message.id, 'mail'),
   },
 });
 

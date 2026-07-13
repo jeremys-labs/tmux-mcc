@@ -5,6 +5,8 @@ import {
   enqueuePendingRuntimeAgentMail,
 } from './runtime-agent-mail.js';
 import { createRuntimeEventEmitter } from './runtime-events.js';
+import { createRuntimeTaskQueue } from './runtime-task-queue.js';
+import { createBoundedIdSet } from './runtime-delivered-ids.js';
 
 vi.mock('fs', () => ({
   default: {
@@ -129,4 +131,44 @@ describe('runtime agent-mail delivery', () => {
 
     expect(deliveredIds.has('msg_1')).toBe(false);
   });
+
+  it('releases a hung delivery from deliveredIds on queue timeout so the next poll retries it', async () => {
+    const deliveredIds = createBoundedIdSet(100);
+    const queue = createRuntimeTaskQueue({ defaultTimeoutMs: 30 });
+    const mailStore = {
+      listInbox: vi.fn(() => [message()]),
+      ackMessage: vi.fn(),
+    };
+    const baseArgs = {
+      agentKey: 'enzo',
+      mailStore,
+      deliveredIds,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      runtimeLogPath: '/tmp/enzo.log',
+    };
+
+    // First poll: delivery hangs forever (busy pane never returns from submit).
+    enqueuePendingRuntimeAgentMail({
+      ...baseArgs,
+      submitPrompt: () => new Promise<void>(() => { /* never resolves */ }),
+      enqueue: queue.enqueue,
+    });
+    expect(deliveredIds.has('msg_1')).toBe(true);
+
+    await queue.idle();
+
+    // Queue timeout abandons the task; the id must be released, not left stuck-and-skipped.
+    expect(deliveredIds.has('msg_1')).toBe(false);
+    expect(mailStore.ackMessage).not.toHaveBeenCalled();
+
+    // Next poll re-enqueues the same message because it is no longer deduped.
+    const queued: Array<() => Promise<void>> = [];
+    enqueuePendingRuntimeAgentMail({
+      ...baseArgs,
+      submitPrompt: async () => undefined,
+      enqueue: (task) => queued.push(task),
+    });
+    expect(queued).toHaveLength(1);
+    expect(deliveredIds.has('msg_1')).toBe(true);
+  }, 1000);
 });

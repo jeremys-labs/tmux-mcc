@@ -6,11 +6,19 @@ const LOG_PATH = process.env.A2A_POLLER_LOG_PATH;
 const TICK_INTERVAL_MS = 5_000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
+let ticking = false;
+
 async function tick(): Promise<void> {
+  // A poll can run to the 2-minute HTTP cap, well past the 5s interval; skip
+  // re-entry so two overlapping ticks never rewrite pending.jsonl at once.
+  if (ticking) return;
+  ticking = true;
   try {
     await runA2APollerTick({ logPath: LOG_PATH });
   } catch (err) {
     process.stderr.write(`[a2a-poller] tick error: ${String(err)}\n`);
+  } finally {
+    ticking = false;
   }
 }
 

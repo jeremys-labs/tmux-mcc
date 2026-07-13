@@ -23,7 +23,7 @@ describe('detectModelSwitch', () => {
   });
 
   it('detects "switch model to sonnet"', () => {
-    const result = detectModelSwitch('Can you switch model to Sonnet please?');
+    const result = detectModelSwitch('switch model to Sonnet please');
     expect(result).toEqual({ matched: true, model: 'sonnet' });
   });
 
@@ -64,8 +64,18 @@ describe('detectModelSwitch', () => {
     expect(result).toEqual({ matched: true, model: 'opus' });
   });
 
-  it('handles surrounding text', () => {
-    const result = detectModelSwitch("Hey Zara, can you switch to opus for this task? I need more reasoning power.");
+  it('allows trailing context after a leading command', () => {
+    const result = detectModelSwitch('switch to opus for this task, I need more reasoning power.');
     expect(result).toEqual({ matched: true, model: 'opus' });
+  });
+
+  it('only honors an explicit leading command, not model names in free text', () => {
+    // Regression: "use ... sonnet" anywhere used to inject /model sonnet.
+    expect(detectModelSwitch('can you use sonnet-style headers')).toEqual({ matched: false });
+    expect(detectModelSwitch('use sonnet-style headers')).toEqual({ matched: false });
+    // A polite prefix pushes the command off the front → no longer honored.
+    expect(detectModelSwitch('Hey Zara, can you switch to opus for this task?')).toEqual({ matched: false });
+    // A verb that isn't a switch command must not trigger.
+    expect(detectModelSwitch('set the opus aside for now')).toEqual({ matched: false });
   });
 });

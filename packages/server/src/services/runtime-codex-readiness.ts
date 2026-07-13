@@ -3,13 +3,31 @@ export interface CodexReadinessGate {
   waitForIdle(): Promise<void>;
 }
 
+export interface CodexReadinessGateOptions {
+  /**
+   * Called only when the gate's busy/idle state actually changes, with the glyph/marker that
+   * drove it. Surfaces gate transitions in the runtime log so a Codex TUI restyle that silently
+   * degrades the glyph matching is visible instead of failing quietly.
+   */
+  onTransition?: (state: 'busy' | 'idle', marker: string) => void;
+}
+
 function stripAnsi(input: string): string {
   return input.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
-export function createCodexReadinessGate(): CodexReadinessGate {
+export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}): CodexReadinessGate {
   let busy = false;
   let waiters: Array<() => void> = [];
+
+  const setBusy = (next: boolean, marker: string) => {
+    if (busy !== next) {
+      busy = next;
+      options.onTransition?.(next ? 'busy' : 'idle', marker);
+    } else {
+      busy = next;
+    }
+  };
 
   const flush = () => {
     const pending = waiters;
@@ -21,17 +39,17 @@ export function createCodexReadinessGate(): CodexReadinessGate {
     onData(data) {
       const text = stripAnsi(data);
       if (text.includes('Messages to be submitted after next tool call')) {
-        busy = true;
+        setBusy(true, 'queued-input');
         return;
       }
 
       if (/Working\s*\(/.test(text) || /[•✱✻✽]\s+\S+/.test(text)) {
-        busy = true;
+        setBusy(true, 'working');
         return;
       }
 
       if (text.includes('\n› ') || text.startsWith('› ')) {
-        busy = false;
+        setBusy(false, 'prompt-ready');
         flush();
       }
     },
