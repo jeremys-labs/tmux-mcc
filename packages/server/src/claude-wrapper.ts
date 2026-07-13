@@ -30,6 +30,7 @@ const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agen
 const store = createAgentMailStore();
 const taskQueue = createRuntimeTaskQueue();
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
+const handoffSubmitDelayMs = Number(process.env.CLAUDE_WRAPPER_HANDOFF_SUBMIT_DELAY_MS ?? '1500');
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
   runtime: 'claude',
@@ -105,10 +106,11 @@ void runtimeEvents.emit('onRuntimeHealth', {
 });
 
 taskQueue.enqueue(async () => {
+  await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
   await injectPendingRuntimeHandoff({
     workspace: cwd,
     events: runtimeEvents,
-    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt),
+    submitHandoff: (prompt) => submitRuntimePrompt(term, prompt, { submitDelayMs: 250 }),
   });
 });
 

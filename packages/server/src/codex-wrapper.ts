@@ -43,6 +43,16 @@ const codexSubmitOptions = {
 };
 const readinessWaitTimeoutMs = Number(process.env.CODEX_WRAPPER_READINESS_WAIT_TIMEOUT_MS ?? '5000');
 
+function createCodexEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (key.startsWith('npm_')) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 async function waitForCodexInjectionWindow(): Promise<'idle' | 'timeout'> {
   let timeout: NodeJS.Timeout | undefined;
   try {
@@ -62,7 +72,7 @@ const term = pty.spawn('codex', codexArgs, {
   cols: process.stdout.columns || 120,
   rows: process.stdout.rows || 40,
   cwd,
-  env: process.env as Record<string, string>,
+  env: createCodexEnv(process.env),
 });
 
 term.onData((data) => {
