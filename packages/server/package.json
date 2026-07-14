@@ -7,6 +7,7 @@
     "agent-mail": "AGENT_MAIL_DIR=/Volumes/Repo-Drive/agents/SHARED/agent-mail tsx src/agent-mail.ts",
     "bridge:codex-discord": "agent-discord-bridge",
     "discord:reply": "tsx src/discord-bridge-reply.ts",
+    "discord:history": "tsx src/discord-bridge-history.ts",
     "open-brain:grooming-digest": "tsx src/open-brain-grooming-digest.ts",
     "open-brain:grooming-classify": "tsx src/open-brain-grooming-classify.ts",
     "open-brain:grooming-cluster": "tsx src/open-brain-grooming-cluster.ts",
