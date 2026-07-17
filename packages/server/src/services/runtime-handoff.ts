@@ -55,6 +55,28 @@ function compact(value: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 3).trim()}...`;
 }
 
+export function sanitizeRuntimeLogExcerpt(value: string): string {
+  const lines: string[] = [];
+  let skippingChannelBlock = false;
+
+  for (const line of value.replace(/\r/g, '').split('\n')) {
+    if (skippingChannelBlock) {
+      if (line.includes('</channel>')) skippingChannelBlock = false;
+      continue;
+    }
+
+    if (/<channel\b/.test(line)) {
+      if (!line.includes('</channel>')) skippingChannelBlock = true;
+      continue;
+    }
+
+    if (/^\s*Reply via `/.test(line)) continue;
+    lines.push(line);
+  }
+
+  return lines.join('\n');
+}
+
 function countPendingMail(agent: string): number {
   let store: ReturnType<typeof createAgentMailStore> | null = null;
   try {
@@ -82,7 +104,7 @@ function readLastRuntimeLogExcerpt(contentRoot: string, agent: string): string {
   const logPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agent}.log`);
   try {
     const text = fs.readFileSync(logPath, 'utf8');
-    return compact(text.slice(-MAX_LOG_EXCERPT_LENGTH), MAX_LOG_EXCERPT_LENGTH);
+    return compact(sanitizeRuntimeLogExcerpt(text.slice(-MAX_LOG_EXCERPT_LENGTH)), MAX_LOG_EXCERPT_LENGTH);
   } catch {
     return '';
   }

@@ -10,6 +10,7 @@ import {
   loadPendingRuntimeHandoff,
   markRuntimeHandoffConsumed,
   runtimeHandoffPath,
+  sanitizeRuntimeLogExcerpt,
   writeRuntimeHandoff,
 } from './runtime-handoff.js';
 
@@ -61,6 +62,50 @@ describe('runtime handoff', () => {
 
     expect(fs.existsSync(runtimeHandoffPath(tmpDir))).toBe(false);
     expect(fs.readFileSync(consumedRuntimeHandoffPath(tmpDir), 'utf8')).toContain('consumed_at: 2026-05-11T13:01:00.000Z');
+  });
+
+  it('does not re-serve stale Discord messages from the runtime log excerpt', () => {
+    const contentRoot = process.env.CONTENT_ROOT!;
+    const runtimeStateDir = path.join(contentRoot, 'bridge', 'runtime-state');
+    fs.mkdirSync(runtimeStateDir, { recursive: true });
+    fs.writeFileSync(path.join(runtimeStateDir, 'isla.log'), [
+      'runtime-event {"type":"token_usage","session":"feae905f-52f7-405b-a634-a9821e5ba014"}',
+      '<channel source="discord" chat_id="1491979880747765810" message_id="old-msg" user="kingclueless_" ts="2026-07-15T20:00:00.000Z">Can you check this?</channel>',
+      '',
+      'Reply via `npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux -- --agent isla --chat-id 1491979880747765810 --text-file /absolute/path/to/reply.txt` (or `--text` for short shell-safe replies). chat_id="1491979880747765810". Reply on Discord, not only the local session.',
+      'runtime-event {"type":"compaction","status":"forced"}',
+    ].join('\n'));
+
+    const handoff = buildRuntimeHandoff({
+      agent: 'isla',
+      fromRuntime: 'codex',
+      toRuntime: 'codex',
+      reason: 'forced compaction',
+      workspace: tmpDir,
+      contentRoot,
+      now: new Date('2026-07-16T03:00:00.000Z'),
+    });
+
+    expect(handoff.last_runtime_log_excerpt).toContain('runtime-event {"type":"token_usage"');
+    expect(handoff.last_runtime_log_excerpt).toContain('runtime-event {"type":"compaction"');
+    expect(handoff.last_runtime_log_excerpt).not.toContain('<channel source="discord"');
+    expect(handoff.last_runtime_log_excerpt).not.toContain('Can you check this?');
+    expect(handoff.last_runtime_log_excerpt).not.toContain('Reply via `npm run discord:reply');
+  });
+
+  it('sanitizes multiline Discord channel blocks while preserving neighboring continuity', () => {
+    const excerpt = sanitizeRuntimeLogExcerpt([
+      'runtime-event {"before":true}',
+      '<channel source="discord" chat_id="c1">',
+      'old inbound content',
+      '</channel>',
+      'runtime-event {"after":true}',
+    ].join('\n'));
+
+    expect(excerpt).toBe([
+      'runtime-event {"before":true}',
+      'runtime-event {"after":true}',
+    ].join('\n'));
   });
 
   it('switch-runtime delegates to the supervisor without prewriting the target runtime', () => {
