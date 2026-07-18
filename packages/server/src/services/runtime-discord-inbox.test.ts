@@ -137,12 +137,15 @@ describe('runtime discord inbox delivery', () => {
       process.env.DISCORD_FAST_CONTEXT_ENABLED = '1';
       process.env.DISCORD_FAST_CONTEXT_AGENTS = 'enzo';
       process.env.DISCORD_LATENCY_DIR = latencyDir;
+      // Hermetic: no scheduled outbox unless a test writes one.
+      process.env.SCHEDULED_DISCORD_OUTBOX_PATH = path.join(tmpDir, 'scheduled-outbox.jsonl');
     });
 
     afterEach(() => {
       delete process.env.DISCORD_FAST_CONTEXT_ENABLED;
       delete process.env.DISCORD_FAST_CONTEXT_AGENTS;
       delete process.env.DISCORD_LATENCY_DIR;
+      delete process.env.SCHEDULED_DISCORD_OUTBOX_PATH;
     });
 
     const readTelemetry = () =>
@@ -220,6 +223,28 @@ describe('runtime discord inbox delivery', () => {
       expect(buildAnswerContext).toHaveBeenCalledTimes(1);
       const [record] = readTelemetry();
       expect(record.lane).toBe('deep_work');
+    });
+
+    it('recent awaiting scheduled context forces the full path even without a reply reference (Eli P1)', async () => {
+      fs.writeFileSync(
+        process.env.SCHEDULED_DISCORD_OUTBOX_PATH!,
+        `${JSON.stringify({
+          job_id: 'job-1',
+          agent: 'enzo',
+          chat_ids: ['channel_1'],
+          timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          awaiting_reply: true,
+          sent_message_id: 'sched_1',
+          sent_text: 'Did the deploy go out?',
+        })}\n`,
+      );
+
+      await deliver(entry({ id: 'sched_reply_1', content: 'nice' }));
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('fast_chat');
+      expect(record.fastPathUsed).toBe(false);
     });
 
     it('records telemetry for full-path turns too', async () => {

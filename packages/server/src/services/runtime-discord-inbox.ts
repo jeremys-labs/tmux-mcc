@@ -4,7 +4,7 @@ import {
   markInboxEntryDelivered,
   readPendingInboxEntries,
 } from './codex-inbox.js';
-import { buildAnswerContext } from './answer-context.js';
+import { buildAnswerContext, hasRecentScheduledDiscordContext } from './answer-context.js';
 import {
   buildFastAnswerContext,
   classifyIntentLane,
@@ -64,7 +64,19 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
         hasAttachments: (entry.attachments?.length ?? 0) > 0,
         ...(entry.referencedMessageId ? { referencedMessageId: entry.referencedMessageId } : {}),
       });
-      const fastPathUsed = laneDecision.lane === 'fast_chat' && fastContextEnabled(agentKey, process.env);
+      // Eli P1 guard: replies to scheduled/agent-initiated prompts often carry
+      // no Discord reply reference — if the full context would include recent
+      // scheduled-outbox records for this chat, force the full path.
+      const scheduledContextPending =
+        laneDecision.lane === 'fast_chat' &&
+        hasRecentScheduledDiscordContext(agentKey, entry.channelId, new Date(), entry.referencedMessageId);
+      const fastPathUsed =
+        laneDecision.lane === 'fast_chat' &&
+        !scheduledContextPending &&
+        fastContextEnabled(agentKey, process.env);
+      if (scheduledContextPending) {
+        appendRuntimeLog(runtimeLogPath, `fast lane suppressed for discord ${entry.id}: recent scheduled outbox context`);
+      }
       const contextStart = Date.now();
 
       let answerContext = '';

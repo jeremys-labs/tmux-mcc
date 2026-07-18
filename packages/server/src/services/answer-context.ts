@@ -342,6 +342,22 @@ function readScheduledDiscordOutbox(
   ].slice(0, 5);
 }
 
+/**
+ * True when the full answer context would include scheduled/agent-initiated
+ * outbox records for this agent+chat (referenced, recent awaiting_reply, or
+ * recently sent). The fast Discord lane must not run while this is true —
+ * a plain "nice"/"yes" may be answering a scheduled prompt with no Discord
+ * reply reference, and the fast context would drop that provenance.
+ */
+export function hasRecentScheduledDiscordContext(
+  agentKey: string,
+  chatId: string,
+  now = new Date(),
+  referencedMessageId?: string,
+): boolean {
+  return readScheduledDiscordOutbox(agentKey, chatId, now, referencedMessageId).length > 0;
+}
+
 function formatScheduledDiscordOutbox(records: ScheduledDiscordOutboxRecord[]): string {
   if (records.length === 0) return '';
   return records.map((record) => [
