@@ -6,6 +6,12 @@ import {
 } from './codex-inbox.js';
 import { buildAnswerContext } from './answer-context.js';
 import {
+  buildFastAnswerContext,
+  classifyIntentLane,
+  fastContextEnabled,
+  recordDiscordTurnLatency,
+} from './discord-fast-lane.js';
+import {
   captureDiscordInboxEntry,
   type OpenBrainRuntimeConfig,
 } from './open-brain-runtime.js';
@@ -53,21 +59,59 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
         }
       }
 
-      const answerContext = await buildAnswerContext({
-        agentKey,
-        source: 'discord',
+      const laneDecision = classifyIntentLane({
         text: entry.content,
-        chatId: entry.channelId,
-        messageId: entry.id,
-        referencedMessageId: entry.referencedMessageId,
-        openBrainConfig,
-      }).catch((error) => {
-        appendRuntimeLog(runtimeLogPath, `answer-context discord error ${entry.id}: ${String(error)}`);
-        return '';
+        hasAttachments: (entry.attachments?.length ?? 0) > 0,
+        ...(entry.referencedMessageId ? { referencedMessageId: entry.referencedMessageId } : {}),
       });
+      const fastPathUsed = laneDecision.lane === 'fast_chat' && fastContextEnabled(agentKey, process.env);
+      const contextStart = Date.now();
+
+      let answerContext = '';
+      if (fastPathUsed) {
+        try {
+          answerContext = buildFastAnswerContext({ agentKey, source: 'discord', text: entry.content });
+        } catch (error) {
+          appendRuntimeLog(runtimeLogPath, `fast-context discord error ${entry.id}: ${String(error)}; falling back to full context`);
+        }
+      }
+      if (!answerContext) {
+        answerContext = await buildAnswerContext({
+          agentKey,
+          source: 'discord',
+          text: entry.content,
+          chatId: entry.channelId,
+          messageId: entry.id,
+          referencedMessageId: entry.referencedMessageId,
+          openBrainConfig,
+        }).catch((error) => {
+          appendRuntimeLog(runtimeLogPath, `answer-context discord error ${entry.id}: ${String(error)}`);
+          return '';
+        });
+      }
+
+      try {
+        recordDiscordTurnLatency(
+          {
+            agentKey,
+            messageId: entry.id,
+            chatId: entry.channelId,
+            lane: laneDecision.lane,
+            fastPathUsed,
+            answerContextMs: Date.now() - contextStart,
+            contextBytes: Buffer.byteLength(answerContext),
+          },
+          process.env.DISCORD_LATENCY_DIR,
+        );
+      } catch (error) {
+        appendRuntimeLog(runtimeLogPath, `latency telemetry error ${entry.id}: ${String(error)}`);
+      }
 
       if (answerContext) {
-        appendRuntimeLog(runtimeLogPath, `built answer-context for discord ${entry.id}`);
+        appendRuntimeLog(
+          runtimeLogPath,
+          `built answer-context for discord ${entry.id} lane=${laneDecision.lane}${fastPathUsed ? ' fast' : ''} (${laneDecision.reasons.join(',')})`,
+        );
       }
 
       return [answerContext, formatInboxEntryForCodex(entry)].filter(Boolean).join('\n\n');

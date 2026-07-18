@@ -705,7 +705,7 @@ async function buildDomainContexts(agentKey: string, text: string, agentsRoot: s
   return contexts;
 }
 
-function buildSkillsContext(agentKey: string, agentsRoot: string, promptText?: string): DomainContext | null {
+export function buildSkillsContext(agentKey: string, agentsRoot: string, promptText?: string): DomainContext | null {
   if (process.env.SKILL_SNAPSHOT_CONTEXT_DISABLED === '1') return null;
   const snapshot = buildSkillSnapshotForPrompt({ agentKey, agentsRoot, promptText });
   if (!snapshot.compactPrompt.trim()) return null;

@@ -11,7 +11,8 @@ import {
 import { createRuntimeEventEmitter } from './runtime-events.js';
 import { buildAnswerContext } from './answer-context.js';
 
-vi.mock('./answer-context.js', () => ({
+vi.mock('./answer-context.js', async (importActual) => ({
+  ...(await importActual<typeof import('./answer-context.js')>()),
   buildAnswerContext: vi.fn(async () => '[Answer Context]\nKnown context.'),
 }));
 
@@ -126,6 +127,110 @@ describe('runtime discord inbox delivery', () => {
     ).rejects.toThrow('submit failed');
 
     expect(readInboxCursor(tmpDir, 'enzo').lineCount).toBe(0);
+  });
+
+  describe('fast chat lane (env-gated)', () => {
+    let latencyDir: string;
+
+    beforeEach(() => {
+      latencyDir = path.join(tmpDir, 'latency');
+      process.env.DISCORD_FAST_CONTEXT_ENABLED = '1';
+      process.env.DISCORD_FAST_CONTEXT_AGENTS = 'enzo';
+      process.env.DISCORD_LATENCY_DIR = latencyDir;
+    });
+
+    afterEach(() => {
+      delete process.env.DISCORD_FAST_CONTEXT_ENABLED;
+      delete process.env.DISCORD_FAST_CONTEXT_AGENTS;
+      delete process.env.DISCORD_LATENCY_DIR;
+    });
+
+    const readTelemetry = () =>
+      fs
+        .readFileSync(path.join(latencyDir, 'discord-turns.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const deliver = async (item: CodexBridgeInboxEntry, submitted: string[] = []) => {
+      writeInbox(tmpDir, 'enzo', [item]);
+      await deliverRuntimeDiscordInbox({
+        agentKey: 'enzo',
+        contentRoot: tmpDir,
+        entry: item,
+        events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+        submitPrompt: async (prompt: string) => {
+          submitted.push(prompt);
+        },
+        runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+      });
+      return submitted;
+    };
+
+    it('fast_chat skips buildAnswerContext (no memory recall) and injects the fast context', async () => {
+      const submitted = await deliver(
+        entry({ id: 'fast_1', content: 'why are my agents slower than ChatGPT?' }),
+      );
+
+      expect(buildAnswerContext).not.toHaveBeenCalled();
+      expect(submitted[0]).toContain('current_datetime');
+      expect(submitted[0]).toContain('runtime_profile');
+      expect(submitted[0]).not.toContain('<governed_memory>');
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('fast_chat');
+      expect(record.fastPathUsed).toBe(true);
+      expect(typeof record.answerContextMs).toBe('number');
+    });
+
+    it('deep_work requests keep using the full buildAnswerContext', async () => {
+      await deliver(
+        entry({ id: 'deep_1', content: 'please build the fast chat lane in the repo, branch and commit it for review' }),
+      );
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('deep_work');
+      expect(record.fastPathUsed).toBe(false);
+    });
+
+    it('"did you finish that?" never takes the fast path (Isla regression)', async () => {
+      await deliver(entry({ id: 'reg_1', content: 'did you finish that?' }));
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('personal_context');
+      expect(record.fastPathUsed).toBe(false);
+    });
+
+    it('stays on the full path for agents outside the allowlist', async () => {
+      process.env.DISCORD_FAST_CONTEXT_AGENTS = 'nova';
+      await deliver(entry({ id: 'gate_1', content: 'you up?' }));
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('fast_chat');
+      expect(record.fastPathUsed).toBe(false);
+    });
+
+    it('attachments force the full path even when the flag is on', async () => {
+      await deliver(
+        entry({ id: 'att_1', content: 'nice', attachments: [{ url: 'https://x/y.png', filename: 'y.png' }] }),
+      );
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('deep_work');
+    });
+
+    it('records telemetry for full-path turns too', async () => {
+      delete process.env.DISCORD_FAST_CONTEXT_ENABLED;
+      await deliver(entry({ id: 'off_1', content: 'you up?' }));
+
+      expect(buildAnswerContext).toHaveBeenCalledTimes(1);
+      const [record] = readTelemetry();
+      expect(record.lane).toBe('fast_chat');
+      expect(record.fastPathUsed).toBe(false);
+    });
   });
 
   it('dedupes queued pending entries and releases the id on delivery failure', async () => {
