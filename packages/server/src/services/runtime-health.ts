@@ -14,6 +14,7 @@ const DEFAULT_SCHEDULED_OUTBOX = '/Volumes/Repo-Drive/agents/SHARED/scheduled-di
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_CODEX_CONFIG_PATH = '/Users/jeremylahners/.codex/config.toml';
 const DEFAULT_CONTENT_ROOT = '/Users/jeremylahners/.tmux-mcc';
+const DEFAULT_OPEN_PR_DIGEST_STATUS_PATH = '/Users/jeremylahners/.tmux-mcc/bridge/pr-digest/open-pr-digest-status.json';
 
 export type HealthStatus = 'ok' | 'warn' | 'error' | 'unknown';
 
@@ -52,6 +53,7 @@ export interface SchedulerHealth {
     jobTypes: HealthCheck;
     staleOneShots: HealthCheck;
     staleRecurring: HealthCheck;
+    openPrDigest: HealthCheck;
   };
 }
 
@@ -86,6 +88,7 @@ export interface RuntimeHealthOptions {
   includeOpenBrainMetadata?: boolean;
   codexConfigPath?: string;
   contentRoot?: string;
+  openPrDigestStatusPath?: string;
 }
 
 interface SchedulerJob {
@@ -96,6 +99,18 @@ interface SchedulerJob {
   cron?: string;
   fireAt?: string;
   enabled?: boolean;
+  command?: string;
+  prompt?: string;
+}
+
+interface OpenPrDigestRunStatus {
+  runAtIso?: string;
+  status?: string;
+  reason?: string;
+  sweepExitCode?: number;
+  deliveryOk?: boolean;
+  digestChars?: number;
+  deliveryMessageId?: string;
 }
 
 interface ThoughtMetadata {
@@ -368,7 +383,33 @@ function cronPeriodMs(expr: string): number | null {
   return null;
 }
 
-function buildSchedulerHealth(schedulerRoot: string, now: Date): SchedulerHealth {
+function isOpenPrDigestJob(job: SchedulerJob): boolean {
+  const haystack = `${job.id ?? ''} ${job.label ?? ''} ${job.command ?? ''} ${job.prompt ?? ''}`.toLowerCase();
+  return haystack.includes('open-pr-digest');
+}
+
+function openPrDigestStatusCheck(jobs: SchedulerJob[], statusPath: string, now: Date): HealthCheck {
+  if (!jobs.some(isOpenPrDigestJob)) return check('ok', 'open-PR digest job not configured');
+
+  const status = readJsonFile<OpenPrDigestRunStatus>(statusPath);
+  if (!status) return check('warn', `open-PR digest status missing at ${statusPath}`);
+  if (!status.runAtIso) return check('warn', `open-PR digest status missing runAtIso at ${statusPath}`);
+
+  const ageMinutes = minutesBetween(now, status.runAtIso);
+  if (ageMinutes > 30 * 60) {
+    return check('warn', `open-PR digest last ran ${status.runAtIso} (${ageMinutes}m ago)`);
+  }
+
+  if (status.status === 'ok' && status.deliveryOk === true) {
+    return check('ok', `open-PR digest ok at ${status.runAtIso}; ${status.digestChars ?? 0} chars; message ${status.deliveryMessageId ?? 'unknown'}`);
+  }
+
+  const reason = status.reason ?? 'unknown';
+  const detail = `open-PR digest ${status.status ?? 'unknown'} at ${status.runAtIso}; reason=${reason}; sweepExit=${status.sweepExitCode ?? 'unknown'}; deliveryOk=${status.deliveryOk}`;
+  return check(reason === 'delivery_failed' ? 'error' : 'warn', detail);
+}
+
+function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStatusPath: string): SchedulerHealth {
   const jobsFile = path.join(schedulerRoot, 'jobs.json');
   const logsDir = path.join(schedulerRoot, 'logs');
   const jobs = loadSchedulerJobs(schedulerRoot).filter((job) => job.enabled !== false);
@@ -445,6 +486,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date): SchedulerHealth
       staleRecurring: staleRecurringJobs.length === 0
         ? check('ok', 'recurring jobs have recent logs where estimable')
         : check('warn', `${staleRecurringJobs.length} recurring job(s) have stale or missing logs`),
+      openPrDigest: openPrDigestStatusCheck(jobs, openPrDigestStatusPath, now),
     },
   };
 }
@@ -652,7 +694,11 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
   const agentsRoot = options.agentsRoot ?? DEFAULT_AGENTS_ROOT;
   const schedulerRoot = options.schedulerRoot ?? DEFAULT_SCHEDULER_ROOT;
   const agents = resolveAgents({ ...options, agentsRoot });
-  const scheduler = buildSchedulerHealth(schedulerRoot, now);
+  const scheduler = buildSchedulerHealth(
+    schedulerRoot,
+    now,
+    options.openPrDigestStatusPath ?? DEFAULT_OPEN_PR_DIGEST_STATUS_PATH,
+  );
   const agentMail = buildAgentMailHealth(
     options.agentMailDbPath ?? DEFAULT_AGENT_MAIL_DB,
     options.scheduledOutboxPath ?? DEFAULT_SCHEDULED_OUTBOX,
@@ -695,6 +741,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     scheduler.checks.jobTypes,
     scheduler.checks.staleOneShots,
     scheduler.checks.staleRecurring,
+    scheduler.checks.openPrDigest,
     agentMail.outbox,
     ...agentHealth.flatMap((agent) => [
       agent.runtimeLaunchConfig,
@@ -761,6 +808,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
   lines.push(`- type check: ${report.scheduler.checks.jobTypes.status} - ${report.scheduler.checks.jobTypes.detail}`);
   lines.push(`- stale one-shots: ${report.scheduler.checks.staleOneShots.status} - ${report.scheduler.checks.staleOneShots.detail}`);
   lines.push(`- recurring logs: ${report.scheduler.checks.staleRecurring.status} - ${report.scheduler.checks.staleRecurring.detail}`);
+  lines.push(`- open-PR digest: ${report.scheduler.checks.openPrDigest.status} - ${report.scheduler.checks.openPrDigest.detail}`);
   for (const job of report.scheduler.invalidTypeJobs.slice(0, 8)) {
     lines.push(`  invalid type: ${job.id} (${job.label}) type=${job.type}`);
   }

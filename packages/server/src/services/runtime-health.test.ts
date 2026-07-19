@@ -108,6 +108,102 @@ describe('runtime health', () => {
     expect(summary).toContain('Scheduler:');
   });
 
+  it('warns when the configured open-PR digest last run was a partial failure', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const statusPath = path.join(root, 'open-pr-digest-status.json');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), {
+      jobs: [{
+        id: 'open-pr-digest-daily',
+        label: 'Daily open-PR digest to #dev',
+        agent: 'marcus',
+        type: 'recurring',
+        cron: '0 9 * * *',
+        executor: 'shell',
+        command: 'node /Volumes/Repo-Drive/src/mcc-tmux/scripts/run-open-pr-digest.mjs',
+      }],
+    });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(schedulerRoot, 'logs', 'open-pr-digest-daily-2026-07-19T13-00-00.log'), 'ran\n');
+    fs.mkdirSync(path.join(agentsRoot, 'marcus'), { recursive: true });
+    fs.writeFileSync(path.join(agentsRoot, 'marcus', 'launch.sh'), '#!/bin/zsh\nnpm run runtime-launch --agent marcus --runtime "$LAUNCH_RUNTIME"\n');
+    fs.writeFileSync(path.join(agentsRoot, 'marcus', '.runtime'), 'claude\n');
+    writeJson(statusPath, {
+      runAtIso: '2026-07-19T13:00:00.000Z',
+      status: 'fail',
+      reason: 'partial_failure',
+      sweepExitCode: 1,
+      deliveryOk: true,
+      digestChars: 500,
+      deliveryMessageId: 'm1',
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['marcus'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      openPrDigestStatusPath: statusPath,
+      now: new Date('2026-07-19T14:00:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.openPrDigest.status).toBe('warn');
+    expect(report.scheduler.checks.openPrDigest.detail).toContain('reason=partial_failure');
+  });
+
+  it('errors when the configured open-PR digest could not deliver to Discord', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const statusPath = path.join(root, 'open-pr-digest-status.json');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), {
+      jobs: [{
+        id: 'open-pr-digest-daily',
+        label: 'Daily open-PR digest to #dev',
+        agent: 'marcus',
+        type: 'recurring',
+        cron: '0 9 * * *',
+        executor: 'shell',
+        command: 'node /Volumes/Repo-Drive/src/mcc-tmux/scripts/run-open-pr-digest.mjs',
+      }],
+    });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(schedulerRoot, 'logs', 'open-pr-digest-daily-2026-07-19T13-00-00.log'), 'ran\n');
+    fs.mkdirSync(path.join(agentsRoot, 'marcus'), { recursive: true });
+    fs.writeFileSync(path.join(agentsRoot, 'marcus', 'launch.sh'), '#!/bin/zsh\nnpm run runtime-launch --agent marcus --runtime "$LAUNCH_RUNTIME"\n');
+    fs.writeFileSync(path.join(agentsRoot, 'marcus', '.runtime'), 'claude\n');
+    writeJson(statusPath, {
+      runAtIso: '2026-07-19T13:00:00.000Z',
+      status: 'fail',
+      reason: 'delivery_failed',
+      sweepExitCode: 0,
+      deliveryOk: false,
+      digestChars: 500,
+    });
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['marcus'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      openPrDigestStatusPath: statusPath,
+      now: new Date('2026-07-19T14:00:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.openPrDigest.status).toBe('error');
+    expect(report.scheduler.checks.openPrDigest.detail).toContain('reason=delivery_failed');
+    expect(report.summary.status).toBe('error');
+  });
+
   it('flags Codex agents with Discord channels but missing adapter surfaces', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
