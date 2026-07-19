@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
+import { createEventInboxStore } from '@agent-comms/event-inbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import {
@@ -33,6 +34,7 @@ const taskQueue = createRuntimeTaskQueue({
   defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
 });
 const mailStore = createAgentMailStore();
+const eventInbox = createEventInboxStore(path.join(contentRoot, 'databases', 'event-inbox.db'));
 const openBrainConfig = resolveOpenBrainRuntimeConfig(agentKey);
 const runtimeEvents = createRuntimeEventEmitter({
   agent: agentKey,
@@ -179,12 +181,17 @@ const pollers = startRuntimeInboxPollers({
     mailStore,
     submitPrompt: (prompt, message) => injectionGate.deliver(prompt, message.id, 'mail'),
   },
+  eventInbox: {
+    eventInbox,
+    submitPrompt: (prompt, event) => injectionGate.deliver(prompt, String(event.id), 'event-inbox'),
+  },
 });
 
 function cleanup(): void {
   pollers.stop();
   process.stdout.off('resize', resize);
   mailStore.close();
+  eventInbox.close();
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }

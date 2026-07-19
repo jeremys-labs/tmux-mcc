@@ -80,7 +80,7 @@ describe('runtime event-inbox delivery', () => {
   });
 
   it('dedupes queued pending events and releases the id on delivery failure', async () => {
-    const deliveredIds = new Set<number>();
+    const deliveredIds = new Set<string>();
     const queued: Array<() => Promise<void>> = [];
     const eventInbox = {
       listInbox: vi.fn(() => [event()]),
@@ -109,10 +109,10 @@ describe('runtime event-inbox delivery', () => {
     });
 
     expect(queued).toHaveLength(1);
-    expect(deliveredIds.has(7)).toBe(true);
+    expect(deliveredIds.has('7')).toBe(true);
 
     await queued[0]();
 
-    expect(deliveredIds.has(7)).toBe(false);
+    expect(deliveredIds.has('7')).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
+import { createEventInboxStore } from '@agent-comms/event-inbox';
 import { resolveContentRoot } from './config.js';
 import { ensureContentDirs } from './content.js';
 import { ensureRuntimeStateDir } from './services/codex-inbox.js';
@@ -28,6 +29,7 @@ ensureContentDirs(contentRoot);
 ensureRuntimeStateDir(contentRoot);
 const runtimeLogPath = path.join(contentRoot, 'bridge', 'runtime-state', `${agentKey}.log`);
 const store = createAgentMailStore();
+const eventInbox = createEventInboxStore(path.join(contentRoot, 'databases', 'event-inbox.db'));
 const taskQueue = createRuntimeTaskQueue({
   defaultTimeoutMs: Number(process.env.RUNTIME_INJECTION_TASK_TIMEOUT_MS ?? '120000'),
 });
@@ -153,6 +155,13 @@ const pollers = startRuntimeInboxPollers({
       await stdinGate.run(() => submitRuntimePrompt(term, prompt));
     },
   },
+  eventInbox: {
+    eventInbox,
+    submitPrompt: async (prompt, event) => {
+      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+    },
+  },
 });
 
 function cleanup(): void {
@@ -162,6 +171,7 @@ function cleanup(): void {
     process.stdin.setRawMode(false);
   }
   store.close();
+  eventInbox.close();
 }
 
 process.on('SIGINT', () => {

@@ -8,6 +8,7 @@ import {
   runInboundRuntimeTurn,
   type RuntimeEventEmitter,
 } from './runtime-events.js';
+import type { DeliveredIdSet } from './runtime-delivered-ids.js';
 
 export interface RuntimeEventInboxDeliveryInput {
   agentKey: string;
@@ -20,7 +21,7 @@ export interface RuntimeEventInboxDeliveryInput {
 
 export interface EnqueuePendingRuntimeEventInboxInput extends Omit<RuntimeEventInboxDeliveryInput, 'event'> {
   eventInbox: Pick<EventInboxStore, 'ackEvent' | 'listInbox'>;
-  deliveredIds: Set<number>;
+  deliveredIds: DeliveredIdSet;
   enqueue: (task: () => Promise<void>) => void;
 }
 
@@ -47,13 +48,15 @@ export async function deliverRuntimeEventInbox(input: RuntimeEventInboxDeliveryI
 export function enqueuePendingRuntimeEventInbox(input: EnqueuePendingRuntimeEventInboxInput): void {
   const pendingEvents = input.eventInbox.listInbox({ agent: input.agentKey, status: 'new' });
   for (const event of pendingEvents) {
-    if (input.deliveredIds.has(event.id)) continue;
-    input.deliveredIds.add(event.id);
+    const eventId = String(event.id);
+    if (input.deliveredIds.has(eventId)) continue;
+    input.deliveredIds.add(eventId);
     input.enqueue(async () => {
       try {
         await deliverRuntimeEventInbox({ ...input, event });
+        input.deliveredIds.settle?.(eventId);
       } catch (error) {
-        input.deliveredIds.delete(event.id);
+        input.deliveredIds.delete(eventId);
         appendRuntimeLog(input.runtimeLogPath, `event-inbox inject error ${event.id}: ${String(error)}`);
       }
     });

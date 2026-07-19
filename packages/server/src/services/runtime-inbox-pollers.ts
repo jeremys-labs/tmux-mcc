@@ -15,6 +15,10 @@ import {
   type RuntimeHandoffInjectionInput,
 } from './runtime-handoff-injection.js';
 import { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
+import {
+  enqueuePendingRuntimeEventInbox,
+  type EnqueuePendingRuntimeEventInboxInput,
+} from './runtime-event-inbox.js';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
 export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
@@ -23,6 +27,7 @@ type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPro
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
 type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
+type EventInboxPollerArgs = Pick<EnqueuePendingRuntimeEventInboxInput, 'eventInbox' | 'submitPrompt'>;
 
 export interface RuntimeInboxPollersInput {
   agentKey: string;
@@ -40,6 +45,7 @@ export interface RuntimeInboxPollersInput {
    * window never opened — is retried on the next tick rather than dropped.
    */
   handoff?: HandoffPollerArgs;
+  eventInbox?: EventInboxPollerArgs;
   intervalMs?: number;
   /** Override for the underlying timer (test seam). */
   setIntervalImpl?: (handler: () => void, ms: number) => NodeJS.Timeout;
@@ -64,6 +70,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
     agentMail,
     blueBubbles,
     handoff,
+    eventInbox,
     intervalMs = DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS,
     setIntervalImpl = setInterval,
     clearIntervalImpl = clearInterval,
@@ -72,6 +79,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredDiscordIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredAgentMailIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+  const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
 
   let handoffSettled = false;
   let handoffInFlight = false;
@@ -132,6 +140,18 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       submitPrompt: agentMail.submitPrompt,
       enqueue,
     });
+
+    if (eventInbox) {
+      enqueuePendingRuntimeEventInbox({
+        agentKey,
+        eventInbox: eventInbox.eventInbox,
+        deliveredIds: deliveredEventInboxIds,
+        events,
+        runtimeLogPath,
+        submitPrompt: eventInbox.submitPrompt,
+        enqueue,
+      });
+    }
   };
 
   const handle = setIntervalImpl(tick, intervalMs);
