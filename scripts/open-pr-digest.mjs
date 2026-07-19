@@ -25,6 +25,21 @@ const REPOS = [
   'Med-Aware/AWS_backend',
 ];
 
+// Default verdict-holder per repo (Isla's ruling 2026-07-19): whose desk the
+// PR sits on — who drives it to merge or escalates, NOT who may merge without
+// Jeremy. A live GH review-request/assignee still outranks this map.
+const DEFAULT_VERDICT_HOLDERS = {
+  'str-ops': 'Marcus',
+  'tmux-mcc': 'Eli',
+  'agent-comms': 'Eli',
+  'agent-supervisor': 'Eli',
+  'deal-analyzer': 'Isla',
+  'openclaw-mcc': 'Eli',
+  myHealthCopilot: 'Marcus',
+  AWS_backend: 'Marcus',
+};
+const FALLBACK_VERDICT_HOLDER = 'Jeremy (unassigned)';
+
 const STALE_DAYS = 7;
 const SECURITY_PATTERN =
   /\b(auth|authn|authz|authenticat\w*|unauthenticated|security|secret|credential|token|api ?key|password|permission|public route|allowlist|acl)\b|\.env\b/i;
@@ -50,9 +65,11 @@ function sweepRepo(repo) {
     const stale = daysSince(pr.updatedAt) > STALE_DAYS;
     const reviewers = (pr.reviewRequests ?? []).map((r) => r.login ?? r.name).filter(Boolean);
     const assignees = (pr.assignees ?? []).map((a) => a.login).filter(Boolean);
-    const verdictHolder = reviewers[0] ?? assignees[0] ?? 'unknown';
+    const repoName = repo.split('/')[1];
+    const verdictHolder =
+      reviewers[0] ?? assignees[0] ?? DEFAULT_VERDICT_HOLDERS[repoName] ?? FALLBACK_VERDICT_HOLDER;
     return {
-      repo: repo.split('/')[1],
+      repo: repoName,
       number: pr.number,
       title: pr.title.length > 60 ? `${pr.title.slice(0, 57)}...` : pr.title,
       ageDays: daysSince(pr.createdAt),
