@@ -4,6 +4,7 @@ import path from 'path';
 const REQUIRED_DIRS = [
   'bridge',
   'bridge/inbox',
+  'bridge/injection-journal',
   'bridge/runtime-state',
   'data',
   'data/token-usage',

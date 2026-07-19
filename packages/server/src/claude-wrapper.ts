@@ -17,6 +17,7 @@ import {
   writePreSessionPromptFile,
 } from './services/runtime-pre-session.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
+import { appendInjectionJournalEntry } from './services/runtime-injection-journal.js';
 import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
@@ -124,12 +125,22 @@ const pollers = startRuntimeInboxPollers({
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
       await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
       await stdinGate.run(() => submitRuntimePrompt(term, prompt, { submitDelayMs: 250 }));
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'handoff',
+        promptLength: prompt.length,
+      });
     },
   },
   blueBubbles: {
     submitPrompt: async (prompt, entry) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
       await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'bluebubbles',
+        promptLength: prompt.length,
+      });
     },
   },
   discord: {
@@ -146,6 +157,11 @@ const pollers = startRuntimeInboxPollers({
       }
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting discord ${entry.id}: ${prompt}\n`);
       await submitRuntimePrompt(term, prompt);
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'discord',
+        promptLength: prompt.length,
+      });
     }),
   },
   agentMail: {
@@ -153,6 +169,11 @@ const pollers = startRuntimeInboxPollers({
     submitPrompt: async (prompt, message) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
       await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'agent-mail',
+        promptLength: prompt.length,
+      });
     },
   },
   eventInbox: {
@@ -160,6 +181,11 @@ const pollers = startRuntimeInboxPollers({
     submitPrompt: async (prompt, event) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
       await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'event-inbox',
+        promptLength: prompt.length,
+      });
     },
   },
 });

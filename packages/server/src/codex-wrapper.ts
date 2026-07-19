@@ -19,6 +19,7 @@ import { createStdinGate } from './services/runtime-stdin-gate.js';
 import { submitRuntimePrompt } from './services/runtime-pty.js';
 import { createRuntimeTaskQueue } from './services/runtime-task-queue.js';
 import { parseRuntimeWrapperArgs } from './services/runtime-wrapper-args.js';
+import { appendInjectionJournalEntry, type InjectionSource } from './services/runtime-injection-journal.js';
 import { ensureCodexUpdateGuard } from './services/codex-update-guard.js';
 
 process.env.AGENT_MAIL_DIR ??= '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
@@ -105,6 +106,15 @@ const injectionGate = createCodexInjectionGate({
   log: appendRuntimeLog,
 });
 
+const deliverJournaled = async (prompt: string, id: string, label: string, source: InjectionSource): Promise<void> => {
+  await injectionGate.deliver(prompt, id, label);
+  appendInjectionJournalEntry(contentRoot, agentKey, {
+    ts: new Date().toISOString(),
+    source,
+    promptLength: prompt.length,
+  });
+};
+
 term.onData((data) => {
   readiness.onData(data);
   process.stdout.write(data);
@@ -168,22 +178,27 @@ const pollers = startRuntimeInboxPollers({
       }
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
       await stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions));
+      appendInjectionJournalEntry(contentRoot, agentKey, {
+        ts: new Date().toISOString(),
+        source: 'handoff',
+        promptLength: prompt.length,
+      });
       return true;
     },
   },
   blueBubbles: {
-    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'bluebubbles'),
+    submitPrompt: (prompt, entry) => deliverJournaled(prompt, entry.id, 'bluebubbles', 'bluebubbles'),
   },
   discord: {
-    submitPrompt: (prompt, entry) => injectionGate.deliver(prompt, entry.id, 'discord'),
+    submitPrompt: (prompt, entry) => deliverJournaled(prompt, entry.id, 'discord', 'discord'),
   },
   agentMail: {
     mailStore,
-    submitPrompt: (prompt, message) => injectionGate.deliver(prompt, message.id, 'mail'),
+    submitPrompt: (prompt, message) => deliverJournaled(prompt, message.id, 'mail', 'agent-mail'),
   },
   eventInbox: {
     eventInbox,
-    submitPrompt: (prompt, event) => injectionGate.deliver(prompt, String(event.id), 'event-inbox'),
+    submitPrompt: (prompt, event) => deliverJournaled(prompt, String(event.id), 'event-inbox', 'event-inbox'),
   },
 });
 
