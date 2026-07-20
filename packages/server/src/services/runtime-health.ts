@@ -53,6 +53,7 @@ export interface SchedulerHealth {
     jobTypes: HealthCheck;
     staleOneShots: HealthCheck;
     staleRecurring: HealthCheck;
+    schedulerHeartbeat: HealthCheck;
     openPrDigest: HealthCheck;
   };
 }
@@ -409,6 +410,29 @@ function openPrDigestStatusCheck(jobs: SchedulerJob[], statusPath: string, now: 
   return check(reason === 'delivery_failed' ? 'error' : 'warn', detail);
 }
 
+function schedulerHeartbeatCheck(schedulerRoot: string, now: Date): HealthCheck {
+  const heartbeatPath = path.join(schedulerRoot, '.scheduler-heartbeat');
+  const heartbeat = readJsonFile<{ lastTickAt?: string; tickCount?: number }>(heartbeatPath);
+  if (!heartbeat?.lastTickAt) {
+    return check('warn', 'scheduler heartbeat missing - daemon may not have ticked yet or file is unreadable');
+  }
+
+  const lastTickMs = new Date(heartbeat.lastTickAt).getTime();
+  if (!Number.isFinite(lastTickMs)) {
+    return check('warn', `scheduler heartbeat invalid lastTickAt=${heartbeat.lastTickAt}`);
+  }
+
+  const staleMs = now.getTime() - lastTickMs;
+  const staleSec = Math.round(staleMs / 1000);
+  if (staleMs > 5 * 60_000) {
+    return check('error', `scheduler heartbeat stale ${staleSec}s - tick() appears to have stopped (tick #${heartbeat.tickCount ?? '?'})`);
+  }
+  if (staleMs > 2 * 60_000) {
+    return check('warn', `scheduler heartbeat stale ${staleSec}s - tick() may be delayed`);
+  }
+  return check('ok', `scheduler heartbeat fresh (${staleSec}s ago, tick #${heartbeat.tickCount ?? '?'})`);
+}
+
 function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStatusPath: string): SchedulerHealth {
   const jobsFile = path.join(schedulerRoot, 'jobs.json');
   const logsDir = path.join(schedulerRoot, 'logs');
@@ -486,6 +510,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       staleRecurring: staleRecurringJobs.length === 0
         ? check('ok', 'recurring jobs have recent logs where estimable')
         : check('warn', `${staleRecurringJobs.length} recurring job(s) have stale or missing logs`),
+      schedulerHeartbeat: schedulerHeartbeatCheck(schedulerRoot, now),
       openPrDigest: openPrDigestStatusCheck(jobs, openPrDigestStatusPath, now),
     },
   };
@@ -741,6 +766,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     scheduler.checks.jobTypes,
     scheduler.checks.staleOneShots,
     scheduler.checks.staleRecurring,
+    scheduler.checks.schedulerHeartbeat,
     scheduler.checks.openPrDigest,
     agentMail.outbox,
     ...agentHealth.flatMap((agent) => [
@@ -808,6 +834,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
   lines.push(`- type check: ${report.scheduler.checks.jobTypes.status} - ${report.scheduler.checks.jobTypes.detail}`);
   lines.push(`- stale one-shots: ${report.scheduler.checks.staleOneShots.status} - ${report.scheduler.checks.staleOneShots.detail}`);
   lines.push(`- recurring logs: ${report.scheduler.checks.staleRecurring.status} - ${report.scheduler.checks.staleRecurring.detail}`);
+  lines.push(`- heartbeat: ${report.scheduler.checks.schedulerHeartbeat.status} - ${report.scheduler.checks.schedulerHeartbeat.detail}`);
   lines.push(`- open-PR digest: ${report.scheduler.checks.openPrDigest.status} - ${report.scheduler.checks.openPrDigest.detail}`);
   for (const job of report.scheduler.invalidTypeJobs.slice(0, 8)) {
     lines.push(`  invalid type: ${job.id} (${job.label}) type=${job.type}`);

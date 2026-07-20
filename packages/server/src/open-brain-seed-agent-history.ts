@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -14,10 +15,12 @@ interface ImportItem {
   sourceType: SourceType;
 }
 
-const homeDir = process.env.HOME ?? '';
-const agentsRoot = process.env.MCC_AGENTS_ROOT ?? path.join(homeDir, 'agents');
-const oldOpenClawRoot = process.env.MCC_OPENCLAW_ROOT ?? path.join(homeDir, '.openclaw');
-const claudeMemDb = process.env.CLAUDE_MEM_DB ?? path.join(homeDir, 'claude-mem', 'claude-mem.db');
+// No hardcoded machine paths: all roots are env-driven or HOME-relative defaults.
+// Keep MCC_* aliases for compatibility with the pre-collector seeding command.
+const homeDir = os.homedir();
+const agentsRoot = process.env['AGENTS_ROOT'] ?? process.env['MCC_AGENTS_ROOT'] ?? path.join(homeDir, 'agents');
+const oldOpenClawRoot = process.env['OLD_OPENCLAW_ROOT'] ?? process.env['MCC_OPENCLAW_ROOT'] ?? path.join(homeDir, '.openclaw');
+const claudeMemDb = process.env['CLAUDE_MEM_DB'] ?? path.join(homeDir, 'claude-mem', 'claude-mem.db');
 const maxContentLength = 7000;
 
 export function discoverAgents(root: string): string[] {
@@ -68,10 +71,16 @@ function listFiles(root: string, predicate: (filePath: string) => boolean): stri
   return result.sort();
 }
 
+// Encode a directory path to the Claude Code project-dir key format
+// (same encoding Claude uses: replace every '/' and '.' with '-').
+export function toClaudeProjectKey(dir: string): string {
+  return dir.replace(/[/.]/g, '-');
+}
+
 function normalizedRef(filePath: string): string {
-  return filePath
-    .replace(agentsRoot, 'agents')
-    .replace(oldOpenClawRoot, 'openclaw');
+  let p = filePath;
+  if (agentsRoot) p = p.replace(agentsRoot, 'agents');
+  return p.replace(oldOpenClawRoot, 'openclaw');
 }
 
 function splitContent(content: string): string[] {
@@ -89,6 +98,171 @@ function splitContent(content: string): string[] {
   }
   if (current.trim()) chunks.push(current);
   return chunks;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Exploratory history discovery (Claude + Codex), HOME-relative, no hardcoded
+// machine paths. Discovers EVERY workspace that has session history — agents AND
+// non-agent source projects (src/, etc.) — keyed by the real cwd recorded INSIDE
+// each session file (Claude: top-level `cwd`; Codex: payload.cwd), which avoids
+// the lossy Claude dir-name encoding (both `/` and `.` collapse to `-`).
+//
+// OB1 isolation guardrail (HARD): ownership is derived from the cwd — a cwd under
+// .../agents/<name> is owned by that agent; everything else maps to the generic
+// 'shared-workspace' lane. Seeding always goes through resolveOpenBrainRuntimeConfig(owner),
+// which uses that owner's OWN memory key — so a non-agent workspace can NEVER be
+// written into an agent's private lane (it has no agent key), and src/ history is
+// reported discovered-but-not-seeded until a 'shared-workspace' OB1 identity exists.
+const SHARED_WORKSPACE_OWNER = 'shared-workspace';
+const claudeProjectsRoot = process.env['COLLECT_CLAUDE_PROJECTS_ROOT'] ?? path.join(homeDir, '.claude', 'projects');
+const codexSessionsRoot = process.env['COLLECT_CODEX_SESSIONS_ROOT'] ?? path.join(homeDir, '.codex', 'sessions');
+// Additional store roots, comma-separated, via env only — never baked in.
+const extraStoreRoots = (process.env['COLLECT_EXTRA_STORE_ROOTS'] ?? '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+interface DiscoveredWorkspace {
+  cwd: string;
+  owner: string;
+  kind: 'agent' | 'shared';
+  claudeFiles: string[];
+  codexFiles: string[];
+}
+
+// Owner from a real cwd: .../agents/<name> -> that agent; else shared-workspace.
+function ownerForCwd(cwd: string): { owner: string; kind: 'agent' | 'shared' } {
+  const m = cwd.match(/\/agents\/([^/]+)(?:\/|$)/);
+  if (m && m[1]) return { owner: m[1], kind: 'agent' };
+  return { owner: SHARED_WORKSPACE_OWNER, kind: 'shared' };
+}
+
+// Read the cwd recorded inside a session jsonl. Claude lines carry a top-level
+// `cwd`; Codex meta carries payload.cwd. Scan a bounded prefix of lines.
+function readSessionCwd(filePath: string): string | null {
+  let content: string;
+  try { content = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  let count = 0;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    if (++count > 80) break;
+    try {
+      const d = JSON.parse(line) as { cwd?: unknown; payload?: { cwd?: unknown } };
+      if (typeof d.cwd === 'string') return d.cwd;
+      if (d.payload && typeof d.payload.cwd === 'string') return d.payload.cwd;
+    } catch { /* not JSON / partial — skip */ }
+  }
+  return null;
+}
+
+function discoverWorkspaces(): DiscoveredWorkspace[] {
+  const byCwd = new Map<string, DiscoveredWorkspace>();
+  const record = (cwd: string, store: 'claude' | 'codex', file: string) => {
+    let e = byCwd.get(cwd);
+    if (!e) {
+      const { owner, kind } = ownerForCwd(cwd);
+      e = { cwd, owner, kind, claudeFiles: [], codexFiles: [] };
+      byCwd.set(cwd, e);
+    }
+    (store === 'claude' ? e.claudeFiles : e.codexFiles).push(file);
+  };
+
+  // Claude: ~/.claude/projects/<encoded-cwd>/*.jsonl — authoritative cwd from content.
+  if (fs.existsSync(claudeProjectsRoot)) {
+    for (const file of listFiles(claudeProjectsRoot, (p) => p.endsWith('.jsonl'))) {
+      const cwd = readSessionCwd(file);
+      if (cwd) record(cwd, 'claude', file);
+    }
+  }
+  // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl — cwd from payload.cwd.
+  for (const root of [codexSessionsRoot, ...extraStoreRoots]) {
+    for (const file of listFiles(root, (p) => p.endsWith('.jsonl'))) {
+      const cwd = readSessionCwd(file);
+      if (cwd) record(cwd, 'codex', file);
+    }
+  }
+  return [...byCwd.values()].sort((a, b) => a.cwd.localeCompare(b.cwd));
+}
+
+// Read-only report: what would be collected, per workspace/owner, and whether it
+// can be seeded (owner has an OB1 identity) or is gated (e.g. shared-workspace
+// before its key exists). No writes. Drives the dry-run/report mode.
+function reportDiscovery(workspaces: DiscoveredWorkspace[]): void {
+  const agents = workspaces.filter((w) => w.kind === 'agent');
+  const shared = workspaces.filter((w) => w.kind === 'shared');
+  process.stdout.write(`Discovered ${workspaces.length} workspace(s) with session history: ${agents.length} agent, ${shared.length} non-agent/shared.\n\n`);
+  for (const w of workspaces) {
+    const cfg = resolveOpenBrainRuntimeConfig(w.owner);
+    const seedable = cfg ? 'SEEDABLE' : (w.kind === 'shared'
+      ? 'GATED (no shared-workspace OB1 key — discovered, not seeded)'
+      : `SKIPPED (no OB1 key for agent ${w.owner})`);
+    process.stdout.write(
+      `- [${w.kind}] owner=${w.owner} cwd=${w.cwd}\n` +
+      `    claude=${w.claudeFiles.length} codex=${w.codexFiles.length} -> ${seedable}\n`,
+    );
+  }
+}
+
+// ── Reference-only session-history seeding (deterministic; no raw transcript,
+// no LLM). Caps: latest N per owner per store within the last D days (whichever
+// is smaller). Idempotency: source_ref stable on store+session-id+mtime. ──────
+const DEFAULT_MAX_SESSIONS = 100;
+const DEFAULT_MAX_AGE_DAYS = 30;
+
+interface SessionRef {
+  store: 'claude' | 'codex';
+  sessionId: string;
+  filePath: string;
+  mtimeMs: number;
+  sizeBytes: number;
+  eventCount: number;
+}
+
+// Apply caps to a store's files: keep files modified within maxAgeDays, then the
+// latest maxSessions. Returns { kept, skipped } (skipped = dropped by the cap).
+function capSessions(files: string[], maxSessions: number, maxAgeDays: number): { kept: SessionRef[]; skipped: number } {
+  const cutoffMs = maxAgeDays > 0 ? Date.now() - maxAgeDays * 24 * 60 * 60 * 1000 : 0;
+  const refs: SessionRef[] = [];
+  for (const filePath of files) {
+    let st: fs.Stats;
+    try { st = fs.statSync(filePath); } catch { continue; }
+    if (st.mtimeMs < cutoffMs) continue; // outside the age window
+    let eventCount = 0;
+    try { eventCount = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter((l) => l.trim()).length; } catch { /* keep 0 */ }
+    refs.push({
+      store: filePath.includes('/.codex/') ? 'codex' : 'claude',
+      sessionId: path.basename(filePath).replace(/\.jsonl$/, ''),
+      filePath,
+      mtimeMs: st.mtimeMs,
+      sizeBytes: st.size,
+      eventCount,
+    });
+  }
+  refs.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
+  const kept = refs.slice(0, maxSessions);
+  return { kept, skipped: refs.length - kept.length };
+}
+
+// Build a reference-only ImportItem for one session — metadata only, no body.
+function sessionRefItem(owner: string, cwd: string, ref: SessionRef): ImportItem {
+  const mtimeIso = new Date(ref.mtimeMs).toISOString();
+  return {
+    sourceType: 'session_summary',
+    confidence: 'medium',
+    // Stable + mtime-bound so re-seeding an unchanged session is idempotent and a
+    // modified session re-seeds. (owner is the OB1 lane, kept out of the ref.)
+    sourceRef: `session-ref:${ref.store}:${ref.sessionId}:${Math.round(ref.mtimeMs)}`,
+    content: [
+      `Session history reference (${ref.store}). Reference-only — no transcript body.`,
+      `Owner: ${owner}`,
+      `Workspace cwd: ${cwd}`,
+      `Store: ${ref.store}`,
+      `Session: ${ref.sessionId}`,
+      `File: ${normalizedRef(ref.filePath)}`,
+      `Modified: ${mtimeIso}`,
+      `Size: ${ref.sizeBytes} bytes`,
+      `Events: ${ref.eventCount}`,
+      `Label: ${ref.store} session ${mtimeIso.slice(0, 10)} (${path.basename(cwd)})`,
+    ].join('\n'),
+  };
 }
 
 function addFile(items: ImportItem[], agent: string, filePath: string): void {
@@ -153,11 +327,10 @@ function oldAgentFiles(agent: string): string[] {
     path.join(oldOpenClawRoot, 'workspace', 'memory', 'agents', `${agent}.backup.md`),
   ];
 
-  const claudeProjectsRoot = path.join(homeDir, '.claude', 'projects');
   const claudeProjectRoots = [
-    path.join(claudeProjectsRoot, path.join(agentsRoot, agent).replace(/\//g, '-'), 'memory'),
-    path.join(claudeProjectsRoot, path.join(oldOpenClawRoot, `workspace-${agent}`).replace(/\//g, '-'), 'memory'),
-  ];
+    path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(agentsRoot, agent)), 'memory'),
+    path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(oldOpenClawRoot, `workspace-${agent}`)), 'memory'),
+  ].filter((p): p is string => !!p);
 
   const claudeFiles = claudeProjectRoots.flatMap((root) => listFiles(root, (filePath) => {
     if (!filePath.endsWith('.md')) return false;
@@ -263,7 +436,7 @@ function addChunkDb(items: ImportItem[], agent: string, dbPath: string): void {
 }
 
 function addClaudeMem(items: ImportItem[], agent: string): void {
-  if (!fs.existsSync(claudeMemDb)) return;
+  if (!claudeMemDb || !fs.existsSync(claudeMemDb)) return;
   const db = new Database(claudeMemDb, { readonly: true });
   const observations = db.prepare(`
     select id, type, title, subtitle, facts, narrative, concepts, text, created_at
@@ -359,9 +532,9 @@ function buildItems(agent: string): ImportItem[] {
   }
 
   addFactDb(items, agent, path.join(agentsRoot, agent, 'memory', 'agent_memory.db'), seenFacts);
+  addChunkDb(items, agent, path.join(agentsRoot, agent, 'memory', `${agent}.sqlite`));
   addFactDb(items, agent, path.join(oldOpenClawRoot, 'workspace', 'memory', 'agent_memory.db'), seenFacts);
   addChunkDb(items, agent, path.join(oldOpenClawRoot, 'memory', `${agent}.sqlite`));
-  addChunkDb(items, agent, path.join(agentsRoot, agent, 'memory', `${agent}.sqlite`));
   addClaudeMem(items, agent);
 
   const seenContent = new Set<string>();
@@ -374,12 +547,70 @@ function buildItems(agent: string): ImportItem[] {
 }
 
 async function main(): Promise<void> {
+  // Exploratory discovery/report mode (read-only): enumerate every workspace with
+  // Claude/Codex session history and report owner + seed-status. No --agent needed.
+  if (hasFlag('--discover')) {
+    reportDiscovery(discoverWorkspaces());
+    return;
+  }
+
+  // Reference-only session-history seeding for AGENT-dir owners (shared-workspace
+  // stays gated until its OB1 key exists; never falls back to an agent key).
+  if (hasFlag('--seed-history')) {
+    const dry = hasFlag('--dry-run');
+    const onlyOwner = readArg('--owner');
+    const maxSessions = readNumberArg('--max-sessions', Number(process.env['COLLECT_MAX_SESSIONS'] ?? DEFAULT_MAX_SESSIONS));
+    const maxAgeDays = readNumberArg('--max-age-days', Number(process.env['COLLECT_MAX_AGE_DAYS'] ?? DEFAULT_MAX_AGE_DAYS));
+    const delayMs = readNumberArg('--delay-ms', 1);
+    const continueOnError = hasFlag('--continue-on-error');
+    const workspaces = discoverWorkspaces().filter((w) => w.kind === 'agent' && (!onlyOwner || w.owner === onlyOwner));
+    process.stdout.write(`Reference-only session-history seeding | agent owners=${workspaces.length} | caps: latest ${maxSessions}/store within ${maxAgeDays}d | ${dry ? 'DRY-RUN' : 'SEEDING'}\n`);
+    let seeded = 0;
+    const errors: string[] = [];
+    for (const w of workspaces) {
+      const config = resolveOpenBrainRuntimeConfig(w.owner);
+      if (!config) { process.stdout.write(`  [skip] ${w.owner}: no OB1 key\n`); continue; }
+      for (const store of ['claude', 'codex'] as const) {
+        const files = store === 'claude' ? w.claudeFiles : w.codexFiles;
+        if (files.length === 0) continue;
+        const { kept, skipped } = capSessions(files, maxSessions, maxAgeDays);
+        process.stdout.write(`  ${w.owner}/${store}: ${files.length} sessions -> ${kept.length} within cap, ${skipped} skipped-by-cap\n`);
+        for (const ref of kept) {
+          const item = sessionRefItem(w.owner, w.cwd, ref);
+          if (dry) continue;
+          try {
+            await callOpenBrainTool(config, 'capture_agent_memory', {
+              agent_id: w.owner,
+              scope: 'private_agent',
+              project: 'session-history',
+              audience: [w.owner],
+              authority: 'context',
+              confidence: item.confidence,
+              source_type: item.sourceType,
+              source_ref: item.sourceRef,
+              content: item.content,
+            });
+            seeded += 1;
+            if (delayMs > 1) await sleep(delayMs);
+          } catch (error) {
+            const msg = `Failed ${w.owner}/${store} ${ref.sessionId}: ${error instanceof Error ? error.message : String(error)}`;
+            process.stderr.write(`${msg}\n`);
+            errors.push(msg);
+            if (!continueOnError) throw error;
+          }
+        }
+      }
+    }
+    process.stdout.write(`${dry ? 'DRY-RUN complete (no writes).' : `Seeded ${seeded} session reference(s).`}${errors.length ? ` ${errors.length} error(s).` : ''}\n`);
+    return;
+  }
+
   const agent = readArg('--agent');
   const knownAgents = discoverAgents(agentsRoot);
   const agentDir = agent ? path.join(agentsRoot, agent) : '';
   if (!agent || !fs.existsSync(path.join(agentDir, 'CLAUDE.md'))) {
     const agentList = knownAgents.length > 0 ? knownAgents.join('|') : '<agent-name>';
-    throw new Error(`Usage: open-brain-seed-agent-history --agent ${agentList} [--dry-run]`);
+    throw new Error(`Usage: open-brain-seed-agent-history --agent ${agentList} [--dry-run]  |  --discover | --seed-history [--dry-run]`);
   }
 
   const dryRun = hasFlag('--dry-run');
@@ -442,7 +673,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exit(1);

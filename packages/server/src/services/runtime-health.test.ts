@@ -108,6 +108,102 @@ describe('runtime health', () => {
     expect(summary).toContain('Scheduler:');
   });
 
+  // Regression: 2026-05-31 newsletter miss. launchd can keep the daemon process
+  // alive while scheduler tick() stops silently; runtime-health must surface that.
+  it('reports scheduler heartbeat ok when the tick file is fresh', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 30_000).toISOString(),
+      tickCount: 42,
+    });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('ok');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('30s');
+  });
+
+  it('reports scheduler heartbeat warn when stale 3 minutes', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 3 * 60_000).toISOString(),
+      tickCount: 10,
+    });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('warn');
+  });
+
+  it('reports scheduler heartbeat error when stale 6 minutes', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const now = new Date('2026-05-31T07:20:00.000Z');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
+      tickCount: 5,
+    });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now,
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('error');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('tick() appears to have stopped');
+  });
+
+  it('reports scheduler heartbeat warn when the tick file is missing', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [],
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'),
+      now: new Date('2026-05-31T07:20:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.schedulerHeartbeat.status).toBe('warn');
+    expect(report.scheduler.checks.schedulerHeartbeat.detail).toContain('missing');
+  });
+
   it('warns when the configured open-PR digest last run was a partial failure', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');

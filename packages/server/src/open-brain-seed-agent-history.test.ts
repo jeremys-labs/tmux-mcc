@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { discoverAgents } from './open-brain-seed-agent-history.js';
+import { afterEach, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { discoverAgents, toClaudeProjectKey } from './open-brain-seed-agent-history.js';
 
 let tmpRoot: string;
 
@@ -19,55 +20,39 @@ describe('discoverAgents', () => {
     expect(discoverAgents('/nonexistent/path/to/agents')).toEqual([]);
   });
 
-  it('returns empty array when root exists but has no agent dirs with CLAUDE.md', () => {
-    mkdirSync(join(tmpRoot, 'empty-dir'));
-    expect(discoverAgents(tmpRoot)).toEqual([]);
-  });
-
-  it('discovers agents by presence of CLAUDE.md', () => {
-    for (const name of ['eli', 'isla', 'marcus']) {
+  it('discovers agents dynamically by presence of CLAUDE.md', () => {
+    for (const name of ['zara', 'eli', 'hank']) {
       const agentDir = join(tmpRoot, name);
       mkdirSync(agentDir);
       writeFileSync(join(agentDir, 'CLAUDE.md'), `# ${name}`);
     }
-    mkdirSync(join(tmpRoot, 'not-an-agent'));
-    expect(discoverAgents(tmpRoot)).toEqual(['eli', 'isla', 'marcus']);
-  });
+    mkdirSync(join(tmpRoot, 'SHARED'));
+    writeFileSync(join(tmpRoot, 'SHARED', 'TEAM.md'), '# team');
 
-  it('returns agents sorted alphabetically', () => {
-    for (const name of ['zara', 'eli', 'isla']) {
-      const agentDir = join(tmpRoot, name);
-      mkdirSync(agentDir);
-      writeFileSync(join(agentDir, 'CLAUDE.md'), `# ${name}`);
-    }
-    expect(discoverAgents(tmpRoot)).toEqual(['eli', 'isla', 'zara']);
-  });
-
-  it('ignores directories without CLAUDE.md even if they have other files', () => {
-    const agentDir = join(tmpRoot, 'marcus');
-    mkdirSync(agentDir);
-    writeFileSync(join(agentDir, 'CLAUDE.md'), '# marcus');
-
-    const nonAgentDir = join(tmpRoot, 'SHARED');
-    mkdirSync(nonAgentDir);
-    writeFileSync(join(nonAgentDir, 'TEAM.md'), '# team');
-
-    expect(discoverAgents(tmpRoot)).toEqual(['marcus']);
+    expect(discoverAgents(tmpRoot)).toEqual(['eli', 'hank', 'zara']);
   });
 });
 
-describe('claude project path encoding', () => {
-  it('encodes agentsRoot + agent by replacing slashes with dashes', () => {
-    const agentsRoot = '/Volumes/Repo-Drive/agents';
-    const agent = 'eli';
-    const encoded = join(agentsRoot, agent).replace(/\//g, '-');
-    expect(encoded).toBe('-Volumes-Repo-Drive-agents-eli');
+describe('toClaudeProjectKey', () => {
+  it('encodes a simple agent path (no dots)', () => {
+    expect(toClaudeProjectKey('/Volumes/Repo-Drive/agents/eli')).toBe('-Volumes-Repo-Drive-agents-eli');
   });
 
-  it('encodes HOME-relative agentsRoot correctly', () => {
-    const homeDir = '/Users/testuser';
-    const agentsRoot = join(homeDir, 'agents');
-    const encoded = join(agentsRoot, 'nova').replace(/\//g, '-');
-    expect(encoded).toBe('-Users-testuser-agents-nova');
+  it('encodes a path containing dots (openclaw workspace)', () => {
+    expect(toClaudeProjectKey('/Users/jeremylahners/.openclaw/workspace-eli')).toBe('-Users-jeremylahners--openclaw-workspace-eli');
+  });
+
+  it('produces the same key the hardcoded strings previously used', () => {
+    // These were the two hardcoded values in oldAgentFiles() before this change.
+    // Confirming the encoding function reproduces them given the same input paths.
+    expect(toClaudeProjectKey('/Volumes/Repo-Drive/agents/eli')).toBe('-Volumes-Repo-Drive-agents-eli');
+    expect(toClaudeProjectKey('/Users/jeremylahners/.openclaw/workspace-eli')).toBe('-Users-jeremylahners--openclaw-workspace-eli');
+  });
+
+  it('handles a home-relative openclaw root when OLD_OPENCLAW_ROOT is ~/.openclaw', () => {
+    const homeBasedRoot = '/Users/someuser/.openclaw';
+    const agent = 'marcus';
+    expect(toClaudeProjectKey(`${homeBasedRoot}/workspace-${agent}`))
+      .toBe('-Users-someuser--openclaw-workspace-marcus');
   });
 });
