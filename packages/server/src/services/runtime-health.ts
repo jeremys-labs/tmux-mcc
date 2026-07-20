@@ -15,6 +15,11 @@ const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credenti
 const DEFAULT_CODEX_CONFIG_PATH = '/Users/jeremylahners/.codex/config.toml';
 const DEFAULT_CONTENT_ROOT = '/Users/jeremylahners/.tmux-mcc';
 const DEFAULT_OPEN_PR_DIGEST_STATUS_PATH = '/Users/jeremylahners/.tmux-mcc/bridge/pr-digest/open-pr-digest-status.json';
+const DEFAULT_DISK_CHECK_PATH = '/';
+const DISK_WARN_FREE_BYTES = 10 * 1024 * 1024 * 1024;
+const DISK_ERROR_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+const DISK_WARN_FREE_PERCENT = 5;
+const DISK_ERROR_FREE_PERCENT = 1;
 
 export type HealthStatus = 'ok' | 'warn' | 'error' | 'unknown';
 
@@ -68,10 +73,15 @@ export interface AgentMailHealth {
   outbox: HealthCheck;
 }
 
+export interface SystemHealth {
+  diskRoot: HealthCheck;
+}
+
 export interface RuntimeHealthReport {
   generatedAtIso: string;
   durationMs: number;
   agents: AgentRuntimeHealth[];
+  system: SystemHealth;
   scheduler: SchedulerHealth;
   agentMail: AgentMailHealth;
   summary: HealthCheck;
@@ -90,6 +100,7 @@ export interface RuntimeHealthOptions {
   codexConfigPath?: string;
   contentRoot?: string;
   openPrDigestStatusPath?: string;
+  diskCheckPath?: string;
 }
 
 interface SchedulerJob {
@@ -174,6 +185,48 @@ function minutesBetween(now: Date, iso: string): number {
 
 function check(status: HealthStatus, detail: string): HealthCheck {
   return { status, detail };
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes)) return 'unknown';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = units[0];
+  for (let i = 1; i < units.length && Math.abs(value) >= 1024; i += 1) {
+    value /= 1024;
+    unit = units[i];
+  }
+  return `${value >= 10 || unit === 'B' ? Math.round(value) : Math.round(value * 10) / 10}${unit}`;
+}
+
+export function diskSpaceHealthFromKilobytes(pathLabel: string, totalKb: number, availableKb: number): HealthCheck {
+  const totalBytes = totalKb * 1024;
+  const availableBytes = availableKb * 1024;
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0 || !Number.isFinite(availableBytes) || availableBytes < 0) {
+    return check('warn', `disk ${pathLabel} has invalid df values totalKb=${totalKb} availableKb=${availableKb}`);
+  }
+
+  const freePercent = (availableBytes / totalBytes) * 100;
+  const detail = `disk ${pathLabel} free ${formatBytes(availableBytes)} of ${formatBytes(totalBytes)} (${freePercent.toFixed(1)}%)`;
+  if (availableBytes < DISK_ERROR_FREE_BYTES || freePercent < DISK_ERROR_FREE_PERCENT) {
+    return check('error', `${detail} - critically low; temp-file and cron work may fail`);
+  }
+  if (availableBytes < DISK_WARN_FREE_BYTES || freePercent < DISK_WARN_FREE_PERCENT) {
+    return check('warn', `${detail} - low free space`);
+  }
+  return check('ok', detail);
+}
+
+function diskSpaceCheck(pathLabel: string): HealthCheck {
+  try {
+    const output = execFileSync('df', ['-Pk', pathLabel], { encoding: 'utf8' });
+    const line = output.trim().split(/\r?\n/)[1];
+    const parts = line?.trim().split(/\s+/);
+    if (!parts || parts.length < 6) return check('warn', `disk ${pathLabel} df output could not be parsed`);
+    return diskSpaceHealthFromKilobytes(pathLabel, Number(parts[1]), Number(parts[3]));
+  } catch (error) {
+    return check('warn', `disk ${pathLabel} df check failed: ${(error as Error).message}`);
+  }
 }
 
 function hasDiscordChannels(accessPath: string): boolean {
@@ -724,6 +777,9 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     now,
     options.openPrDigestStatusPath ?? DEFAULT_OPEN_PR_DIGEST_STATUS_PATH,
   );
+  const system: SystemHealth = {
+    diskRoot: diskSpaceCheck(options.diskCheckPath ?? DEFAULT_DISK_CHECK_PATH),
+  };
   const agentMail = buildAgentMailHealth(
     options.agentMailDbPath ?? DEFAULT_AGENT_MAIL_DB,
     options.scheduledOutboxPath ?? DEFAULT_SCHEDULED_OUTBOX,
@@ -763,6 +819,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
   }
 
   const allChecks = [
+    system.diskRoot,
     scheduler.checks.jobTypes,
     scheduler.checks.staleOneShots,
     scheduler.checks.staleRecurring,
@@ -792,6 +849,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     generatedAtIso: now.toISOString(),
     durationMs: Date.now() - startedAt,
     agents: agentHealth,
+    system,
     scheduler,
     agentMail,
     summary: check(status, `${allChecks.filter((item) => item.status !== 'ok').length} non-ok check(s)`),
@@ -826,6 +884,10 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
     ];
     lines.push(`- ${agent.agent}: ${checks.join('; ')}`);
   }
+
+  lines.push('');
+  lines.push('System:');
+  lines.push(`- disk root: ${report.system.diskRoot.status} - ${report.system.diskRoot.detail}`);
 
   lines.push('');
   lines.push('Scheduler:');

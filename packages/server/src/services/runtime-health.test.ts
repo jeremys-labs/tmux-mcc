@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildRuntimeHealthReport,
+  diskSpaceHealthFromKilobytes,
   formatRuntimeHealthSummary,
   loadSchedulerValidJobTypes,
 } from './runtime-health.js';
@@ -32,6 +33,12 @@ afterEach(() => {
 });
 
 describe('runtime health', () => {
+  it('classifies root disk free-space thresholds', () => {
+    expect(diskSpaceHealthFromKilobytes('/', 200 * 1024 * 1024, 20 * 1024 * 1024).status).toBe('ok');
+    expect(diskSpaceHealthFromKilobytes('/', 228 * 1024 * 1024, 11 * 1024 * 1024).status).toBe('warn');
+    expect(diskSpaceHealthFromKilobytes('/', 228 * 1024 * 1024, 470 * 1024).status).toBe('error');
+  });
+
   it('loads scheduler valid job types from the shared scheduler contract', () => {
     const root = tempDir();
     writeJson(path.join(root, 'job-types.json'), { validTypes: ['once', 'recurring'] });
@@ -105,6 +112,8 @@ describe('runtime health', () => {
     expect(summary).toContain('OB1/runtime health - 2026-05-07T21:00:00.000Z');
     expect(summary).toContain('Agents:');
     expect(summary).toContain('- eli:');
+    expect(summary).toContain('System:');
+    expect(summary).toContain('- disk root:');
     expect(summary).toContain('Scheduler:');
   });
 
