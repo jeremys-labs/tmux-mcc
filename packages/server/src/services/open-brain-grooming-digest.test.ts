@@ -199,7 +199,7 @@ describe('open brain grooming digest', () => {
     expect(scheduled).toContain('Raw captures: 0');
     expect(scheduled).toContain('No human review candidates');
     expect(scheduled).not.toContain('Sensitive Cellebrite');
-    expect(pending).toContain('Pending decisions: 0');
+    expect(pending).toContain('0 pending decisions');
     expect(pending).not.toContain('Sensitive Cellebrite');
   });
 
@@ -233,7 +233,7 @@ describe('open brain grooming digest', () => {
     expect(digest).toContain('Classifier alert: OB1 classifier failed 3 consecutive grooming cycles');
   });
 
-  it('formats pending review candidates for a daily decision digest', () => {
+  it('formats pending review candidates as a compact daily receipt', () => {
     const digest = buildPendingReviewDigest([{
       kind: 'item',
       key: 'agent-mail:1',
@@ -244,15 +244,19 @@ describe('open brain grooming digest', () => {
       recommendedAction: 'Promote to project memory unless this is approved team truth; do not promote shared_team from this digest alone.',
       proposedMemory: 'Sprint review approval.',
       evidence: [],
-    }], '2026-05-05T10:00:00.000Z');
+    }], '2026-05-05T10:00:00.000Z', {
+      artifactPath: '/tmp/last-decision-digest.json',
+    });
 
-    expect(digest).toContain('OB1 memory decision digest - 2026-05-05');
-    expect(digest).toContain('Pending decisions: 1');
-    expect(digest).toContain('Review: Sprint review approval.');
+    expect(digest).toContain('OB1 memory decision digest - 2026-05-05: 1 pending decision.');
+    expect(digest).toContain('Details are parked in /tmp/last-decision-digest.json; not pasted here.');
+    expect(digest).toContain('Ask Eli for the candidate list');
     expect(digest).toContain('Hourly grooming continues silently');
+    expect(digest).not.toContain('Review: Sprint review approval.');
+    expect(digest).not.toContain('Recommended:');
   });
 
-  it('includes evidence when the review summary is only a file label', () => {
+  it('can include inline evidence when explicitly requested for debugging', () => {
     const digest = buildPendingReviewDigest([{
       kind: 'item',
       key: 'claude-hook:1',
@@ -265,7 +269,9 @@ describe('open brain grooming digest', () => {
       evidence: [
         'claude-hook:1\ncontent:\nFile: /tmp/MEMORY.md\nTool name: Edit\nNew string excerpt: Jeremy approved the daily digest should show actual decision content, not source IDs.',
       ],
-    }], '2026-05-05T10:00:00.000Z');
+    }], '2026-05-05T10:00:00.000Z', {
+      inlineDetails: true,
+    });
 
     expect(digest).toContain('Review: File: /tmp/MEMORY.md');
     expect(digest).toContain('Content: File: /tmp/MEMORY.md Tool name: Edit New string excerpt: Jeremy approved the daily digest should show actual decision content, not source IDs.');

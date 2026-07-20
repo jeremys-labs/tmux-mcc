@@ -1,4 +1,4 @@
-import { readDigestState, resolveDigestChannelId, sendDiscordDigest, writeDigestState, writeLastDecisionDigest } from './services/open-brain-grooming-digest.js';
+import { readDigestState, resolveDigestChannelId, resolveLastDecisionDigestPath, sendDiscordDigest, writeDigestState, writeLastDecisionDigest } from './services/open-brain-grooming-digest.js';
 import { appendOpenBrainMeasurements, buildOpenBrainGroomingMeasurements } from './services/open-brain-measurements.js';
 import {
   buildPendingReviewDigest,
@@ -45,7 +45,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    const digest = buildPendingReviewDigest(activePending, generatedAtIso, maxItems);
+    const lastDecisionDigestPath = resolveLastDecisionDigestPath();
+    const digest = buildPendingReviewDigest(activePending, generatedAtIso, {
+      artifactPath: lastDecisionDigestPath,
+      maxItems,
+    });
     if (dryRun) {
       process.stdout.write(`${digest}\n`);
       return;

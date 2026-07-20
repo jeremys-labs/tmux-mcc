@@ -459,43 +459,47 @@ export function buildScheduledGroomingDigest(
 export function buildPendingReviewDigest(
   reviewCandidates: GroomingScheduledCandidate[],
   generatedAtIso: string,
-  maxItems = 12,
+  options: {
+    artifactPath?: string;
+    maxItems?: number;
+    inlineDetails?: boolean;
+  } = {},
 ): string {
   // Restricted candidates must never reach the Discord-posted decision digest.
   const visibleCandidates = reviewCandidates.filter((candidate) => !candidate.restricted);
+  const artifactPath = options.artifactPath ?? 'the OB1 last-decision-digest artifact';
+  const inlineDetails = options.inlineDetails ?? false;
   const lines = [
-    `OB1 memory decision digest - ${generatedAtIso.slice(0, 10)}`,
-    '',
-    `Pending decisions: ${visibleCandidates.length}`,
+    `OB1 memory decision digest - ${generatedAtIso.slice(0, 10)}: ${visibleCandidates.length} pending decision${visibleCandidates.length === 1 ? '' : 's'}.`,
   ];
 
-  if (visibleCandidates.length > 0) {
+  if (visibleCandidates.length === 0) {
     lines.push('');
-    lines.push('Needs your decision:');
-    for (const candidate of visibleCandidates.slice(0, maxItems)) {
-      const summary = reviewSummary(candidate);
-      lines.push(`- Review: ${summary.review}`);
-      if (summary.content) lines.push(`  Content: ${summary.content}`);
-      lines.push(`  Recommended: ${candidate.recommendedAction}`);
-      lines.push(`  Why shown: ${candidate.reason}`);
-      lines.push(`  Scope/project: ${candidate.project}`);
-      lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
-    }
-    if (visibleCandidates.length > maxItems) {
-      lines.push(`- ... ${visibleCandidates.length - maxItems} more candidates omitted from this digest.`);
-    }
-    lines.push('');
-    lines.push('Review commands:');
-    lines.push('- promote <source_ref> private_agent|project|shared_team');
-    lines.push('- deprecate <source_ref>');
-    lines.push('- ignore <source_ref>');
-  } else {
-    lines.push('');
-    lines.push('No human review candidates are waiting.');
+    lines.push('No human review candidates are waiting. Hourly grooming continues silently.');
+    return lines.join('\n');
   }
 
+  lines.push(`Details are parked in ${artifactPath}; not pasted here.`);
+  lines.push('Ask Eli for the candidate list, or reply with a specific promote/ignore/deprecate instruction.');
+  lines.push('Hourly grooming continues silently.');
+
+  if (!inlineDetails) return lines.join('\n');
+
+  const maxItems = options.maxItems ?? 12;
   lines.push('');
-  lines.push('Hourly grooming continues silently; this decision summary is sent once per day.');
+  lines.push('Inline detail preview:');
+  for (const candidate of visibleCandidates.slice(0, maxItems)) {
+    const summary = reviewSummary(candidate);
+    lines.push(`- Review: ${summary.review}`);
+    if (summary.content) lines.push(`  Content: ${summary.content}`);
+    lines.push(`  Recommended: ${candidate.recommendedAction}`);
+    lines.push(`  Why shown: ${candidate.reason}`);
+    lines.push(`  Scope/project: ${candidate.project}`);
+    lines.push(`  Debug refs: ${compactSourceRefs(candidate.sourceRef)}`);
+  }
+  if (visibleCandidates.length > maxItems) {
+    lines.push(`- ... ${visibleCandidates.length - maxItems} more candidates omitted from this digest.`);
+  }
   return lines.join('\n');
 }
 
