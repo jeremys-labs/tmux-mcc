@@ -467,7 +467,6 @@ export function buildPendingReviewDigest(
 ): string {
   // Restricted candidates must never reach the Discord-posted decision digest.
   const visibleCandidates = reviewCandidates.filter((candidate) => !candidate.restricted);
-  const artifactPath = options.artifactPath ?? 'the OB1 last-decision-digest artifact';
   const inlineDetails = options.inlineDetails ?? false;
   const lines = [
     `OB1 memory decision digest - ${generatedAtIso.slice(0, 10)}: ${visibleCandidates.length} pending decision${visibleCandidates.length === 1 ? '' : 's'}.`,
@@ -479,7 +478,7 @@ export function buildPendingReviewDigest(
     return lines.join('\n');
   }
 
-  lines.push(`Details are parked in ${artifactPath}; not pasted here.`);
+  lines.push('Candidate details were retained locally outside Discord and are available for review.');
   lines.push('Ask Eli for the candidate list, or reply with a specific promote/ignore/deprecate instruction.');
   lines.push('Hourly grooming continues silently.');
 

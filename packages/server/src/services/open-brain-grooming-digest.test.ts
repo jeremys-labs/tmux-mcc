@@ -249,7 +249,8 @@ describe('open brain grooming digest', () => {
     });
 
     expect(digest).toContain('OB1 memory decision digest - 2026-05-05: 1 pending decision.');
-    expect(digest).toContain('Details are parked in /tmp/last-decision-digest.json; not pasted here.');
+    expect(digest).toContain('Candidate details were retained locally outside Discord and are available for review.');
+    expect(digest).not.toContain('/tmp/last-decision-digest.json');
     expect(digest).toContain('Ask Eli for the candidate list');
     expect(digest).toContain('Hourly grooming continues silently');
     expect(digest).not.toContain('Review: Sprint review approval.');
