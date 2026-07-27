@@ -57,6 +57,28 @@ describe('evaluateProbeResponse', () => {
   it('blind: HTTP non-200', () => {
     expect(evaluateProbeResponse('eli', 503, '')).toMatchObject({ healthy: false, reason: 'HTTP 503' });
   });
+  it('blind: HTTP non-200 includes a bounded safe backend reason', () => {
+    const body = JSON.stringify({
+      error: 'memory_backend_failed',
+      reason: 'agent_not_enabled',
+      agent: 'dana',
+    });
+    expect(evaluateProbeResponse('dana', 502, body)).toMatchObject({
+      healthy: false,
+      reason: 'HTTP 502: agent not enabled',
+    });
+  });
+  it('blind: ignores a backend reason scoped to a different agent', () => {
+    const body = JSON.stringify({
+      error: 'memory_backend_failed',
+      reason: 'agent_not_enabled',
+      agent: 'isla',
+    });
+    expect(evaluateProbeResponse('dana', 502, body)).toMatchObject({
+      healthy: false,
+      reason: 'HTTP 502',
+    });
+  });
   it('blind: unparseable body', () => {
     const r = evaluateProbeResponse('eli', 200, 'event: mes...not json');
     expect(r.healthy).toBe(false);
