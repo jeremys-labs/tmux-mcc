@@ -9,6 +9,7 @@ const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credenti
 const DEFAULT_OPEN_BRAIN_ACCESS_KEY_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/mcp-access-key.txt';
 const DEFAULT_AGENTS_ROOT = '/Volumes/Repo-Drive/agents';
 const DEFAULT_AGENT_MEMORY_SHADOW_TRACE_PATH = '/Volumes/Repo-Drive/agents/SHARED/agent-memory-shadow.jsonl';
+const AGENT_MEMORY_SERVICE_TOOLS = new Set(['search_agent_memory', 'capture_agent_memory']);
 
 export interface OpenBrainRuntimeConfig {
   agentId: string;
@@ -183,7 +184,11 @@ export async function callOpenBrainTool(
   args: Record<string, unknown>,
   options: OpenBrainToolCallOptions = {},
 ): Promise<ToolCallResult> {
-  if (config.serviceUrl && config.serviceMode === 'service') {
+  if (
+    config.serviceUrl
+    && config.serviceMode === 'service'
+    && AGENT_MEMORY_SERVICE_TOOLS.has(name)
+  ) {
     return callAgentMemoryServiceTool(
       { serviceUrl: config.serviceUrl, serviceToken: config.serviceToken },
       config.agentKey ?? config.agentId,
@@ -191,6 +196,9 @@ export async function callOpenBrainTool(
       args,
       options,
     );
+  }
+  if (!config.endpointUrl) {
+    throw new Error(`Open Brain tool ${name} is unavailable through the agent-memory service and no direct endpoint is configured.`);
   }
 
   const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 1));

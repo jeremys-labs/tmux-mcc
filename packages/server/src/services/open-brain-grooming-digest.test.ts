@@ -10,6 +10,7 @@ import {
   type LastDecisionDigestRecord,
   type RawCaptureRow,
 } from './open-brain-grooming-digest.js';
+import { DEFAULT_SCHEDULED_GROOMING_LIMIT } from './open-brain-grooming-schedule.js';
 import {
   buildPendingReviewDigest,
   buildScheduledGroomingDigest,
@@ -21,6 +22,9 @@ import {
 import type { GroomingReviewRow } from './open-brain-grooming-review.js';
 
 describe('open brain grooming digest', () => {
+  it('bounds the hourly classifier batch below the scheduler timeout budget', () => {
+    expect(DEFAULT_SCHEDULED_GROOMING_LIMIT).toBe(10);
+  });
   it('uses the previous run timestamp when available', () => {
     expect(defaultSinceIso(new Date('2026-04-28T12:00:00.000Z'), { lastRunIso: '2026-04-28T01:00:00.000Z' }))
       .toBe('2026-04-28T01:00:00.000Z');

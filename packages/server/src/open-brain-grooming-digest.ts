@@ -2,6 +2,7 @@ import { readDigestState, resolveDigestChannelId, resolveLastDecisionDigestPath,
 import { appendOpenBrainMeasurements, buildOpenBrainGroomingMeasurements } from './services/open-brain-measurements.js';
 import {
   buildPendingReviewDigest,
+  DEFAULT_SCHEDULED_GROOMING_LIMIT,
   mergeReviewCandidates,
   pruneResolvedReviewCandidates,
   runScheduledGrooming,
@@ -22,7 +23,7 @@ async function main(): Promise<void> {
   const now = new Date();
   const generatedAtIso = now.toISOString();
   const sinceIso = readArg('--since');
-  const limit = Number(readArg('--limit') ?? '80');
+  const limit = Number(readArg('--limit') ?? String(DEFAULT_SCHEDULED_GROOMING_LIMIT));
   const maxItems = Number(readArg('--max-items') ?? '12');
   const dryRun = hasFlag('--dry-run');
   const silentWhenClean = hasFlag('--silent-when-clean');

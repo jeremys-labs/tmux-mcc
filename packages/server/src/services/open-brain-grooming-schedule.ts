@@ -21,6 +21,8 @@ import {
 } from './open-brain-grooming-digest.js';
 import { filterRestrictedRows } from './open-brain-restrictions.js';
 
+export const DEFAULT_SCHEDULED_GROOMING_LIMIT = 10;
+
 export interface GroomingItemPlan {
   row: GroomingReviewRow;
   classification: GroomingClassification;

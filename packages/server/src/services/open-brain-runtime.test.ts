@@ -86,6 +86,45 @@ describe('open brain runtime', () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe('http://127.0.0.1:4317/v1/tool');
   });
 
+  it('routes non-runtime tools to the direct endpoint when service mode is enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'data: {"result":{"content":[{"type":"text","text":"classified"}]}}\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await callOpenBrainTool(
+      {
+        agentId: 'nova',
+        agentKey: 'nova',
+        endpointUrl: 'https://example.test/open-brain',
+        agentMemoryKey: 'agent-secret',
+        serviceUrl: 'http://127.0.0.1:4317',
+        serviceMode: 'service',
+      },
+      'classify_agent_raw_capture',
+      { content: 'candidate' },
+    );
+
+    expect(result.text).toBe('classified');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/open-brain');
+  });
+
+  it('fails clearly when a non-runtime tool has only a service endpoint', async () => {
+    await expect(callOpenBrainTool(
+      {
+        agentId: 'nova',
+        agentKey: 'nova',
+        endpointUrl: '',
+        agentMemoryKey: '',
+        serviceUrl: 'http://127.0.0.1:4317',
+        serviceMode: 'service',
+      },
+      'classify_agent_raw_capture',
+      { content: 'candidate' },
+    )).rejects.toThrow('unavailable through the agent-memory service');
+  });
+
   it('records content-free parity evidence for shadow retrievals', async () => {
     const tracePath = path.join(tmpDir, 'shadow.jsonl');
     process.env.AGENT_MEMORY_SHADOW_TRACE_PATH = tracePath;
