@@ -141,8 +141,22 @@ describe('formatCanaryLine', () => {
       { agent: 'eli', healthy: true, reason: 'ok' },
       { agent: 'isla', healthy: false, reason: 'HTTP 503' },
     ]);
-    expect(line).toContain('recall BLIND: isla (HTTP 503)');
-    expect(line).toContain('healthy 1/2');
+    expect(line).toContain('Cannot read memory for isla');
+    expect(line).toContain('isla (HTTP 503)');
+    // The consequence must be stated, not just the probe result — this line
+    // lands in Jeremy's DM and "recall BLIND" made him ask what it meant.
+    expect(line).toContain('start cold');
+    expect(line).toContain('Healthy 1/2');
+  });
+  it('reads correctly for one vs several blind agents', () => {
+    const one = formatCanaryLine([{ agent: 'dana', healthy: false, reason: 'HTTP 502' }]);
+    expect(one).toContain('Cannot read memory for dana — it will start cold');
+    const two = formatCanaryLine([
+      { agent: 'dana', healthy: false, reason: 'HTTP 502' },
+      { agent: 'simone', healthy: false, reason: 'HTTP 502' },
+    ]);
+    expect(two).toContain('Cannot read memory for dana, simone — they will start cold');
+    expect(two).toContain('Healthy 0/2');
   });
   it('zero agents -> explicit warning', () => {
     expect(formatCanaryLine([])).toContain('no active agents');
@@ -156,7 +170,7 @@ describe('runRecallCanary (end to end with injected fetch)', () => {
     const { line, results } = await runRecallCanary({ agents: ['eli', 'isla', 'nova'], probeFetch });
     expect(results).toHaveLength(3);
     // isla 500 retried -> still 500 -> blind; eli/nova healthy
-    expect(line).toContain('healthy 2/3');
+    expect(line).toContain('Healthy 2/3');
     expect(line).toContain('isla');
   });
 });

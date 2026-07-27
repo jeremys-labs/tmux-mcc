@@ -161,7 +161,11 @@ export function formatCanaryLine(results: AgentProbeResult[]): string {
   if (total === 0) return '⚠️ recall canary: no active agents found';
   if (blind.length === 0) return `✅ recall verified ${total}/${total} agents`;
   const detail = blind.map((result) => `${result.agent} (${result.reason})`).join(', ');
-  return `⚠️ recall BLIND: ${detail}; healthy ${total - blind.length}/${total}`;
+  const names = blind.map((result) => result.agent).join(', ');
+  const they = blind.length === 1 ? 'it will' : 'they will';
+  // Say what it costs, not just that a probe failed — this line lands in Jeremy's
+  // DM, and "recall BLIND" made him ask what it meant (2026-07-27).
+  return `⚠️ Cannot read memory for ${names} — ${they} start cold (no recall of prior context; nothing lost, writes still work). ${detail}. Healthy ${total - blind.length}/${total}.`;
 }
 
 export async function runRecallCanary(
