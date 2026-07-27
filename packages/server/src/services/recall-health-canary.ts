@@ -40,6 +40,22 @@ export interface ServiceResponse {
 
 export type ProbeFetch = (agent: string) => Promise<ServiceResponse>;
 
+function describeHttpFailure(agent: string, status: number, body: string): string {
+  const fallback = `HTTP ${status}`;
+  try {
+    const parsed = JSON.parse(body) as { reason?: unknown; agent?: unknown };
+    if (parsed.reason === 'agent_not_enabled' && parsed.agent === agent) {
+      return `${fallback}: agent not enabled`;
+    }
+    if (parsed.reason === 'invalid_or_inactive_agent_key') {
+      return `${fallback}: invalid or inactive agent memory key`;
+    }
+  } catch {
+    // Unknown and non-JSON backend failures stay intentionally opaque.
+  }
+  return fallback;
+}
+
 // Active agents = directories with both an OB1 key and a launcher. Enumerated
 // dynamically so retired/added agents can't desync a hardcoded list.
 export function enumerateActiveAgents(agentsRoot: string = DEFAULT_AGENTS_ROOT, fsImpl = fs): string[] {
@@ -67,7 +83,7 @@ export function enumerateActiveAgents(agentsRoot: string = DEFAULT_AGENTS_ROOT, 
 //   "Found N <agent>-readable memory item(s): …"   (results)
 //   "No <agent>-readable memories found matching …" (zero results — sparse, OK)
 export function evaluateProbeResponse(agent: string, status: number, body: string): AgentProbeResult {
-  if (status !== 200) return { agent, healthy: false, reason: `HTTP ${status}` };
+  if (status !== 200) return { agent, healthy: false, reason: describeHttpFailure(agent, status, body) };
   let parsed: { text?: unknown; error?: unknown };
   try {
     parsed = JSON.parse(body.trim());
