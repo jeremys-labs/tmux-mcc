@@ -82,6 +82,12 @@ export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInp
 export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgentMailInput): void {
   const pendingMail = input.mailStore.listInbox({ agent: input.agentKey, status: 'new' });
   for (const message of pendingMail) {
+    // Self-mail is durable journal state, not work for the sender to process again.
+    if (message.fromAgent === input.agentKey) {
+      input.mailStore.ackMessage(input.agentKey, message.id);
+      appendRuntimeLog(input.runtimeLogPath, `ignored self-addressed mail ${message.id}`);
+      continue;
+    }
     if (input.deliveredIds.has(message.id)) continue;
     input.deliveredIds.add(message.id);
     input.enqueue(async () => {

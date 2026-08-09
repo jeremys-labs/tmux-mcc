@@ -95,6 +95,27 @@ describe('runtime agent-mail delivery', () => {
     expect(mailStore.ackMessage).not.toHaveBeenCalled();
   });
 
+  it('acknowledges self-addressed mail without waking the sender', () => {
+    const queued: Array<() => Promise<void>> = [];
+    const mailStore = {
+      listInbox: vi.fn(() => [message({ fromAgent: 'enzo', toAgent: 'enzo' })]),
+      ackMessage: vi.fn(),
+    };
+
+    enqueuePendingRuntimeAgentMail({
+      agentKey: 'enzo',
+      mailStore,
+      deliveredIds: new Set<string>(),
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt: async () => undefined,
+      runtimeLogPath: '/tmp/enzo.log',
+      enqueue: (task) => queued.push(task),
+    });
+
+    expect(queued).toHaveLength(0);
+    expect(mailStore.ackMessage).toHaveBeenCalledWith('enzo', 'msg_1');
+  });
+
   it('dedupes queued pending mail and releases the id on delivery failure', async () => {
     const deliveredIds = new Set<string>();
     const queued: Array<() => Promise<void>> = [];
