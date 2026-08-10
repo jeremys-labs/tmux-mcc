@@ -82,7 +82,15 @@ printf '%s\n' "$JSON" > "$TMP_CONFIG"
 
 export DISCORD_BRIDGE_CONFIG="$TMP_CONFIG"
 export CONTENT_ROOT
-export DISCORD_BRIDGE_LOCAL_ADDRESS="${DISCORD_BRIDGE_LOCAL_ADDRESS:-192.168.7.20}"
+# Do not pin outbound Discord connections to a LAN address. Network changes can
+# invalidate a cached address and make both REST sends and Gateway WebSockets
+# fail with EADDRNOTAVAIL. An explicitly supplied address remains supported for
+# targeted diagnostics, but the normal service lets the OS select its route.
+if [[ -n "${DISCORD_BRIDGE_LOCAL_ADDRESS:-}" ]]; then
+  export DISCORD_BRIDGE_LOCAL_ADDRESS
+else
+  unset DISCORD_BRIDGE_LOCAL_ADDRESS
+fi
 export DISCORD_BRIDGE_BACKFILL_INTERVAL_MS="${DISCORD_BRIDGE_BACKFILL_INTERVAL_MS:-15000}"
 
 exec npm run bridge:codex-discord --workspace=@mcc-tmux/server --prefix "$MCC_DIR"
