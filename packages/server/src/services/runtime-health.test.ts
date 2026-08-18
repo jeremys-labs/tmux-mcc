@@ -27,6 +27,7 @@ afterEach(() => {
   delete process.env.AGENTS_ROOT;
   delete process.env.OPEN_BRAIN_ENV_PATH;
   delete process.env.OPEN_BRAIN_ACCESS_KEY_PATH;
+  delete process.env.DISCORD_BRIDGE_SOCKET_PATH;
   for (const dir of tempRoots.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -328,6 +329,7 @@ describe('runtime health', () => {
       '#!/bin/zsh\nnpm run runtime-launch --agent pilot --runtime "$LAUNCH_RUNTIME"\n',
     );
     fs.writeFileSync(path.join(agentRoot, '.runtime'), 'codex\n');
+    process.env.DISCORD_BRIDGE_SOCKET_PATH = path.join(root, 'missing-discord-bridge.sock');
     fs.writeFileSync(path.join(agentRoot, '.claude', 'discord', '.env'), 'DISCORD_BOT_TOKEN=x\n');
     writeJson(path.join(agentRoot, '.claude', 'discord', 'access.json'), {
       groups: {
@@ -404,6 +406,45 @@ describe('runtime health', () => {
     expect(report.agents[0].codexInboundBridge.status).toBe('ok');
     expect(report.agents[0].codexOutboundDiscordMcp.status).toBe('ok');
     expect(report.agents[0].migrationReadiness.status).toBe('error');
+  });
+
+  it('accepts the shared Discord bridge for Codex when the optional direct MCP is absent', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const agentsRoot = path.join(root, 'agents');
+    const agentRoot = path.join(agentsRoot, 'pilot');
+    const socketPath = path.join(root, 'agent-discord-bridge.sock');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    fs.mkdirSync(path.join(agentRoot, '.claude', 'discord'), { recursive: true });
+    fs.mkdirSync(path.join(agentRoot, '.open-brain'), { recursive: true });
+    fs.writeFileSync(path.join(agentRoot, 'launch.sh'), '#!/bin/zsh\n');
+    fs.writeFileSync(path.join(agentRoot, '.runtime'), 'codex\n');
+    fs.writeFileSync(path.join(agentRoot, '.claude', 'discord', '.env'), 'DISCORD_BOT_TOKEN=x\n');
+    fs.writeFileSync(path.join(agentRoot, '.open-brain', 'memory.env'), 'AGENT_MEMORY_KEY=x\n');
+    writeJson(path.join(agentRoot, '.claude', 'discord', 'access.json'), {
+      groups: { '1234567890': { requireMention: false } },
+    });
+    fs.writeFileSync(socketPath, 'bridge');
+    process.env.DISCORD_BRIDGE_SOCKET_PATH = socketPath;
+
+    const report = await buildRuntimeHealthReport({
+      agents: ['pilot'],
+      agentsRoot,
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing-agent-mail.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      codexConfigPath: path.join(root, 'missing-codex-config.toml'),
+      contentRoot: path.join(root, 'content'),
+      now: new Date('2026-05-12T01:45:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    });
+
+    expect(report.agents[0].codexOutboundDiscordMcp.status).toBe('ok');
+    expect(report.agents[0].discordOutboundMcp.status).toBe('ok');
+    expect(report.agents[0].discordOutboundMcp.detail).toContain('shared bridge outbound available');
   });
 
   it('flags stale Discord inbox entries that have not crossed the delivery cursor', async () => {

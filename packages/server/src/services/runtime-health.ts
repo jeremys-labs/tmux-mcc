@@ -280,7 +280,18 @@ function sharedDiscordBridgeOutboundCheck(agent: string, contentRoot: string): H
 
 function discordOutboundMcpCheck(agent: string, runtime: string | null, agentsRoot: string, codexConfigPath: string, contentRoot: string, hasDiscordConfig: boolean): HealthCheck {
   if (!hasDiscordConfig) return check('ok', 'no Discord channels configured');
-  if (runtime === 'codex') return codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath);
+  if (runtime === 'codex') {
+    const directMcp = codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath);
+    if (directMcp.status === 'ok') return directMcp;
+
+    // Codex can send through the shared bridge CLI even when no per-agent MCP
+    // tool is projected. Treat that supported path as healthy rather than
+    // reporting the agent unreachable solely because the optional direct MCP is absent.
+    const sharedBridge = sharedDiscordBridgeOutboundCheck(agent, contentRoot);
+    return sharedBridge.status === 'ok'
+      ? check('ok', `shared bridge outbound available (${directMcp.detail})`)
+      : directMcp;
+  }
   if (runtime === 'claude') return sharedDiscordBridgeOutboundCheck(agent, contentRoot);
   return check('error', `unsupported runtime for outbound Discord MCP: ${runtime ?? 'unknown'}`);
 }
@@ -742,7 +753,7 @@ function buildAgentHealth(
       : check('ok', 'no Discord channels configured'),
     discordInboxDelivery: discordInboxDeliveryCheck(agent, contentRoot, now, hasDiscordConfig),
     codexOutboundDiscordMcp: isCodex && hasDiscordConfig
-      ? codexDiscordMcpCheck(agent, agentsRoot, codexConfigPath)
+      ? discordOutboundMcpCheck(agent, runtime, agentsRoot, codexConfigPath, contentRoot, hasDiscordConfig)
       : check('ok', isCodex ? 'no Discord channels configured' : 'not a Codex runtime'),
     discordOutboundMcp: discordOutboundMcpCheck(agent, runtime, agentsRoot, codexConfigPath, contentRoot, hasDiscordConfig),
     openBrainMemoryKey: fileExists(ob1Env)
