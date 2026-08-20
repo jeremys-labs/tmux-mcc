@@ -14,6 +14,8 @@ export type ScheduledRuntimeJobInput = {
   scheduledJobId?: string;
   scheduledJobLabel?: string;
   awaitingReply?: boolean;
+  /** Only use for an explicitly vetted job that requires host capabilities. */
+  bypassSandbox?: boolean;
   claudeBin?: string;
   codexBin?: string;
 };
@@ -68,9 +70,12 @@ export function buildScheduledRuntimeJobPlan(input: ScheduledRuntimeJobInput): S
     const prompt = input.appendSystemPrompt
       ? `${input.appendSystemPrompt}\n\n${input.prompt}`
       : input.prompt;
+    const sandboxArgs = input.bypassSandbox
+      ? ['--dangerously-bypass-approvals-and-sandbox']
+      : [];
     return {
       command: input.codexBin ?? DEFAULT_CODEX_BIN,
-      args: ['-a', 'never', ...modelArgs, '-C', input.agentDir, 'exec', '--skip-git-repo-check', prompt],
+      args: ['-a', 'never', ...modelArgs, '-C', input.agentDir, 'exec', '--skip-git-repo-check', ...sandboxArgs, prompt],
       cwd: input.agentDir,
       env,
     };

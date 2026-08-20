@@ -63,8 +63,23 @@ describe('scheduled runtime jobs', () => {
     expect(plan.command).toBe('codex-test');
     expect(plan.args.slice(0, 5)).toEqual(['-a', 'never', '-m', 'gpt-5.4', '-C']);
     expect(plan.args).toContain('exec');
+    expect(plan.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(plan.args.at(-1)).toBe('context first\n\nReview the cache');
     expect(fs.existsSync(path.join(f.agentDir, '.mcp.json'))).toBe(false);
+  });
+
+  it('bypasses the Codex sandbox only when an explicit job requires it', () => {
+    const f = fixture();
+    const plan = buildScheduledRuntimeJobPlan({
+      agent: 'isla',
+      agentDir: f.agentDir,
+      runtime: 'codex',
+      prompt: 'Generate an image',
+      bypassSandbox: true,
+      codexBin: 'codex-test',
+    });
+
+    expect(plan.args).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
   it('stamps scheduled Discord metadata into the runtime environment', () => {
