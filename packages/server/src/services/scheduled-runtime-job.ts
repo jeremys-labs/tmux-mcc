@@ -16,6 +16,8 @@ export type ScheduledRuntimeJobInput = {
   awaitingReply?: boolean;
   /** Only use for an explicitly vetted job that requires host capabilities. */
   bypassSandbox?: boolean;
+  /** Opt out of Codex user config (including hooks) for an isolated worker. */
+  ignoreUserConfig?: boolean;
   claudeBin?: string;
   codexBin?: string;
 };
@@ -73,9 +75,10 @@ export function buildScheduledRuntimeJobPlan(input: ScheduledRuntimeJobInput): S
     const sandboxArgs = input.bypassSandbox
       ? ['--dangerously-bypass-approvals-and-sandbox']
       : [];
+    const configArgs = input.ignoreUserConfig ? ['--ignore-user-config'] : [];
     return {
       command: input.codexBin ?? DEFAULT_CODEX_BIN,
-      args: ['-a', 'never', ...modelArgs, '-C', input.agentDir, 'exec', '--skip-git-repo-check', ...sandboxArgs, prompt],
+      args: ['-a', 'never', ...modelArgs, '-C', input.agentDir, 'exec', '--skip-git-repo-check', ...configArgs, ...sandboxArgs, prompt],
       cwd: input.agentDir,
       env,
     };

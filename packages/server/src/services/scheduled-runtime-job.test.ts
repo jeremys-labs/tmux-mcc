@@ -82,6 +82,20 @@ describe('scheduled runtime jobs', () => {
     expect(plan.args).toContain('--dangerously-bypass-approvals-and-sandbox');
   });
 
+  it('can isolate a Codex worker from user configuration and hooks', () => {
+    const f = fixture();
+    const plan = buildScheduledRuntimeJobPlan({
+      agent: 'isla',
+      agentDir: f.agentDir,
+      runtime: 'codex',
+      prompt: 'Generate an image',
+      ignoreUserConfig: true,
+      codexBin: 'codex-test',
+    });
+
+    expect(plan.args).toContain('--ignore-user-config');
+  });
+
   it('stamps scheduled Discord metadata into the runtime environment', () => {
     const f = fixture();
     const plan = buildScheduledRuntimeJobPlan({

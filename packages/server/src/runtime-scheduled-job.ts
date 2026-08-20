@@ -20,6 +20,7 @@ type ParsedArgs = {
   scheduledJobLabel?: string;
   awaitingReply: boolean;
   bypassSandbox: boolean;
+  ignoreUserConfig: boolean;
   dryRun: boolean;
 };
 
@@ -30,6 +31,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     promptFile: '',
     awaitingReply: process.env.SCHEDULED_AWAITING_REPLY === '1',
     bypassSandbox: false,
+    ignoreUserConfig: false,
     dryRun: false,
   };
   const args = [...argv];
@@ -48,6 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (current === '--scheduled-job-label') parsed.scheduledJobLabel = args.shift() ?? '';
     else if (current === '--awaiting-reply') parsed.awaitingReply = true;
     else if (current === '--bypass-sandbox') parsed.bypassSandbox = true;
+    else if (current === '--ignore-user-config') parsed.ignoreUserConfig = true;
     else if (current === '--dry-run') parsed.dryRun = true;
     else throw new Error(`Unknown argument: ${current}`);
   }
@@ -77,6 +80,7 @@ const plan = buildScheduledRuntimeJobPlan({
   scheduledJobLabel: parsed.scheduledJobLabel ?? process.env.SCHEDULED_JOB_LABEL,
   awaitingReply: parsed.awaitingReply,
   bypassSandbox: parsed.bypassSandbox,
+  ignoreUserConfig: parsed.ignoreUserConfig,
 });
 
 if (parsed.dryRun) {
