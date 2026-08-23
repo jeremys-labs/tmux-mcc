@@ -97,6 +97,41 @@ describe('runtime launch plan', () => {
     ]);
   });
 
+  // The Codex plan above passes NO model, which is why this suite stayed green while
+  // `--model` was silently dropped on every Codex launch. Absence of a flag in a test
+  // that never sets it proves nothing about a code path that handles it.
+  it('forwards --model to Codex args when a model is specified', () => {
+    const plan = buildRuntimeLaunchPlan({
+      agent: 'eli',
+      agentDir,
+      runtime: 'codex',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      model: 'gpt-5.6-sol',
+      env: {},
+    });
+
+    expect(plan.args).toContain('--model');
+    expect(plan.args.indexOf('--model')).toBe(plan.args.indexOf('gpt-5.6-sol') - 1);
+    // It must land AFTER the `--` that separates wrapper args from runtime args,
+    // otherwise the wrapper consumes it instead of forwarding it to codex.
+    expect(plan.args.indexOf('--model')).toBeGreaterThan(plan.args.lastIndexOf('--'));
+  });
+
+  it('omits --model from Codex args when no model is specified', () => {
+    const plan = buildRuntimeLaunchPlan({
+      agent: 'cecelia',
+      agentDir,
+      runtime: 'codex',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      env: {},
+    });
+
+    expect(plan.args).not.toContain('--model');
+    expect(plan.args).not.toContain('undefined');
+  });
+
   it('lets the harness env stage the memory-service mode (shadow-first cutover)', () => {
     const plan = buildRuntimeLaunchPlan({
       agent: 'enzo',

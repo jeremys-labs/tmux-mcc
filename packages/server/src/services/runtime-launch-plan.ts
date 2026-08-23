@@ -80,6 +80,14 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
     };
   }
 
+  // Codex accepts `-m, --model <MODEL>` (verified from `codex --help`), so a model
+  // specified for a Codex agent is forwarded rather than dropped. It used to be handled
+  // only inside the Claude branch above, which meant `--model` in ANY Codex launcher was
+  // silently inert: accepted by the launcher, parsed, threaded in here, and discarded.
+  // Every layer reported success and nothing said the model had been ignored. Eli carried
+  // `--model gpt-5.6-sol` for weeks and it was never once applied (2026-08-23).
+  const codexArgs = ['--dangerously-bypass-approvals-and-sandbox'];
+  if (input.model) codexArgs.push('--model', input.model);
   return {
     agent: input.agent,
     runtime: input.runtime,
@@ -87,7 +95,7 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
     args: [
       ...baseArgs,
       '--',
-      '--dangerously-bypass-approvals-and-sandbox',
+      ...codexArgs,
     ],
     cwd: input.agentDir,
     env: {
