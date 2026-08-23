@@ -12,13 +12,37 @@ set -euo pipefail
 TMUX_CONF="${HOME}/.config/mcc-tmux/tmux.conf"
 SESSION="${TMUX_SESSION:-agents}"
 AGENTS_DIR="${AGENTS_DIR:-/Volumes/Repo-Drive/agents}"
-DEFAULT_AGENTS=(marcus isla eli remy lena nova zara jordan val enzo hercule)
 PROTECTED_AGENTS=()
+
+# The roster is DISCOVERED from the launchers, never hardcoded.
+#
+# It used to be DEFAULT_AGENTS=(marcus isla eli remy lena nova zara jordan val enzo hercule)
+# — hand-maintained, and by 2026-08-23 it was stale by four: cecelia, dana, hank and simone
+# all had launchers and were all running, and none of them were in that list. Rebuilding the
+# session from this script would have silently brought back 11 of 15 agents.
+#
+# That is the worst shape a latent bug can take: it only fires during a recovery, which is
+# precisely when nobody has the attention to notice four agents quietly missing. An agent
+# joins the roster by having a launcher, which is the thing that actually defines it.
+discover_agents() {
+  local dir
+  for dir in "${AGENTS_DIR}"/*/; do
+    [[ -f "${dir}launch.sh" ]] || continue
+    basename "$dir"
+  done | sort
+}
 
 if [[ $# -gt 0 ]]; then
   AGENTS=("$@")
 else
-  AGENTS=("${DEFAULT_AGENTS[@]}")
+  IFS=$'\n' read -r -d '' -a AGENTS < <(discover_agents && printf '\0')
+  # Discovering nothing is indistinguishable from a healthy empty fleet if we let it through,
+  # so it is an error rather than a no-op start.
+  if [[ ${#AGENTS[@]} -eq 0 ]]; then
+    echo "ERROR: no agent launchers found under $AGENTS_DIR — refusing to start an empty session" >&2
+    exit 1
+  fi
+  echo "Discovered ${#AGENTS[@]} agents from launchers: ${AGENTS[*]}"
 fi
 
 if ! command -v tmux &>/dev/null; then
