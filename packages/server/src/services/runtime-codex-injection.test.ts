@@ -100,3 +100,76 @@ describe('createCodexInjectionGate', () => {
     expect(submit).toHaveBeenCalledWith('startup message');
   });
 });
+
+describe('never-ready runtime reports a fault instead of deferring silently forever', () => {
+  // 2026-08-24: the retry budget bounded each DELIVERY but nothing bounded the STATE.
+  // Eli's runtime sat undeliverable for seven hours emitting the same deferral line
+  // 171,655 times, and no monitoring anywhere fired, because "not ready yet" and
+  // "never going to be ready" are the same string.
+  const neverReady = () => false;
+
+  it('reports a FAULT once after the threshold, and does not repeat it', async () => {
+    const lines: string[] = [];
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit: async () => {},
+      retryBudget: 1,
+      canInjectWithoutConfirmation: neverReady,
+      neverReadyFaultThreshold: 3,
+      log: (line) => lines.push(line),
+    });
+
+    for (let i = 0; i < 8; i += 1) {
+      await expect(gate.deliver('p', `id-${i}`, 'mail')).rejects.toThrow();
+      await expect(gate.deliver('p', `id-${i}`, 'mail')).rejects.toThrow();
+    }
+
+    const faults = lines.filter((line) => line.startsWith('FAULT:'));
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain('has not reached a prompt after 3 consecutive deferrals');
+  });
+
+  it('does not report a fault when the runtime is merely busy but reachable', async () => {
+    const lines: string[] = [];
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit: async () => {},
+      retryBudget: 1,
+      canInjectWithoutConfirmation: () => true,
+      neverReadyFaultThreshold: 2,
+      log: (line) => lines.push(line),
+    });
+
+    for (let i = 0; i < 6; i += 1) {
+      await expect(gate.deliver('p', `id-${i}`, 'mail')).rejects.toThrow();
+      await gate.deliver('p', `id-${i}`, 'mail');
+    }
+
+    expect(lines.filter((line) => line.startsWith('FAULT:'))).toHaveLength(0);
+  });
+
+  it('a successful injection clears the streak, so a later stall re-reports', async () => {
+    const lines: string[] = [];
+    let ready = false;
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit: async () => {},
+      retryBudget: 0,
+      canInjectWithoutConfirmation: () => ready,
+      neverReadyFaultThreshold: 2,
+      log: (line) => lines.push(line),
+    });
+
+    await expect(gate.deliver('p', 'a', 'mail')).rejects.toThrow();
+    await expect(gate.deliver('p', 'b', 'mail')).rejects.toThrow();
+    expect(lines.filter((l) => l.startsWith('FAULT:'))).toHaveLength(1);
+
+    ready = true;
+    await gate.deliver('p', 'c', 'mail');
+
+    ready = false;
+    await expect(gate.deliver('p', 'd', 'mail')).rejects.toThrow();
+    await expect(gate.deliver('p', 'e', 'mail')).rejects.toThrow();
+    expect(lines.filter((l) => l.startsWith('FAULT:'))).toHaveLength(2);
+  });
+});

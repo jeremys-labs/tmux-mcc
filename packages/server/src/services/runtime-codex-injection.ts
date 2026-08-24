@@ -23,6 +23,16 @@ export interface CodexInjectionGateOptions {
   /** Prevents best-effort injection during startup, before Codex has reached its first prompt. */
   canInjectWithoutConfirmation?: () => boolean;
   log?: (line: string) => void;
+  /**
+   * Consecutive never-reached-a-prompt deferrals after which the gate reports a FAULT.
+   *
+   * The retry budget bounds one delivery; nothing bounded the STATE. "Not ready yet" and
+   * "never going to be ready" produced identical log lines forever, which is why Eli sat
+   * undeliverable for seven hours on 2026-08-24 with 171,655 readiness lines and no
+   * monitoring anywhere firing. A negative result that cannot distinguish not-yet from
+   * never is not a signal. Default 25 — several minutes of retries, not a hair trigger.
+   */
+  neverReadyFaultThreshold?: number;
 }
 
 export interface CodexInjectionGate {
@@ -34,6 +44,8 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
   const canInjectWithoutConfirmation = options.canInjectWithoutConfirmation ?? (() => true);
   const log = options.log ?? (() => {});
   const deferrals = new Map<string, number>();
+  const neverReadyFaultThreshold = options.neverReadyFaultThreshold ?? 25;
+  let neverReadyStreak = 0;
 
   return {
     async deliver(prompt, id, label) {
@@ -48,13 +60,26 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
           throw new CodexInjectionDeferredError(label, id, attempts);
         }
         if (!canInjectWithoutConfirmation()) {
+          neverReadyStreak += 1;
           log(`codex readiness budget exhausted for ${label} ${id}, but startup has not reached a prompt; deferring`);
+          // Report the STATE once, not the event every time: a line repeated 171,655 times
+          // is indistinguishable from noise, which is how this stayed invisible. Delivery
+          // semantics are deliberately unchanged — this is a fault report, not a new
+          // failure mode, so a bad threshold cannot drop a message.
+          if (neverReadyStreak === neverReadyFaultThreshold) {
+            log(
+              `FAULT: codex has not reached a prompt after ${neverReadyStreak} consecutive ` +
+                `deferrals; this runtime is not merely busy, it is undeliverable. ` +
+                `Nothing will be injected until it reaches a prompt.`,
+            );
+          }
           throw new CodexInjectionDeferredError(label, id, priorDeferrals + 1);
         }
         log(`codex readiness budget exhausted for ${label} ${id}; injecting without confirmation`);
       }
 
       deferrals.delete(id);
+      neverReadyStreak = 0;
       log(`injecting ${label} ${id}: ${prompt}`);
       await submit(prompt);
     },

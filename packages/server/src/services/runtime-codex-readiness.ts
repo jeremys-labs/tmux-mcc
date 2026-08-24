@@ -40,18 +40,38 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
   return {
     onData(data) {
       const text = stripAnsi(data);
+
+      // reachedPrompt is MONOTONIC — "has this session ever presented a prompt" — while
+      // busy/idle is transient. Conflating them was the bug: the prompt marker used to be
+      // evaluated only after the busy branches, each of which returns early, so a chunk
+      // carrying both a busy-looking line and the prompt never set reachedPrompt at all.
+      //
+      // 2026-08-24: Eli's Codex TUI carries a persistent notice, "• You have 1 usage limit
+      // reset available.", which matches the bullet glyph pattern below. Every full-screen
+      // redraw emitted that notice and the prompt together, the busy branch matched and
+      // returned, and reachedPrompt stayed false permanently. canInjectWithoutConfirmation()
+      // is hasReachedPrompt(), so every inbound message deferred forever — 4 mails queued
+      // unread, 171,655 readiness lines, seven hours, and a force-restart reproduced it.
+      //
+      // Evaluated unconditionally and FIRST. Narrowing the glyph pattern instead would be a
+      // denylist of notices we happen to know about, and the next TUI restyle re-opens it.
+      const hasPromptMarker = text.includes('\n› ') || text.startsWith('› ');
+      if (hasPromptMarker) reachedPrompt = true;
+
       if (text.includes('Messages to be submitted after next tool call')) {
         setBusy(true, 'queued-input');
         return;
       }
 
+      // Busy precedence is deliberately UNCHANGED. A chunk containing both a working marker
+      // and a prompt still counts as busy, so waitForIdle() keeps gating actual submission;
+      // only the monotonic reached-a-prompt fact escapes the early return.
       if (/Working\s*\(/.test(text) || /[•✱✻✽]\s+\S+/.test(text)) {
         setBusy(true, 'working');
         return;
       }
 
-      if (text.includes('\n› ') || text.startsWith('› ')) {
-        reachedPrompt = true;
+      if (hasPromptMarker) {
         setBusy(false, 'prompt-ready');
         flush();
       }
