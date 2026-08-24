@@ -100,3 +100,63 @@ describe('prompt detection is not blocked by a static busy-looking notice', () =
     expect(gate.hasReachedPrompt()).toBe(true);
   });
 });
+
+describe('a bare bullet is content, not a spinner frame', () => {
+  // Residual from the 2026-08-24 deadlock. Making reachedPrompt monotonic un-stuck the
+  // injection gate, but Eli was then pinned BUSY forever: exactly one gate transition
+  // after his restart — "-> busy (working)" at 13:32:34 — and never back to idle, because
+  // the persistent "• You have 1 usage limit reset available." line re-matched the glyph
+  // pattern on every redraw. waitForIdle() could never resolve.
+  //
+  // `•` is not a spinner frame. Cecelia's pane carries "• Cecelia's quick wrap-up" as
+  // ordinary prose, which is independent evidence the character appears in content. The
+  // spinner frames (✱✻✽) stay, and `Working (` remains the primary busy signal — so a
+  // genuinely working TUI is still detected even if some build does use a bullet.
+  //
+  // This is narrowing, which I argued against for the ordering fix, and the distinction is
+  // the point: dropping a character that was never a spinner is not the same as
+  // enumerating the notices we happen to have seen. A denylist of notices would reopen on
+  // the next TUI restyle; this does not.
+  it('does not go busy on a static bullet notice', () => {
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({
+      onTransition: (state, marker) => transitions.push([state, marker]),
+    });
+    gate.onData('• You have 1 usage limit reset available. Run /usage to use one.\n');
+    expect(transitions).toEqual([]);
+  });
+
+  it('does not go busy on bullet-prefixed prose', () => {
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({
+      onTransition: (state, marker) => transitions.push([state, marker]),
+    });
+    gate.onData('• Cecelia’s quick wrap-up\n');
+    expect(transitions).toEqual([]);
+  });
+
+  it('still goes busy on a real spinner frame', () => {
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({
+      onTransition: (state, marker) => transitions.push([state, marker]),
+    });
+    gate.onData('✻ Thinking\n');
+    expect(transitions).toEqual([['busy', 'working']]);
+  });
+
+  it('still goes busy on Working (, which is the primary signal', () => {
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({
+      onTransition: (state, marker) => transitions.push([state, marker]),
+    });
+    gate.onData('• a bullet notice and then Working (12s)\n');
+    expect(transitions).toEqual([['busy', 'working']]);
+  });
+
+  it('a notice-only redraw leaves the gate idle so waitForIdle resolves', async () => {
+    const gate = createCodexReadinessGate();
+    gate.onData('\n› ');
+    gate.onData('• You have 1 usage limit reset available.\n');
+    await expect(gate.waitForIdle()).resolves.toBeUndefined();
+  });
+});

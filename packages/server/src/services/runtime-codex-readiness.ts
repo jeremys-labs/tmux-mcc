@@ -66,7 +66,17 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
       // Busy precedence is deliberately UNCHANGED. A chunk containing both a working marker
       // and a prompt still counts as busy, so waitForIdle() keeps gating actual submission;
       // only the monotonic reached-a-prompt fact escapes the early return.
-      if (/Working\s*\(/.test(text) || /[•✱✻✽]\s+\S+/.test(text)) {
+      // `•` is deliberately NOT in the spinner set. It is an ordinary bullet: Eli's TUI
+      // uses it for "• You have 1 usage limit reset available.", and Cecelia's pane carries
+      // "• Cecelia's quick wrap-up" as prose. Matching it pinned Eli busy permanently —
+      // exactly one gate transition after his 2026-08-24 restart, "-> busy (working)", and
+      // never back to idle, so waitForIdle() could never resolve.
+      //
+      // Narrowing here is not the denylist I rejected for the ordering fix above: this drops
+      // a character that was never a spinner frame, rather than enumerating the notices we
+      // happen to have seen. `Working (` remains the primary busy signal, so a genuinely
+      // working TUI is still detected even on a build that does render a bullet.
+      if (/Working\s*\(/.test(text) || /[✱✻✽]\s+\S+/.test(text)) {
         setBusy(true, 'working');
         return;
       }
