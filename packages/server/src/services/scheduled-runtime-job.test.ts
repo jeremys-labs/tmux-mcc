@@ -1,6 +1,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
   buildScheduledRuntimeJobPlan,
@@ -93,6 +95,28 @@ describe('scheduled runtime jobs', () => {
       codexBin: 'codex-test',
     });
 
+    expect(plan.args).toContain('--ignore-user-config');
+  });
+
+  it('forwards --ignore-user-config through the scheduled-job CLI', () => {
+    const f = fixture();
+    const promptFile = path.join(f.dir, 'prompt.txt');
+    fs.writeFileSync(promptFile, 'Generate an image');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const tsx = path.resolve(here, '../../../../node_modules/tsx/dist/cli.mjs');
+    const runner = path.resolve(here, '../runtime-scheduled-job.ts');
+
+    const result = spawnSync(process.execPath, [tsx, runner,
+      '--agent', 'isla',
+      '--runtime', 'codex',
+      '--cd', f.agentDir,
+      '--prompt-file', promptFile,
+      '--ignore-user-config',
+      '--dry-run',
+    ], { encoding: 'utf8' });
+
+    expect(result.status, result.stderr).toBe(0);
+    const plan = JSON.parse(result.stdout) as { args: string[] };
     expect(plan.args).toContain('--ignore-user-config');
   });
 
