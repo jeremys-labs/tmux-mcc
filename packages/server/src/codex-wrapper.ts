@@ -103,6 +103,7 @@ const injectionGate = createCodexInjectionGate({
   waitForWindow: waitForCodexInjectionWindow,
   submit: (prompt) => stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions)),
   retryBudget: unackedRetryBudget,
+  canInjectWithoutConfirmation: () => readiness.hasReachedPrompt(),
   log: appendRuntimeLog,
 });
 

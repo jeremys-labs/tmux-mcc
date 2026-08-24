@@ -1,6 +1,7 @@
 export interface CodexReadinessGate {
   onData(data: string): void;
   waitForIdle(): Promise<void>;
+  hasReachedPrompt(): boolean;
 }
 
 export interface CodexReadinessGateOptions {
@@ -18,6 +19,7 @@ function stripAnsi(input: string): string {
 
 export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}): CodexReadinessGate {
   let busy = false;
+  let reachedPrompt = false;
   let waiters: Array<() => void> = [];
 
   const setBusy = (next: boolean, marker: string) => {
@@ -49,6 +51,7 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
       }
 
       if (text.includes('\n› ') || text.startsWith('› ')) {
+        reachedPrompt = true;
         setBusy(false, 'prompt-ready');
         flush();
       }
@@ -57,6 +60,10 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
     waitForIdle() {
       if (!busy) return Promise.resolve();
       return new Promise((resolve) => waiters.push(resolve));
+    },
+
+    hasReachedPrompt() {
+      return reachedPrompt;
     },
   };
 }

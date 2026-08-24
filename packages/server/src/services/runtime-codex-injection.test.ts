@@ -80,4 +80,23 @@ describe('createCodexInjectionGate', () => {
     await expect(gate.deliver('x', 'msg-1', 'discord')).rejects.toBeInstanceOf(CodexInjectionDeferredError);
     expect(submit).toHaveBeenCalledTimes(1);
   });
+
+  it('never forces an injection before Codex reaches its first prompt', async () => {
+    let reachedPrompt = false;
+    const submit = vi.fn(async () => {});
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit,
+      retryBudget: 1,
+      canInjectWithoutConfirmation: () => reachedPrompt,
+    });
+
+    await expect(gate.deliver('startup message', 'm-start', 'mail')).rejects.toThrow(CodexInjectionDeferredError);
+    await expect(gate.deliver('startup message', 'm-start', 'mail')).rejects.toThrow(CodexInjectionDeferredError);
+    expect(submit).not.toHaveBeenCalled();
+
+    reachedPrompt = true;
+    await expect(gate.deliver('startup message', 'm-start', 'mail')).resolves.toBeUndefined();
+    expect(submit).toHaveBeenCalledWith('startup message');
+  });
 });

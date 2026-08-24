@@ -20,6 +20,8 @@ export interface CodexInjectionGateOptions {
   submit: (prompt: string) => Promise<void>;
   /** Number of times a delivery may be deferred before it is submitted without confirmation. */
   retryBudget: number;
+  /** Prevents best-effort injection during startup, before Codex has reached its first prompt. */
+  canInjectWithoutConfirmation?: () => boolean;
   log?: (line: string) => void;
 }
 
@@ -29,6 +31,7 @@ export interface CodexInjectionGate {
 
 export function createCodexInjectionGate(options: CodexInjectionGateOptions): CodexInjectionGate {
   const { waitForWindow, submit, retryBudget } = options;
+  const canInjectWithoutConfirmation = options.canInjectWithoutConfirmation ?? (() => true);
   const log = options.log ?? (() => {});
   const deferrals = new Map<string, number>();
 
@@ -43,6 +46,10 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
           deferrals.set(id, attempts);
           log(`codex readiness wait timed out for ${label} ${id}; deferring for retry (attempt ${attempts}/${retryBudget})`);
           throw new CodexInjectionDeferredError(label, id, attempts);
+        }
+        if (!canInjectWithoutConfirmation()) {
+          log(`codex readiness budget exhausted for ${label} ${id}, but startup has not reached a prompt; deferring`);
+          throw new CodexInjectionDeferredError(label, id, priorDeferrals + 1);
         }
         log(`codex readiness budget exhausted for ${label} ${id}; injecting without confirmation`);
       }

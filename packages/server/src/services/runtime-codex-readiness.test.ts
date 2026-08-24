@@ -20,6 +20,7 @@ describe('Codex readiness gate', () => {
   it('resolves immediately while idle', async () => {
     const gate = createCodexReadinessGate();
 
+    expect(gate.hasReachedPrompt()).toBe(false);
     await expect(gate.waitForIdle()).resolves.toBeUndefined();
   });
 
@@ -36,6 +37,7 @@ describe('Codex readiness gate', () => {
 
     gate.onData('\n────────────────\n› Write tests for @filename\n');
     await wait;
+    expect(gate.hasReachedPrompt()).toBe(true);
     expect(resolved).toBe(true);
   });
 
