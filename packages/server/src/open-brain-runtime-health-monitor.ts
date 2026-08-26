@@ -32,12 +32,19 @@ interface MonitorState {
   lastDeliverySentAt?: string;
   lastInboundReplyFingerprint?: string;
   lastInboundReplySentAt?: string;
+  deliveryRecoveryAttempts?: Record<string, {
+    attemptedAt: string;
+  }>;
   inboundRecoveryAttempts?: Record<string, {
     attemptedAt: string;
     action: 'wake_queued' | 'replay_consumed' | 'none';
     agent: string;
     chatId: string;
   }>;
+}
+
+interface DeliveryRecoveryAttempt {
+  attemptedAt: string;
 }
 
 function readArg(name: string): string | undefined {
@@ -81,6 +88,67 @@ export function recoveryAttemptStillInGrace(input: {
 }): boolean {
   const elapsed = Date.parse(input.checkedAt) - Date.parse(input.attemptedAt);
   return Number.isFinite(elapsed) && elapsed >= 0 && elapsed < input.graceMinutes * 60_000;
+}
+
+export async function recoverDeliveryFailuresBeforeAlert(input: {
+  failures: AgentRuntimeHealth[];
+  supervisorStatuses: SupervisorAgentStatus[];
+  attempts: Record<string, DeliveryRecoveryAttempt>;
+  checkedAt: string;
+  graceMinutes: number;
+  dryRun: boolean;
+  restart: (agent: string) => Promise<void>;
+}): Promise<{
+  alerts: AgentRuntimeHealth[];
+  attempts: Record<string, DeliveryRecoveryAttempt>;
+}> {
+  const attempts = { ...input.attempts };
+  const failingAgents = new Set(input.failures.map((failure) => failure.agent));
+  for (const agent of Object.keys(attempts)) {
+    if (!failingAgents.has(agent)) delete attempts[agent];
+  }
+  const alerts: AgentRuntimeHealth[] = [];
+
+  for (const failure of input.failures) {
+    const prior = attempts[failure.agent];
+    if (prior) {
+      if (recoveryAttemptStillInGrace({
+        attemptedAt: prior.attemptedAt,
+        checkedAt: input.checkedAt,
+        graceMinutes: input.graceMinutes,
+      })) continue;
+      alerts.push({
+        ...failure,
+        discordInboxDelivery: {
+          ...failure.discordInboxDelivery,
+          detail: `${failure.discordInboxDelivery.detail}; forced runtime restart at ${prior.attemptedAt} did not clear the queue`,
+        },
+      });
+      continue;
+    }
+
+    const status = input.supervisorStatuses.find((row) => row.agent === failure.agent);
+    if (status?.process?.status === 'running' && status.progress?.status === 'processing') {
+      continue;
+    }
+    if (input.dryRun) {
+      alerts.push(failure);
+      continue;
+    }
+    try {
+      await input.restart(failure.agent);
+      attempts[failure.agent] = { attemptedAt: input.checkedAt };
+    } catch (error) {
+      alerts.push({
+        ...failure,
+        discordInboxDelivery: {
+          ...failure.discordInboxDelivery,
+          detail: `${failure.discordInboxDelivery.detail}; forced runtime restart failed: ${String(error)}`,
+        },
+      });
+    }
+  }
+  return { alerts, attempts };
 }
 
 export function formatDeliveryFailureAlert(report: RuntimeHealthReport): string {
@@ -171,6 +239,26 @@ async function fetchSupervisorStatuses(supervisorUrl: string): Promise<Superviso
   }
 }
 
+async function restartAgentForDelivery(supervisorUrl: string, agent: string, checkedAt: string): Promise<void> {
+  const secret = process.env.AGENT_SUPERVISOR_COMMAND_SECRET;
+  const response = await fetch(new URL('/v1/commands', supervisorUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(secret ? { 'x-supervisor-secret': secret } : {}),
+    },
+    body: JSON.stringify({
+      requestId: `runtime-delivery-recovery-${agent}-${checkedAt}`,
+      operation: 'restart',
+      agent,
+      force: true,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`supervisor restart failed ${response.status}: ${body}`);
+}
+
 async function main(): Promise<void> {
   const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
   const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
@@ -184,20 +272,33 @@ async function main(): Promise<void> {
     contentRoot,
   });
   const failures = findDeliveryFailures(report);
+  const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const state = readMonitorState(statePath);
   const nextState: MonitorState = { ...state };
   const alertMessages: string[] = [];
 
-  if (failures.length === 0) {
+  const deliveryRecovery = await recoverDeliveryFailuresBeforeAlert({
+    failures,
+    supervisorStatuses,
+    attempts: state.deliveryRecoveryAttempts ?? {},
+    checkedAt: report.generatedAtIso,
+    graceMinutes: 10,
+    dryRun,
+    restart: (targetAgent) => restartAgentForDelivery(supervisorUrl, targetAgent, report.generatedAtIso),
+  });
+  nextState.deliveryRecoveryAttempts = deliveryRecovery.attempts;
+  const deliveryAlertFailures = deliveryRecovery.alerts;
+
+  if (deliveryAlertFailures.length === 0) {
     nextState.lastFingerprint = undefined;
     nextState.lastDeliveryFingerprint = undefined;
   } else {
-    const fingerprint = deliveryFailureFingerprint(failures);
+    const fingerprint = deliveryFailureFingerprint(deliveryAlertFailures);
     const previous = state.lastDeliveryFingerprint ?? state.lastFingerprint;
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alertMessages.push(formatDeliveryFailureAlert(report));
+      alertMessages.push(formatDeliveryFailureAlert({ ...report, agents: deliveryAlertFailures }));
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
       nextState.lastFingerprint = fingerprint;
@@ -205,7 +306,6 @@ async function main(): Promise<void> {
     }
   }
 
-  const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const inboundResult = reconcileInboundReplies({
     expected: readInboundExpected(contentRoot),
     outbound: readOutboundSent(contentRoot),
@@ -224,7 +324,10 @@ async function main(): Promise<void> {
       && sent.sent_at > attempt.attemptedAt)) delete recoveryAttempts[key];
   }
 
-  for (const miss of inboundResult.misses) {
+  // queued_not_consumed is the delivery-cursor arm above. Keeping it out of
+  // reply recovery prevents two independent actions and two competing alerts
+  // for the same stuck inbox row.
+  for (const miss of inboundResult.misses.filter((candidate) => candidate.failureClass !== 'queued_not_consumed')) {
     const priorAttempt = recoveryAttempts[miss.key];
     if (priorAttempt) {
       if (recoveryAttemptStillInGrace({

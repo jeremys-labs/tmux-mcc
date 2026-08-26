@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deliveryFailureFingerprint,
   findDeliveryFailures,
   formatDeliveryFailureAlert,
+  recoverDeliveryFailuresBeforeAlert,
   recoveryAttemptStillInGrace,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
@@ -70,5 +71,58 @@ describe('runtime health monitor', () => {
       checkedAt: '2026-08-26T13:20:00.000Z',
       graceMinutes: 10,
     })).toBe(false);
+  });
+
+  it('restarts a stuck delivery before alerting and gives it a recovery window', async () => {
+    const restart = vi.fn(async () => undefined);
+    const first = await recoverDeliveryFailuresBeforeAlert({
+      failures: findDeliveryFailures(report()),
+      supervisorStatuses: [{ agent: 'zara', process: { status: 'running' }, progress: { status: 'idle' } }],
+      attempts: {},
+      checkedAt: '2026-08-26T13:10:00.000Z',
+      graceMinutes: 10,
+      dryRun: false,
+      restart,
+    });
+    expect(restart).toHaveBeenCalledWith('zara');
+    expect(first.alerts).toEqual([]);
+    expect(first.attempts.zara?.attemptedAt).toBe('2026-08-26T13:10:00.000Z');
+
+    const pending = await recoverDeliveryFailuresBeforeAlert({
+      failures: findDeliveryFailures(report()),
+      supervisorStatuses: [],
+      attempts: first.attempts,
+      checkedAt: '2026-08-26T13:19:59.999Z',
+      graceMinutes: 10,
+      dryRun: false,
+      restart,
+    });
+    expect(pending.alerts).toEqual([]);
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('alerts when forced delivery restart fails or its grace window expires', async () => {
+    const failure = findDeliveryFailures(report());
+    const failed = await recoverDeliveryFailuresBeforeAlert({
+      failures: failure,
+      supervisorStatuses: [],
+      attempts: {},
+      checkedAt: '2026-08-26T13:10:00.000Z',
+      graceMinutes: 10,
+      dryRun: false,
+      restart: async () => { throw new Error('restart unavailable'); },
+    });
+    expect(failed.alerts[0].discordInboxDelivery.detail).toContain('forced runtime restart failed');
+
+    const expired = await recoverDeliveryFailuresBeforeAlert({
+      failures: failure,
+      supervisorStatuses: [],
+      attempts: { zara: { attemptedAt: '2026-08-26T13:10:00.000Z' } },
+      checkedAt: '2026-08-26T13:20:00.000Z',
+      graceMinutes: 10,
+      dryRun: false,
+      restart: async () => undefined,
+    });
+    expect(expired.alerts[0].discordInboxDelivery.detail).toContain('did not clear the queue');
   });
 });
