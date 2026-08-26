@@ -10,6 +10,27 @@ export interface InboundExpectedRecord {
   inbox_path?: string;
 }
 
+function expectedKey(record: InboundExpectedRecord): string {
+  return `${record.agent}:${record.chat_id}:${record.message_id}`;
+}
+
+// Replays append a fresh expectation for the same logical inbound message.
+// Reconcile only the newest expectation so the recovery gets a real grace
+// window instead of the original breadcrumb continuing to alarm immediately.
+export function latestInboundExpectations(records: InboundExpectedRecord[]): InboundExpectedRecord[] {
+  const latest = new Map<string, InboundExpectedRecord>();
+  for (const record of records) {
+    const key = expectedKey(record);
+    const previous = latest.get(key);
+    const previousTs = previous ? parseIso(previous.queued_at) : null;
+    const nextTs = parseIso(record.queued_at);
+    if (!previous || previousTs === null || (nextTs !== null && nextTs >= previousTs)) {
+      latest.set(key, record);
+    }
+  }
+  return [...latest.values()];
+}
+
 export interface OutboundSentRecord {
   sent_at: string;
   agent: string;
@@ -307,7 +328,9 @@ export function reconcileInboundReplies(input: {
   let deferredCount = 0;
   const misses: ReplyMiss[] = [];
 
-  for (const record of input.expected) {
+  const expected = latestInboundExpectations(input.expected);
+
+  for (const record of expected) {
     if (isOptedOut(record, policy)) {
       skippedCount += 1;
       continue;
@@ -349,7 +372,7 @@ export function reconcileInboundReplies(input: {
 
   return {
     checkedAtIso: now.toISOString(),
-    expectedCount: input.expected.length,
+    expectedCount: expected.length,
     matchedCount,
     deferredCount,
     skippedCount,

@@ -15,6 +15,7 @@ import {
   reconcileInboundReplies,
   type SupervisorAgentStatus,
 } from './services/inbound-reply-reconcile.js';
+import { recoverInboundMiss } from './services/inbound-miss-recovery.js';
 
 const DEFAULT_CHAT_ID = '1491979880747765810';
 const DEFAULT_AGENT = 'eli';
@@ -31,6 +32,12 @@ interface MonitorState {
   lastDeliverySentAt?: string;
   lastInboundReplyFingerprint?: string;
   lastInboundReplySentAt?: string;
+  inboundRecoveryAttempts?: Record<string, {
+    attemptedAt: string;
+    action: 'wake_queued' | 'replay_consumed' | 'none';
+    agent: string;
+    chatId: string;
+  }>;
 }
 
 function readArg(name: string): string | undefined {
@@ -65,6 +72,15 @@ export function deliveryFailureFingerprint(failures: AgentRuntimeHealth[]): stri
     .map((agent) => `${agent.agent}:${agent.discordInboxDelivery.detail}`)
     .sort()
     .join('|');
+}
+
+export function recoveryAttemptStillInGrace(input: {
+  attemptedAt: string;
+  checkedAt: string;
+  graceMinutes: number;
+}): boolean {
+  const elapsed = Date.parse(input.checkedAt) - Date.parse(input.attemptedAt);
+  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed < input.graceMinutes * 60_000;
 }
 
 export function formatDeliveryFailureAlert(report: RuntimeHealthReport): string {
@@ -189,22 +205,75 @@ async function main(): Promise<void> {
     }
   }
 
+  const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const inboundResult = reconcileInboundReplies({
     expected: readInboundExpected(contentRoot),
     outbound: readOutboundSent(contentRoot),
     policy: readReplyPolicy(contentRoot),
-    supervisorStatuses: await fetchSupervisorStatuses(supervisorUrl),
+    supervisorStatuses,
     contentRoot,
     now: new Date(report.generatedAtIso),
   });
-  if (inboundResult.misses.length === 0) {
+  const inboundAlertMisses = [] as typeof inboundResult.misses;
+  const recoveryAttempts = { ...(state.inboundRecoveryAttempts ?? {}) };
+  const outboundNow = readOutboundSent(contentRoot);
+  for (const [key, attempt] of Object.entries(recoveryAttempts)) {
+    if (outboundNow.some((sent) =>
+      sent.agent === attempt.agent
+      && sent.chat_id === attempt.chatId
+      && sent.sent_at > attempt.attemptedAt)) delete recoveryAttempts[key];
+  }
+
+  for (const miss of inboundResult.misses) {
+    const priorAttempt = recoveryAttempts[miss.key];
+    if (priorAttempt) {
+      if (recoveryAttemptStillInGrace({
+        attemptedAt: priorAttempt.attemptedAt,
+        checkedAt: inboundResult.checkedAtIso,
+        graceMinutes: miss.graceMinutes,
+      })) {
+        process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
+        continue;
+      }
+      inboundAlertMisses.push({
+        ...miss,
+        detail: `${miss.detail}; forced recovery ${priorAttempt.action} at ${priorAttempt.attemptedAt} did not produce a reply`,
+      });
+      continue;
+    }
+
+    if (dryRun) {
+      inboundAlertMisses.push(miss);
+      continue;
+    }
+    const recovery = recoverInboundMiss({
+      miss,
+      contentRoot,
+      supervisorStatuses,
+      dependencies: { now: new Date(inboundResult.checkedAtIso) },
+    });
+    process.stdout.write(`inbound recovery ${recovery.ok ? 'succeeded' : 'failed'} for ${miss.key}: ${recovery.reason}\n`);
+    if (recovery.ok) {
+      recoveryAttempts[miss.key] = {
+        attemptedAt: inboundResult.checkedAtIso,
+        action: recovery.action,
+        agent: miss.agent,
+        chatId: miss.chatId,
+      };
+    } else {
+      inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
+    }
+  }
+  nextState.inboundRecoveryAttempts = recoveryAttempts;
+
+  if (inboundAlertMisses.length === 0) {
     nextState.lastInboundReplyFingerprint = undefined;
   } else {
-    const fingerprint = inboundReplyMissFingerprint(inboundResult.misses);
+    const fingerprint = inboundReplyMissFingerprint(inboundAlertMisses);
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
-      alertMessages.push(formatInboundReplyMissAlert(inboundResult));
+      alertMessages.push(formatInboundReplyMissAlert({ ...inboundResult, misses: inboundAlertMisses }));
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }

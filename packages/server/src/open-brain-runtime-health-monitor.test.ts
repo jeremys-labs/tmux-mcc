@@ -3,6 +3,7 @@ import {
   deliveryFailureFingerprint,
   findDeliveryFailures,
   formatDeliveryFailureAlert,
+  recoveryAttemptStillInGrace,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
@@ -56,5 +57,18 @@ describe('runtime health monitor', () => {
     expect(failures.map((agent) => agent.agent)).toEqual(['zara']);
     expect(deliveryFailureFingerprint(failures)).toContain('zara:1 pending Discord inbox entries');
     expect(formatDeliveryFailureAlert(report())).toContain('- zara: 1 pending Discord inbox entries');
+  });
+
+  it('suppresses a recovered inbound miss for one fresh grace window, then allows alerting', () => {
+    expect(recoveryAttemptStillInGrace({
+      attemptedAt: '2026-08-26T13:10:00.000Z',
+      checkedAt: '2026-08-26T13:19:59.999Z',
+      graceMinutes: 10,
+    })).toBe(true);
+    expect(recoveryAttemptStillInGrace({
+      attemptedAt: '2026-08-26T13:10:00.000Z',
+      checkedAt: '2026-08-26T13:20:00.000Z',
+      graceMinutes: 10,
+    })).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   formatInboundReplyMissAlert,
   inboundReplyMissFingerprint,
+  latestInboundExpectations,
   reconcileInboundReplies,
   type InboundExpectedRecord,
   type OutboundSentRecord,
@@ -67,6 +68,24 @@ afterEach(() => {
 });
 
 describe('reconcileInboundReplies', () => {
+  it('uses the newest replay expectation for one logical inbound message', () => {
+    const records = [
+      inbound({ queued_at: '2026-07-12T13:00:00.000Z' }),
+      inbound({ queued_at: '2026-07-12T13:25:00.000Z' }),
+    ];
+    expect(latestInboundExpectations(records)).toEqual([records[1]]);
+
+    const result = reconcileInboundReplies({
+      expected: records,
+      outbound: [],
+      contentRoot: tempDir(),
+      now: new Date('2026-07-12T13:30:00.000Z'),
+    });
+    expect(result.expectedCount).toBe(1);
+    expect(result.deferredCount).toBe(1);
+    expect(result.misses).toEqual([]);
+  });
+
   it('matches any later outbound send by the same agent to the same chat', () => {
     const result = reconcileInboundReplies({
       expected: [inbound()],
