@@ -52,6 +52,8 @@ export interface DiscordMessageAttachment {
 
 export interface CodexBridgeInboxEntry {
   id: string;
+  /** Internal recovery marker. Present only on a deliberately replayed inbox row. */
+  replayed_from?: string;
   bindingName?: string;
   agentKey: string;
   channelId: string;

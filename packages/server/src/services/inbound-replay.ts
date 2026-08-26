@@ -130,7 +130,8 @@ export function decideReplay(input: ReplayDecisionInput): ReplayDecision {
 
 // Build the entry to re-append: identical payload, plus the dedupe marker.
 // The original id is preserved so the gateway envelope the agent sees matches
-// the real message; replayed_from is what keeps dedupe honest.
+// the real message. The runtime poller derives a distinct in-memory delivery
+// key from replayed_from, while this marker also prevents a second replay.
 export function buildReplayEntry(original: InboxEntryLike): InboxEntryLike {
   return { ...original, replayed_from: original.id };
 }

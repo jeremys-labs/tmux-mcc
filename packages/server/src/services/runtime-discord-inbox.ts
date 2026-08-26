@@ -38,6 +38,15 @@ export interface EnqueuePendingRuntimeDiscordInboxInput extends Omit<RuntimeDisc
   enqueue: (task: () => Promise<void>, opts?: EnqueueOptions) => void;
 }
 
+// A replay preserves the real Discord message id in the prompt and cursor
+// contract, but it must get one fresh in-memory delivery key. Otherwise a
+// long-lived wrapper remembers the original id and silently skips the replay.
+export function runtimeDiscordDeliveryKey(entry: CodexBridgeInboxEntry): string {
+  return entry.replayed_from
+    ? `${entry.id}:replay:${entry.replayed_from}`
+    : entry.id;
+}
+
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
   fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
 }
@@ -142,21 +151,22 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
 export function enqueuePendingRuntimeDiscordInbox(input: EnqueuePendingRuntimeDiscordInboxInput): void {
   const pending = readPendingInboxEntries(input.contentRoot, input.agentKey);
   for (const entry of pending) {
-    if (input.deliveredIds.has(entry.id)) continue;
-    input.deliveredIds.add(entry.id);
+    const deliveryKey = runtimeDiscordDeliveryKey(entry);
+    if (input.deliveredIds.has(deliveryKey)) continue;
+    input.deliveredIds.add(deliveryKey);
     input.enqueue(async () => {
       try {
         await deliverRuntimeDiscordInbox({ ...input, entry });
         // Delivered and acked (cursor advanced) — safe to let the cap evict this id.
-        input.deliveredIds.settle?.(entry.id);
+        input.deliveredIds.settle?.(deliveryKey);
       } catch (error) {
-        input.deliveredIds.delete(entry.id);
+        input.deliveredIds.delete(deliveryKey);
         appendRuntimeLog(input.runtimeLogPath, `inject error ${entry.id}: ${String(error)}`);
       }
     }, {
       onTimeout: () => {
         // Timed-out delivery never acked (cursor not advanced); release the id so it is retried.
-        input.deliveredIds.delete(entry.id);
+        input.deliveredIds.delete(deliveryKey);
         appendRuntimeLog(input.runtimeLogPath, `inject timeout ${entry.id}; releasing for retry`);
       },
     });

@@ -7,6 +7,7 @@ import { readInboxCursor } from './codex-inbox.js';
 import {
   deliverRuntimeDiscordInbox,
   enqueuePendingRuntimeDiscordInbox,
+  runtimeDiscordDeliveryKey,
 } from './runtime-discord-inbox.js';
 import { createRuntimeEventEmitter } from './runtime-events.js';
 import { buildAnswerContext } from './answer-context.js';
@@ -292,5 +293,33 @@ describe('runtime discord inbox delivery', () => {
 
     expect(deliveredIds.has('discord_1')).toBe(false);
     expect(readInboxCursor(tmpDir, 'enzo').lineCount).toBe(0);
+  });
+
+  it('gives one replay of a consumed message a fresh delivery key in a long-lived wrapper', async () => {
+    const original = entry();
+    const replay = entry({ replayed_from: original.id });
+    writeInbox(tmpDir, 'enzo', [original, replay]);
+    fs.mkdirSync(path.join(tmpDir, 'bridge', 'runtime-state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'bridge', 'runtime-state', 'enzo.json'),
+      JSON.stringify({ lineCount: 1 }),
+    );
+    const deliveredIds = new Set<string>([original.id]);
+    const queued: Array<() => Promise<void>> = [];
+
+    enqueuePendingRuntimeDiscordInbox({
+      agentKey: 'enzo',
+      contentRoot: tmpDir,
+      deliveredIds,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'claude', sinks: [] }),
+      submitPrompt: async () => undefined,
+      runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+      enqueue: (task) => queued.push(task),
+    });
+
+    expect(runtimeDiscordDeliveryKey(replay)).toBe('discord_1:replay:discord_1');
+    expect(queued).toHaveLength(1);
+    await queued[0]();
+    expect(readInboxCursor(tmpDir, 'enzo').lineCount).toBe(2);
   });
 });
