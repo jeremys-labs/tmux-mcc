@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
 import { describe, expect, it } from 'vitest';
-import { discoverAgents, toClaudeProjectKey } from './open-brain-seed-agent-history.js';
+import { discoverAgents, isCurrentAgentHistoryFile, toClaudeProjectKey } from './open-brain-seed-agent-history.js';
 
 let tmpRoot: string;
 
@@ -54,5 +54,18 @@ describe('toClaudeProjectKey', () => {
     const agent = 'marcus';
     expect(toClaudeProjectKey(`${homeBasedRoot}/workspace-${agent}`))
       .toBe('-Users-someuser--openclaw-workspace-marcus');
+  });
+});
+
+describe('isCurrentAgentHistoryFile', () => {
+  it('does not seed retired BOOTSTRAP instructions', () => {
+    expect(isCurrentAgentHistoryFile('BOOTSTRAP.md', 'eli')).toBe(false);
+  });
+
+  it('keeps canonical current files and maintained memory', () => {
+    expect(isCurrentAgentHistoryFile('AGENTS.md', 'eli')).toBe(true);
+    expect(isCurrentAgentHistoryFile('CLAUDE.md', 'eli')).toBe(true);
+    expect(isCurrentAgentHistoryFile('SOUL.md', 'eli')).toBe(true);
+    expect(isCurrentAgentHistoryFile('memory/agents/eli.md', 'eli')).toBe(true);
   });
 });

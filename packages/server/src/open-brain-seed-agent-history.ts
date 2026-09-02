@@ -19,7 +19,6 @@ interface ImportItem {
 // Keep MCC_* aliases for compatibility with the pre-collector seeding command.
 const homeDir = os.homedir();
 const agentsRoot = process.env['AGENTS_ROOT'] ?? process.env['MCC_AGENTS_ROOT'] ?? path.join(homeDir, 'agents');
-const oldOpenClawRoot = process.env['OLD_OPENCLAW_ROOT'] ?? process.env['MCC_OPENCLAW_ROOT'] ?? path.join(homeDir, '.openclaw');
 const claudeMemDb = process.env['CLAUDE_MEM_DB'] ?? path.join(homeDir, 'claude-mem', 'claude-mem.db');
 const maxContentLength = 7000;
 
@@ -78,9 +77,7 @@ export function toClaudeProjectKey(dir: string): string {
 }
 
 function normalizedRef(filePath: string): string {
-  let p = filePath;
-  if (agentsRoot) p = p.replace(agentsRoot, 'agents');
-  return p.replace(oldOpenClawRoot, 'openclaw');
+  return agentsRoot ? filePath.replace(agentsRoot, 'agents') : filePath;
 }
 
 function splitContent(content: string): string[] {
@@ -286,51 +283,32 @@ function addFile(items: ImportItem[], agent: string, filePath: string): void {
   });
 }
 
-function currentAgentFiles(agent: string): string[] {
-  const root = path.join(agentsRoot, agent);
-  return listFiles(root, (filePath) => {
-    if (!filePath.endsWith('.md')) return false;
-    const rel = path.relative(root, filePath);
-    if (rel.startsWith(`memory/agents/`) && rel !== `memory/agents/${agent}.md`) return false;
-    if (rel.startsWith('memory/archive/')) return agent === 'isla' && rel.includes('isla');
-    if (rel.startsWith('memory/')) {
-      const memoryRel = rel.slice('memory/'.length);
-      if (memoryRel === 'MEMORY.md') return true;
-      if (memoryRel === `agents/${agent}.md`) return true;
-      if (/^2026-\d{2}-\d{2}/.test(memoryRel)) return true;
-      if (agent === 'isla' && /^daily-improvements/.test(memoryRel)) return true;
-      if (agent === 'isla' && memoryRel === 'voice-research.md') return true;
-      return false;
-    }
-    if (rel.startsWith('docs/plans/')) return true;
-    return ['AGENTS.md', 'CLAUDE.md', 'BOOTSTRAP.md', 'SOUL.md', 'IDENTITY.md', 'NEWSLETTER_RULES.md', 'TOOLS.md', 'dream-log.md'].includes(rel);
-  });
+export function isCurrentAgentHistoryFile(rel: string, agent: string): boolean {
+  if (!rel.endsWith('.md')) return false;
+  if (rel.startsWith(`memory/agents/`) && rel !== `memory/agents/${agent}.md`) return false;
+  if (rel.startsWith('memory/archive/')) return agent === 'isla' && rel.includes('isla');
+  if (rel.startsWith('memory/')) {
+    const memoryRel = rel.slice('memory/'.length);
+    if (memoryRel === 'MEMORY.md') return true;
+    if (memoryRel === `agents/${agent}.md`) return true;
+    if (/^2026-\d{2}-\d{2}/.test(memoryRel)) return true;
+    if (agent === 'isla' && /^daily-improvements/.test(memoryRel)) return true;
+    if (agent === 'isla' && memoryRel === 'voice-research.md') return true;
+    return false;
+  }
+  if (rel.startsWith('docs/plans/')) return true;
+  return ['AGENTS.md', 'CLAUDE.md', 'SOUL.md', 'IDENTITY.md', 'NEWSLETTER_RULES.md', 'TOOLS.md', 'dream-log.md'].includes(rel);
 }
 
-function oldAgentFiles(agent: string): string[] {
-  const explicitFiles = [
-    'AGENTS.md',
-    'BOOTSTRAP.md',
-    'HEARTBEAT.md',
-    'IDENTITY.md',
-    'MEMORY.md',
-    'NEWSLETTER_RULES.md',
-    'SOUL.md',
-  ].flatMap((name) => [
-    path.join(oldOpenClawRoot, `workspace-${agent}`, name),
-    path.join(oldOpenClawRoot, 'agents', agent, name),
-  ]);
+function currentAgentFiles(agent: string): string[] {
+  const root = path.join(agentsRoot, agent);
+  return listFiles(root, (filePath) => isCurrentAgentHistoryFile(path.relative(root, filePath), agent));
+}
 
-  const oldSharedMemoryFiles = [
-    path.join(oldOpenClawRoot, 'workspace', 'memory', `${agent}.md`),
-    path.join(oldOpenClawRoot, 'workspace', 'memory', 'agents', `${agent}.md`),
-    path.join(oldOpenClawRoot, 'workspace', 'memory', 'agents', `${agent}.backup.md`),
-  ];
-
+function claudeProjectMemoryFiles(agent: string): string[] {
   const claudeProjectRoots = [
     path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(agentsRoot, agent)), 'memory'),
-    path.join(claudeProjectsRoot, toClaudeProjectKey(path.join(oldOpenClawRoot, `workspace-${agent}`)), 'memory'),
-  ].filter((p): p is string => !!p);
+  ];
 
   const claudeFiles = claudeProjectRoots.flatMap((root) => listFiles(root, (filePath) => {
     if (!filePath.endsWith('.md')) return false;
@@ -339,8 +317,7 @@ function oldAgentFiles(agent: string): string[] {
     return true;
   }));
 
-  return [...explicitFiles, ...oldSharedMemoryFiles, ...claudeFiles]
-    .filter((filePath) => fs.existsSync(filePath));
+  return claudeFiles.filter((filePath) => fs.existsSync(filePath));
 }
 
 function addFactDb(items: ImportItem[], agent: string, dbPath: string, seenFacts: Set<string>): void {
@@ -524,7 +501,7 @@ function buildItems(agent: string): ImportItem[] {
   const seenFiles = new Set<string>();
   const seenFacts = new Set<string>();
 
-  for (const filePath of [...currentAgentFiles(agent), ...oldAgentFiles(agent)]) {
+  for (const filePath of [...currentAgentFiles(agent), ...claudeProjectMemoryFiles(agent)]) {
     const realPath = fs.realpathSync(filePath);
     if (seenFiles.has(realPath)) continue;
     seenFiles.add(realPath);
@@ -533,8 +510,6 @@ function buildItems(agent: string): ImportItem[] {
 
   addFactDb(items, agent, path.join(agentsRoot, agent, 'memory', 'agent_memory.db'), seenFacts);
   addChunkDb(items, agent, path.join(agentsRoot, agent, 'memory', `${agent}.sqlite`));
-  addFactDb(items, agent, path.join(oldOpenClawRoot, 'workspace', 'memory', 'agent_memory.db'), seenFacts);
-  addChunkDb(items, agent, path.join(oldOpenClawRoot, 'memory', `${agent}.sqlite`));
   addClaudeMem(items, agent);
 
   const seenContent = new Set<string>();
