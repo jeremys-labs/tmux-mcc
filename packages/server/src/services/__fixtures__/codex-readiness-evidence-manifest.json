@@ -20,5 +20,22 @@
     "cursorX": 2,
     "cursorY": 22,
     "finalPromptRow": 22
+  },
+  "independentTmuxOracle": {
+    "path": "codex-readiness-v0.151.0-tmux-oracle.json",
+    "fileSha256": "b70ac25f615c27369aaf6f701ff3914969951d40764741f01ba3986c3931914c",
+    "sourceEventRecordSha256": "9031d6d3640af2f39c4af14ff43921c719c7027c052f488819c0eeafc69eeb7a",
+    "rawScreenSha256": "0578e8e0cf548a5edd25a702764c1effc77d12e5e5d1641395bdd65ee1a4b1e8",
+    "sanitizedScreenSha256": "2ae48b56d5c9079ef8630718552d524672bb47e9dedd012aefd79e6cad69cb84",
+    "cols": 120,
+    "rows": 40,
+    "finalPromptRow": 22
+  },
+  "deploymentCriteria": {
+    "preservedCaptureCount": 1,
+    "fixtureReplayAloneIsSufficient": false,
+    "independentReviewRequired": true,
+    "controlledLiveTurnRequired": true,
+    "liveTurnAcceptance": "The final visibly rendered prompt resolves waitForIdle without a later injection while fallback timing and retry count remain unchanged."
   }
 }
