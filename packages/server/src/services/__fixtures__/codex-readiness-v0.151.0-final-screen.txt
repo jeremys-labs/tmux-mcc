@@ -1,0 +1,20 @@
+OpenAI Codex v0.151.0 — tmux capture-pane after the raw capture signaled complete.
+Terminal geometry: 120x40. Workspace-root prefix reduced to /REDACTED/.
+
+╭─────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.151.0)                              │
+│                                                         │
+│ model:     gpt-5.6-terra medium   /model to change      │
+│ directory: /REDACTED/…/codex-readiness-capture-workspace│
+╰─────────────────────────────────────────────────────────╯
+
+• You have 1 usage limit reset available. Run /usage to use one.
+
+› Reply with exactly CODEX_READINESS_CAPTURE_DONE_20260904 and no other text. Do not use tools.
+
+• CODEX_READINESS_CAPTURE_DONE_20260904
+
+› Ask Codex to do anything
+
+This snapshot is a human-readable rendering check only. The JSON fixture is the
+evidence source: it preserves all 899 node-pty onData callback boundaries and bytes.
