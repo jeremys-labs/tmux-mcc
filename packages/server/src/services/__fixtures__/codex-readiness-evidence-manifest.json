@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "captureTimestamp": "2026-09-03T23:18:33.789Z",
+  "captureCount": 1,
+  "limitation": "This is the only preserved capture of the current cursor-addressed final-prompt failure class.",
+  "streamFixture": {
+    "path": "codex-readiness-v0.151.0-final-prompt.json",
+    "fileSha256": "a5e2f86f23e85961c03e103e3c71d975ae1d1b0d824ac823e8f051de872d2b89",
+    "sanitizedStreamSha256": "e52ac26e69ddbf4b80e3b204a65047ed82a7bddcb4b15df3f7c9a7b622a5fa88",
+    "callbackCount": 899,
+    "byteLength": 142949,
+    "provenance": "Canonical deterministically reduced capture: control bytes, callback order, callback boundaries, and byte lengths are preserved; five workspace-root literals were replaced with equal-length bytes before re-splitting. The unsanitized path-bearing temporary file was deleted after this canonical fixture was committed."
+  },
+  "renderedGolden": {
+    "path": "codex-readiness-v0.151.0-xterm-6.0.0-golden.json",
+    "fileSha256": "da54a45ee40a281044fbebd4a7de4726e4b16e6237312958b8111e4148a664a0",
+    "renderer": "@xterm/headless@6.0.0",
+    "cols": 120,
+    "rows": 40,
+    "cursorX": 2,
+    "cursorY": 22,
+    "finalPromptRow": 22
+  }
+}
