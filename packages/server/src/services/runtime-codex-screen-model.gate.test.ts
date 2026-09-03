@@ -1,11 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import type * as Headless from '@xterm/headless';
-
-const require = createRequire(import.meta.url);
-const { Terminal } = require('@xterm/headless') as typeof Headless;
+import { createRuntimeTerminalScreen } from './runtime-terminal-screen.js';
 
 const fixtureUrl = new URL('./__fixtures__/codex-readiness-v0.151.0-final-prompt.json', import.meta.url);
 const goldenUrl = new URL('./__fixtures__/codex-readiness-v0.151.0-xterm-6.0.0-golden.json', import.meta.url);
@@ -27,27 +23,14 @@ describe('@xterm/headless Friday acceptance gate', () => {
     expect(sha256(goldenBytes)).toBe(manifest.renderedGolden.fileSha256);
     expect(fixture.chunks).toHaveLength(manifest.streamFixture.callbackCount);
 
-    const terminal = new Terminal(golden.renderer.options);
+    const terminal = createRuntimeTerminalScreen(golden.renderer.options);
+    let actual: Awaited<ReturnType<typeof terminal.write>> | undefined;
     for (const chunk of fixture.chunks) {
-      await new Promise<void>((resolve) => {
-        terminal.write(Buffer.from(chunk.dataBase64, 'base64'), resolve);
-      });
+      actual = await terminal.write(Buffer.from(chunk.dataBase64, 'base64'));
     }
 
-    const buffer = terminal.buffer.active;
-    const lines = Array.from({ length: terminal.rows }, (_, row) =>
-      buffer.getLine(buffer.viewportY + row)?.translateToString(false) ?? ''.padEnd(terminal.cols),
-    );
-    const actual = {
-      baseY: buffer.baseY,
-      viewportY: buffer.viewportY,
-      cursorX: buffer.cursorX,
-      cursorY: buffer.cursorY,
-      lines,
-    };
-
-    expect(actual).toEqual(golden.viewport);
-    expect(actual.lines[manifest.renderedGolden.finalPromptRow].trimEnd()).toBe('› Ask Codex to do anything');
+    expect(actual).toMatchObject(golden.viewport);
+    expect(actual!.lines[manifest.renderedGolden.finalPromptRow].trimEnd()).toBe('› Ask Codex to do anything');
     terminal.dispose();
   });
 });
