@@ -24,8 +24,10 @@ import { createAvatarRouter } from './routes/avatars.js';
 import { createCronRouter } from './routes/cron.js';
 import { createEventWebhookRouter } from '@agent-comms/event-inbox';
 import { openEventInboxStore } from './services/event-inbox-store.js';
+import { resolveServerHost } from './server-network.js';
 
 const PORT = parseInt(process.env.SERVER_PORT || '8081', 10);
+const HOST = resolveServerHost();
 
 // Load config and ensure directories
 const contentRoot = resolveContentRoot();
@@ -151,8 +153,8 @@ server.on('upgrade', (request, socket, head) => {
 // Kill any mcc-* sessions left over from a previous server run
 sweepMccSessions();
 
-server.listen(PORT, () => {
-  console.log(`[server] listening on :${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[server] listening on ${HOST}:${PORT}`);
   console.log(`[server] tmux session: ${process.env.TMUX_SESSION ?? 'agents'}`);
   console.log(`[Server] Content root: ${contentRoot}`);
   console.log(`[Server] Agents: ${Object.keys(config.agents).join(', ')}`);
