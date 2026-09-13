@@ -356,7 +356,12 @@ describe('runtime health', () => {
     expect(report.agents[0].codexOutboundDiscordMcp.detail).toContain('Codex config missing');
     expect(report.agents[0].migrationReadiness.status).toBe('error');
     expect(report.agents[0].migrationReadiness.detail).toContain('ob1-key');
-    expect(report.summary.status).toBe('warn');
+    // `worstStatus` returns 'error' if ANY check is error, and migrationReadiness above IS
+    // error -- so 'warn' here asserted that the summary DOWNGRADES an error, which would be
+    // the false-green shape this repo spends its time eliminating. The production code was
+    // always right; this expectation went stale in 420ded8 and took the suite's usability
+    // as a gate with it for a month.
+    expect(report.summary.status).toBe('error');
   });
 
   it('passes Codex adapter checks when inbound bridge and outbound MCP are configured', async () => {
