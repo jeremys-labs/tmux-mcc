@@ -378,11 +378,15 @@ async function main(): Promise<void> {
   const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const state = readMonitorState(statePath);
   const nextState: MonitorState = { ...state };
-  // Each alert carries the agents it is ABOUT, so the send step can refuse to deliver a
-  // finding into the subject's own channel. On 2026-09-12 `consumed_idle_no_reply` for a
-  // dead runtime was posted into that runtime's own channel -- correct detection, delivered
-  // to the one place that could not act on it. The detector was never broken; the
-  // destination was. (Isla's diagnosis; Marcus's build.)
+  // Only ever populated via `alertFrom`, which accepts a branded `Deliverable` that only
+  // `planAlertDispatch` can produce. THE PARTITION enforces "never a finding into its own
+  // subject's channel" -- the send step does not check, and must not: a second enforcement
+  // point there would `continue` past an already-stamped fingerprint. Assembling an alert
+  // from an unpartitioned set is a compile error, not a convention.
+  //
+  // On 2026-09-12 `consumed_idle_no_reply` for a dead runtime was posted into that
+  // runtime's own channel -- correct detection, delivered to the one place that could not
+  // act on it. The detector was never broken; the destination was. (Isla's diagnosis.)
   const alerts: Array<{ text: string; subjects: string[] }> = [];
   // Findings whose subject IS the destination. They cannot go to that channel, so they are
   // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
