@@ -524,10 +524,9 @@ async function main(): Promise<void> {
 
   if (withheldSubjects.length > 0) {
     process.stdout.write(
-      `runtime monitor WITHHELD ${withheldSubjects.length} finding(s) about `
-      + `${[...new Set(withheldSubjects)].join(', ')} from destination ${agent}`
+      `runtime monitor WITHHELD ${withheldSubjects.length} finding(s) from destination ${agent}`
       + ` (delivered ${alerts.reduce((total, entry) => total + entry.subjects.length, 0)} finding(s) in the same pass):`
-      + ` a finding cannot be delivered to its own subject's channel.`
+      + ` ${withholdReason({ destinationAgent: agent, subjects: withheldSubjects })}.`
       + ` NOT DELIVERED ANYWHERE, and NOT fingerprinted, so they re-raise every run until routed.\n`,
     );
   }
@@ -542,17 +541,13 @@ async function main(): Promise<void> {
   process.stdout.write(`runtime delivery/reply monitor findings at ${report.generatedAtIso} — ${summary}\n`);
   if (!dryRun) {
     for (const entry of alerts) {
-      // NEVER the subject's own channel. Withholding is logged loudly rather than silently
-      // skipped: an alert that is not sent and not reported is the false close this whole
-      // change exists to stop -- the record would say the monitor ran and found nothing.
-      const withheld = withholdReason({ destinationAgent: agent, subjects: entry.subjects });
-      if (withheld) {
-        process.stdout.write(
-          `runtime monitor WITHHELD an alert from ${agent}: ${withheld}.`
-          + ` NOT DELIVERED ANYWHERE. Route findings to an operator destination that is never a subject.\n`,
-        );
-        continue;
-      }
+      // No subject check here, deliberately. `alerts` is built exclusively from the
+      // deliverable partitions, which exclude the destination BY CONSTRUCTION. A second
+      // enforcement point that cannot fire is not a backstop -- it is somewhere the rule
+      // rots out of sync, and this one would have `continue`d PAST an already-stamped
+      // fingerprint, holding Eli's permanent-suppression bug intact behind an upstream
+      // guarantee. Latent defect + second mechanism that hides it = the safe-looking
+      // change is the one that arms it. (Isla found this in re-review of 75d0bac.)
       await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
     }
     writeMonitorState(statePath, nextState);
