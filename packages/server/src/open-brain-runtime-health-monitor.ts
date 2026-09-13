@@ -323,19 +323,43 @@ export function monitorSummary(input: {
  * in the wrong order — the bug lived at the call site while the tests asserted properties of
  * the helpers. Making the invariant unrepresentable beats testing that nobody broke it.
  */
+declare const DeliverableBrand: unique symbol;
+
+/**
+ * A set of findings that has passed the subject/destination partition. Only
+ * `planAlertDispatch` can produce one, and only a `Deliverable` can become an alert
+ * (see `alertFrom`). The invariant now lives in ONE place and the compiler objects if
+ * anyone assembles an alert from another source -- which is what makes deleting the
+ * redundant send-loop guard safe rather than one refactor away from wrong. (Eli's ask
+ * after Isla found the dead branch.)
+ */
+export type Deliverable<T> = T[] & { readonly [DeliverableBrand]: true };
+
 export function planAlertDispatch<T>(input: {
   items: T[];
   destinationAgent: string;
   subjectOf: (item: T) => string;
   fingerprintOf: (items: T[]) => string;
-}): { deliverable: T[]; withheld: T[]; fingerprint: string | null } {
+}): { deliverable: Deliverable<T>; withheld: T[]; fingerprint: string | null } {
   const { deliverable, withheld } = partitionBySubject(input.items, input.destinationAgent, input.subjectOf);
   return {
-    deliverable,
+    deliverable: deliverable as Deliverable<T>,
     withheld,
     // null means "nothing was delivered, so record nothing as handled" -- the re-raise path.
     fingerprint: deliverable.length > 0 ? input.fingerprintOf(deliverable) : null,
   };
+}
+
+/**
+ * The ONLY constructor of an alert entry. Takes a `Deliverable`, so an alert cannot be
+ * built from an unpartitioned set without a compile error.
+ */
+export function alertFrom<T>(
+  deliverable: Deliverable<T>,
+  format: (items: T[]) => string,
+  subjectOf: (item: T) => string,
+): { text: string; subjects: string[] } {
+  return { text: format(deliverable), subjects: deliverable.map(subjectOf) };
 }
 
 async function main(): Promise<void> {
@@ -405,10 +429,11 @@ async function main(): Promise<void> {
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alerts.push({
-        text: formatDeliveryFailureAlert({ ...report, agents: deliverySplit.deliverable }),
-        subjects: deliverySplit.deliverable.map((failure) => failure.agent),
-      });
+      alerts.push(alertFrom(
+        deliverySplit.deliverable,
+        (agents) => formatDeliveryFailureAlert({ ...report, agents }),
+        (failure) => failure.agent,
+      ));
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
       nextState.lastFingerprint = fingerprint;
@@ -498,10 +523,11 @@ async function main(): Promise<void> {
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
-      alerts.push({
-        text: formatInboundReplyMissAlert({ ...inboundResult, misses: inboundSplit.deliverable }),
-        subjects: inboundSplit.deliverable.map((miss) => miss.agent),
-      });
+      alerts.push(alertFrom(
+        inboundSplit.deliverable,
+        (misses) => formatInboundReplyMissAlert({ ...inboundResult, misses }),
+        (miss) => miss.agent,
+      ));
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }
