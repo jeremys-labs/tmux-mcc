@@ -259,6 +259,109 @@ async function restartAgentForDelivery(supervisorUrl: string, agent: string, che
   if (!response.ok) throw new Error(`supervisor restart failed ${response.status}: ${body}`);
 }
 
+/**
+ * A finding must never be delivered into a channel belonging to one of its own subjects.
+ * 2026-09-12: `consumed_idle_no_reply` for a dead runtime was posted into that runtime's own
+ * channel — correct detection, delivered to the one place that could not act on it.
+ *
+ * Exported because it is the load-bearing rule of this file. Left inline it would be
+ * untestable, and an untestable guard is one nobody can prove still works.
+ */
+export function withholdReason(input: { destinationAgent: string; subjects: string[] }): string | null {
+  const subjects = [...new Set(input.subjects)];
+  if (!subjects.includes(input.destinationAgent)) return null;
+  return `it is about ${subjects.join(', ')} and ${input.destinationAgent} is among its subjects,`
+    + ` so that channel cannot be trusted to act on it`;
+}
+
+/**
+ * PARTITION, DO NOT DROP. An alert batch carries many subjects, so blocking the whole batch
+ * when one subject matches the destination loses every other agent's finding as collateral.
+ * The invariant is per-FINDING -- "a finding about X must not reach X" -- so the split is
+ * per-finding too: deliver everything that does not name the destination, withhold only what
+ * does. Isla found this pre-merge; without it the guard's cost scales with the destination
+ * agent's own message volume, and she is 625 of 1,369 breadcrumbs.
+ */
+export function partitionBySubject<T>(
+  items: T[],
+  destinationAgent: string,
+  subjectOf: (item: T) => string,
+): { deliverable: T[]; withheld: T[] } {
+  const deliverable: T[] = [];
+  const withheld: T[] = [];
+  for (const item of items) {
+    (subjectOf(item) === destinationAgent ? withheld : deliverable).push(item);
+  }
+  return { deliverable, withheld };
+}
+
+/**
+ * A BARE `ok` IS NOT A RESULT. This monitor printed one every five minutes for months, and
+ * three people read source code to establish what it covered — not because coverage was
+ * wrong (it is fleet-wide) but because the output could not say so either way.
+ * "Nothing to report" and "looked at almost nothing" are the same sentence without a
+ * denominator.
+ */
+export function monitorSummary(input: {
+  inboundFindings: number;
+  expectedCount: number;
+  matchedCount: number;
+  deferredCount: number;
+  skippedCount: number;
+  deliveryFindings: number;
+  agentsKnown: number;
+}): string {
+  return `inbound ${input.inboundFindings} finding(s) over ${input.expectedCount} expectation(s)`
+    + ` (matched ${input.matchedCount}, deferred ${input.deferredCount}, skipped ${input.skippedCount});`
+    + ` delivery ${input.deliveryFindings} finding(s) over ${input.agentsKnown} agent(s) known to the supervisor`;
+}
+
+/**
+ * Binds the dedup fingerprint to the DELIVERABLE set by construction, so the call site
+ * cannot fingerprint the wrong one. My first version partitioned and fingerprinted as two
+ * separate statements, and a red-verify showed the suite could not see them being put back
+ * in the wrong order — the bug lived at the call site while the tests asserted properties of
+ * the helpers. Making the invariant unrepresentable beats testing that nobody broke it.
+ */
+declare const DeliverableBrand: unique symbol;
+
+/**
+ * A set of findings that has passed the subject/destination partition. Only
+ * `planAlertDispatch` can produce one, and only a `Deliverable` can become an alert
+ * (see `alertFrom`). The invariant now lives in ONE place and the compiler objects if
+ * anyone assembles an alert from another source -- which is what makes deleting the
+ * redundant send-loop guard safe rather than one refactor away from wrong. (Eli's ask
+ * after Isla found the dead branch.)
+ */
+export type Deliverable<T> = T[] & { readonly [DeliverableBrand]: true };
+
+export function planAlertDispatch<T>(input: {
+  items: T[];
+  destinationAgent: string;
+  subjectOf: (item: T) => string;
+  fingerprintOf: (items: T[]) => string;
+}): { deliverable: Deliverable<T>; withheld: T[]; fingerprint: string | null } {
+  const { deliverable, withheld } = partitionBySubject(input.items, input.destinationAgent, input.subjectOf);
+  return {
+    deliverable: deliverable as Deliverable<T>,
+    withheld,
+    // null means "nothing was delivered, so record nothing as handled" -- the re-raise path.
+    fingerprint: deliverable.length > 0 ? input.fingerprintOf(deliverable) : null,
+  };
+}
+
+/**
+ * The ONLY constructor of an alert entry. Takes a `Deliverable`, so an alert cannot be
+ * built from an unpartitioned set without a compile error.
+ */
+export function alertFrom<T>(
+  deliverable: Deliverable<T>,
+  format: (items: T[]) => string,
+  subjectOf: (item: T) => string,
+): { text: string; subjects: string[] } {
+  return { text: format(deliverable), subjects: deliverable.map(subjectOf) };
+}
+
 async function main(): Promise<void> {
   const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
   const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
@@ -275,7 +378,22 @@ async function main(): Promise<void> {
   const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const state = readMonitorState(statePath);
   const nextState: MonitorState = { ...state };
-  const alertMessages: string[] = [];
+  // Only ever populated via `alertFrom`, which accepts a branded `Deliverable` that only
+  // `planAlertDispatch` can produce. THE PARTITION enforces "never a finding into its own
+  // subject's channel" -- the send step does not check, and must not: a second enforcement
+  // point there would `continue` past an already-stamped fingerprint. Assembling an alert
+  // from an unpartitioned set is a compile error, not a convention.
+  //
+  // On 2026-09-12 `consumed_idle_no_reply` for a dead runtime was posted into that
+  // runtime's own channel -- correct detection, delivered to the one place that could not
+  // act on it. The detector was never broken; the destination was. (Isla's diagnosis.)
+  const alerts: Array<{ text: string; subjects: string[] }> = [];
+  // Findings whose subject IS the destination. They cannot go to that channel, so they are
+  // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
+  // (operator -> Jeremy's DM -> log honestly) this list is what the second hop must carry;
+  // until that hop exists these findings reach the log and nowhere else, and saying so is
+  // the point.
+  const withheldSubjects: string[] = [];
 
   const deliveryRecovery = await recoverDeliveryFailuresBeforeAlert({
     failures,
@@ -289,16 +407,37 @@ async function main(): Promise<void> {
   nextState.deliveryRecoveryAttempts = deliveryRecovery.attempts;
   const deliveryAlertFailures = deliveryRecovery.alerts;
 
-  if (deliveryAlertFailures.length === 0) {
+  // PARTITION BEFORE FINGERPRINTING. The dedup fingerprint must describe what was
+  // DELIVERED, never what was merely queued. Fingerprinting the whole batch marks a
+  // withheld finding as sent, and the next run suppresses it as a duplicate -- announced
+  // once to stdout and then silent forever, which is worse than the 09-12 bug it replaces
+  // because 09-12 at least kept shouting into the wrong channel. (Eli, must-fix on b49fd06.)
+  // Withheld findings are deliberately absent from the fingerprint so they re-raise every
+  // run until someone routes them: withholding means nobody has been told yet.
+  const deliverySplit = planAlertDispatch({
+    items: deliveryAlertFailures,
+    destinationAgent: agent,
+    subjectOf: (failure) => failure.agent,
+    fingerprintOf: deliveryFailureFingerprint,
+  });
+  if (deliverySplit.withheld.length > 0) {
+    withheldSubjects.push(...deliverySplit.withheld.map((failure) => failure.agent));
+  }
+
+  if (deliverySplit.deliverable.length === 0) {
     nextState.lastFingerprint = undefined;
     nextState.lastDeliveryFingerprint = undefined;
   } else {
-    const fingerprint = deliveryFailureFingerprint(deliveryAlertFailures);
+    const fingerprint = deliverySplit.fingerprint as string;
     const previous = state.lastDeliveryFingerprint ?? state.lastFingerprint;
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alertMessages.push(formatDeliveryFailureAlert({ ...report, agents: deliveryAlertFailures }));
+      alerts.push(alertFrom(
+        deliverySplit.deliverable,
+        (agents) => formatDeliveryFailureAlert({ ...report, agents }),
+        (failure) => failure.agent,
+      ));
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
       nextState.lastFingerprint = fingerprint;
@@ -369,29 +508,77 @@ async function main(): Promise<void> {
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
 
-  if (inboundAlertMisses.length === 0) {
+  // Same ordering as the delivery path above, for the same reason: the fingerprint must
+  // describe the DELIVERED set only, so a withheld finding re-raises every run.
+  const inboundSplit = planAlertDispatch({
+    items: inboundAlertMisses,
+    destinationAgent: agent,
+    subjectOf: (miss) => miss.agent,
+    fingerprintOf: inboundReplyMissFingerprint,
+  });
+  if (inboundSplit.withheld.length > 0) {
+    withheldSubjects.push(...inboundSplit.withheld.map((miss) => miss.agent));
+  }
+
+  if (inboundSplit.deliverable.length === 0) {
     nextState.lastInboundReplyFingerprint = undefined;
   } else {
-    const fingerprint = inboundReplyMissFingerprint(inboundAlertMisses);
+    const fingerprint = inboundSplit.fingerprint as string;
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
-      alertMessages.push(formatInboundReplyMissAlert({ ...inboundResult, misses: inboundAlertMisses }));
+      alerts.push(alertFrom(
+        inboundSplit.deliverable,
+        (misses) => formatInboundReplyMissAlert({ ...inboundResult, misses }),
+        (miss) => miss.agent,
+      ));
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }
   }
 
-  if (alertMessages.length === 0) {
-    process.stdout.write(`runtime delivery/reply monitor ok at ${report.generatedAtIso}\n`);
+  // A BARE `ok` IS NOT A RESULT. This line printed every 5 minutes for months and three
+  // people read source code to find out what it covered -- not because coverage was wrong
+  // (it is fleet-wide), but because the output could not say so either way. A check that
+  // cannot state its denominator cannot be read, and "nothing to report" and "looked at
+  // almost nothing" are the same sentence without one.
+  const summary = monitorSummary({
+    inboundFindings: inboundResult.misses.length,
+    expectedCount: inboundResult.expectedCount,
+    matchedCount: inboundResult.matchedCount,
+    deferredCount: inboundResult.deferredCount,
+    skippedCount: inboundResult.skippedCount,
+    deliveryFindings: deliveryAlertFailures.length,
+    agentsKnown: supervisorStatuses.length,
+  });
+
+  if (withheldSubjects.length > 0) {
+    process.stdout.write(
+      `runtime monitor WITHHELD ${withheldSubjects.length} finding(s) from destination ${agent}`
+      + ` (delivered ${alerts.reduce((total, entry) => total + entry.subjects.length, 0)} finding(s) in the same pass):`
+      + ` ${withholdReason({ destinationAgent: agent, subjects: withheldSubjects })}.`
+      + ` NOT DELIVERED ANYWHERE, and NOT fingerprinted, so they re-raise every run until routed.\n`,
+    );
+  }
+
+  if (alerts.length === 0) {
+    process.stdout.write(`runtime delivery/reply monitor ok at ${report.generatedAtIso} — ${summary}\n`);
     if (!dryRun) writeMonitorState(statePath, nextState);
     return;
   }
 
-  process.stdout.write(`${alertMessages.join('\n\n')}\n`);
+  process.stdout.write(`${alerts.map((entry) => entry.text).join('\n\n')}\n`);
+  process.stdout.write(`runtime delivery/reply monitor findings at ${report.generatedAtIso} — ${summary}\n`);
   if (!dryRun) {
-    for (const message of alertMessages) {
-      await sendDiscordMessage({ agent, chatId, text: message, socketPath });
+    for (const entry of alerts) {
+      // No subject check here, deliberately. `alerts` is built exclusively from the
+      // deliverable partitions, which exclude the destination BY CONSTRUCTION. A second
+      // enforcement point that cannot fire is not a backstop -- it is somewhere the rule
+      // rots out of sync, and this one would have `continue`d PAST an already-stamped
+      // fingerprint, holding Eli's permanent-suppression bug intact behind an upstream
+      // guarantee. Latent defect + second mechanism that hides it = the safe-looking
+      // change is the one that arms it. (Isla found this in re-review of 75d0bac.)
+      await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
     }
     writeMonitorState(statePath, nextState);
   }
