@@ -5,6 +5,8 @@ import {
   formatDeliveryFailureAlert,
   recoverDeliveryFailuresBeforeAlert,
   recoveryAttemptStillInGrace,
+  withholdReason,
+  monitorSummary,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
@@ -124,5 +126,64 @@ describe('runtime health monitor', () => {
       restart: async () => undefined,
     });
     expect(expired.alerts[0].discordInboxDelivery.detail).toContain('did not clear the queue');
+  });
+});
+
+describe('a finding is never delivered into a subject\'s own channel (2026-09-12)', () => {
+  it('withholds when the destination is the subject — the exact 09-12 failure', () => {
+    // consumed_idle_no_reply for eli's dead runtime was posted into eli's own channel.
+    const reason = withholdReason({ destinationAgent: 'eli', subjects: ['eli'] });
+    expect(reason).not.toBeNull();
+    expect(reason).toContain('eli');
+  });
+
+  it('delivers when the destination is not a subject', () => {
+    expect(withholdReason({ destinationAgent: 'isla', subjects: ['dana'] })).toBeNull();
+  });
+
+  it('withholds when the destination is ONE OF SEVERAL subjects', () => {
+    // The partial case: an alert about dana AND eli must not go to eli just because dana
+    // is also in it. Over-blocking here is correct; under-blocking is the 09-12 bug.
+    expect(withholdReason({ destinationAgent: 'eli', subjects: ['dana', 'eli'] })).not.toBeNull();
+  });
+
+  it('delivers an alert with no subjects — it cannot be about the destination', () => {
+    expect(withholdReason({ destinationAgent: 'eli', subjects: [] })).toBeNull();
+  });
+
+  it('names every distinct subject in the reason, so the withheld finding is not lost', () => {
+    // A withheld alert that does not say what it was about is the false close this
+    // change exists to prevent.
+    const reason = withholdReason({ destinationAgent: 'eli', subjects: ['dana', 'eli', 'dana'] });
+    expect(reason).toContain('dana');
+    expect(reason).toContain('eli');
+    expect(reason?.match(/dana/g)).toHaveLength(1);
+  });
+});
+
+describe('a bare ok is not a result', () => {
+  it('states the denominator even when there is nothing to report', () => {
+    const summary = monitorSummary({
+      inboundFindings: 0, expectedCount: 1369, matchedCount: 1300,
+      deferredCount: 60, skippedCount: 9, deliveryFindings: 0, agentsKnown: 15,
+    });
+    // The number that three people read source code to find.
+    expect(summary).toContain('1369');
+    expect(summary).toContain('15 agent(s)');
+    expect(summary).toContain('0 finding(s)');
+  });
+
+  it('distinguishes "nothing to report" from "looked at almost nothing"', () => {
+    const healthy = monitorSummary({
+      inboundFindings: 0, expectedCount: 1369, matchedCount: 1369,
+      deferredCount: 0, skippedCount: 0, deliveryFindings: 0, agentsKnown: 15,
+    });
+    const blind = monitorSummary({
+      inboundFindings: 0, expectedCount: 0, matchedCount: 0,
+      deferredCount: 0, skippedCount: 0, deliveryFindings: 0, agentsKnown: 0,
+    });
+    // Both are "no findings". Only the denominator separates them, which is the entire point.
+    expect(healthy).not.toEqual(blind);
+    expect(blind).toContain('over 0 expectation(s)');
   });
 });

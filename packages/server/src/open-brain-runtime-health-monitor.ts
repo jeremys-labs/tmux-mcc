@@ -259,6 +259,42 @@ async function restartAgentForDelivery(supervisorUrl: string, agent: string, che
   if (!response.ok) throw new Error(`supervisor restart failed ${response.status}: ${body}`);
 }
 
+/**
+ * A finding must never be delivered into a channel belonging to one of its own subjects.
+ * 2026-09-12: `consumed_idle_no_reply` for a dead runtime was posted into that runtime's own
+ * channel — correct detection, delivered to the one place that could not act on it.
+ *
+ * Exported because it is the load-bearing rule of this file. Left inline it would be
+ * untestable, and an untestable guard is one nobody can prove still works.
+ */
+export function withholdReason(input: { destinationAgent: string; subjects: string[] }): string | null {
+  const subjects = [...new Set(input.subjects)];
+  if (!subjects.includes(input.destinationAgent)) return null;
+  return `it is about ${subjects.join(', ')} and ${input.destinationAgent} is among its subjects,`
+    + ` so that channel cannot be trusted to act on it`;
+}
+
+/**
+ * A BARE `ok` IS NOT A RESULT. This monitor printed one every five minutes for months, and
+ * three people read source code to establish what it covered — not because coverage was
+ * wrong (it is fleet-wide) but because the output could not say so either way.
+ * "Nothing to report" and "looked at almost nothing" are the same sentence without a
+ * denominator.
+ */
+export function monitorSummary(input: {
+  inboundFindings: number;
+  expectedCount: number;
+  matchedCount: number;
+  deferredCount: number;
+  skippedCount: number;
+  deliveryFindings: number;
+  agentsKnown: number;
+}): string {
+  return `inbound ${input.inboundFindings} finding(s) over ${input.expectedCount} expectation(s)`
+    + ` (matched ${input.matchedCount}, deferred ${input.deferredCount}, skipped ${input.skippedCount});`
+    + ` delivery ${input.deliveryFindings} finding(s) over ${input.agentsKnown} agent(s) known to the supervisor`;
+}
+
 async function main(): Promise<void> {
   const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
   const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
@@ -275,7 +311,12 @@ async function main(): Promise<void> {
   const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const state = readMonitorState(statePath);
   const nextState: MonitorState = { ...state };
-  const alertMessages: string[] = [];
+  // Each alert carries the agents it is ABOUT, so the send step can refuse to deliver a
+  // finding into the subject's own channel. On 2026-09-12 `consumed_idle_no_reply` for a
+  // dead runtime was posted into that runtime's own channel -- correct detection, delivered
+  // to the one place that could not act on it. The detector was never broken; the
+  // destination was. (Isla's diagnosis; Marcus's build.)
+  const alerts: Array<{ text: string; subjects: string[] }> = [];
 
   const deliveryRecovery = await recoverDeliveryFailuresBeforeAlert({
     failures,
@@ -298,7 +339,10 @@ async function main(): Promise<void> {
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alertMessages.push(formatDeliveryFailureAlert({ ...report, agents: deliveryAlertFailures }));
+      alerts.push({
+        text: formatDeliveryFailureAlert({ ...report, agents: deliveryAlertFailures }),
+        subjects: deliveryAlertFailures.map((failure) => failure.agent),
+      });
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
       nextState.lastFingerprint = fingerprint;
@@ -376,22 +420,52 @@ async function main(): Promise<void> {
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
-      alertMessages.push(formatInboundReplyMissAlert({ ...inboundResult, misses: inboundAlertMisses }));
+      alerts.push({
+        text: formatInboundReplyMissAlert({ ...inboundResult, misses: inboundAlertMisses }),
+        subjects: inboundAlertMisses.map((miss) => miss.agent),
+      });
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }
   }
 
-  if (alertMessages.length === 0) {
-    process.stdout.write(`runtime delivery/reply monitor ok at ${report.generatedAtIso}\n`);
+  // A BARE `ok` IS NOT A RESULT. This line printed every 5 minutes for months and three
+  // people read source code to find out what it covered -- not because coverage was wrong
+  // (it is fleet-wide), but because the output could not say so either way. A check that
+  // cannot state its denominator cannot be read, and "nothing to report" and "looked at
+  // almost nothing" are the same sentence without one.
+  const summary = monitorSummary({
+    inboundFindings: inboundResult.misses.length,
+    expectedCount: inboundResult.expectedCount,
+    matchedCount: inboundResult.matchedCount,
+    deferredCount: inboundResult.deferredCount,
+    skippedCount: inboundResult.skippedCount,
+    deliveryFindings: deliveryAlertFailures.length,
+    agentsKnown: supervisorStatuses.length,
+  });
+
+  if (alerts.length === 0) {
+    process.stdout.write(`runtime delivery/reply monitor ok at ${report.generatedAtIso} — ${summary}\n`);
     if (!dryRun) writeMonitorState(statePath, nextState);
     return;
   }
 
-  process.stdout.write(`${alertMessages.join('\n\n')}\n`);
+  process.stdout.write(`${alerts.map((entry) => entry.text).join('\n\n')}\n`);
+  process.stdout.write(`runtime delivery/reply monitor findings at ${report.generatedAtIso} — ${summary}\n`);
   if (!dryRun) {
-    for (const message of alertMessages) {
-      await sendDiscordMessage({ agent, chatId, text: message, socketPath });
+    for (const entry of alerts) {
+      // NEVER the subject's own channel. Withholding is logged loudly rather than silently
+      // skipped: an alert that is not sent and not reported is the false close this whole
+      // change exists to stop -- the record would say the monitor ran and found nothing.
+      const withheld = withholdReason({ destinationAgent: agent, subjects: entry.subjects });
+      if (withheld) {
+        process.stdout.write(
+          `runtime monitor WITHHELD an alert from ${agent}: ${withheld}.`
+          + ` NOT DELIVERED ANYWHERE. Route findings to an operator destination that is never a subject.\n`,
+        );
+        continue;
+      }
+      await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
     }
     writeMonitorState(statePath, nextState);
   }
