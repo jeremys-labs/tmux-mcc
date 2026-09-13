@@ -275,6 +275,27 @@ export function withholdReason(input: { destinationAgent: string; subjects: stri
 }
 
 /**
+ * PARTITION, DO NOT DROP. An alert batch carries many subjects, so blocking the whole batch
+ * when one subject matches the destination loses every other agent's finding as collateral.
+ * The invariant is per-FINDING -- "a finding about X must not reach X" -- so the split is
+ * per-finding too: deliver everything that does not name the destination, withhold only what
+ * does. Isla found this pre-merge; without it the guard's cost scales with the destination
+ * agent's own message volume, and she is 625 of 1,369 breadcrumbs.
+ */
+export function partitionBySubject<T>(
+  items: T[],
+  destinationAgent: string,
+  subjectOf: (item: T) => string,
+): { deliverable: T[]; withheld: T[] } {
+  const deliverable: T[] = [];
+  const withheld: T[] = [];
+  for (const item of items) {
+    (subjectOf(item) === destinationAgent ? withheld : deliverable).push(item);
+  }
+  return { deliverable, withheld };
+}
+
+/**
  * A BARE `ok` IS NOT A RESULT. This monitor printed one every five minutes for months, and
  * three people read source code to establish what it covered — not because coverage was
  * wrong (it is fleet-wide) but because the output could not say so either way.
@@ -293,6 +314,28 @@ export function monitorSummary(input: {
   return `inbound ${input.inboundFindings} finding(s) over ${input.expectedCount} expectation(s)`
     + ` (matched ${input.matchedCount}, deferred ${input.deferredCount}, skipped ${input.skippedCount});`
     + ` delivery ${input.deliveryFindings} finding(s) over ${input.agentsKnown} agent(s) known to the supervisor`;
+}
+
+/**
+ * Binds the dedup fingerprint to the DELIVERABLE set by construction, so the call site
+ * cannot fingerprint the wrong one. My first version partitioned and fingerprinted as two
+ * separate statements, and a red-verify showed the suite could not see them being put back
+ * in the wrong order — the bug lived at the call site while the tests asserted properties of
+ * the helpers. Making the invariant unrepresentable beats testing that nobody broke it.
+ */
+export function planAlertDispatch<T>(input: {
+  items: T[];
+  destinationAgent: string;
+  subjectOf: (item: T) => string;
+  fingerprintOf: (items: T[]) => string;
+}): { deliverable: T[]; withheld: T[]; fingerprint: string | null } {
+  const { deliverable, withheld } = partitionBySubject(input.items, input.destinationAgent, input.subjectOf);
+  return {
+    deliverable,
+    withheld,
+    // null means "nothing was delivered, so record nothing as handled" -- the re-raise path.
+    fingerprint: deliverable.length > 0 ? input.fingerprintOf(deliverable) : null,
+  };
 }
 
 async function main(): Promise<void> {
@@ -317,6 +360,12 @@ async function main(): Promise<void> {
   // to the one place that could not act on it. The detector was never broken; the
   // destination was. (Isla's diagnosis; Marcus's build.)
   const alerts: Array<{ text: string; subjects: string[] }> = [];
+  // Findings whose subject IS the destination. They cannot go to that channel, so they are
+  // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
+  // (operator -> Jeremy's DM -> log honestly) this list is what the second hop must carry;
+  // until that hop exists these findings reach the log and nowhere else, and saying so is
+  // the point.
+  const withheldSubjects: string[] = [];
 
   const deliveryRecovery = await recoverDeliveryFailuresBeforeAlert({
     failures,
@@ -330,18 +379,35 @@ async function main(): Promise<void> {
   nextState.deliveryRecoveryAttempts = deliveryRecovery.attempts;
   const deliveryAlertFailures = deliveryRecovery.alerts;
 
-  if (deliveryAlertFailures.length === 0) {
+  // PARTITION BEFORE FINGERPRINTING. The dedup fingerprint must describe what was
+  // DELIVERED, never what was merely queued. Fingerprinting the whole batch marks a
+  // withheld finding as sent, and the next run suppresses it as a duplicate -- announced
+  // once to stdout and then silent forever, which is worse than the 09-12 bug it replaces
+  // because 09-12 at least kept shouting into the wrong channel. (Eli, must-fix on b49fd06.)
+  // Withheld findings are deliberately absent from the fingerprint so they re-raise every
+  // run until someone routes them: withholding means nobody has been told yet.
+  const deliverySplit = planAlertDispatch({
+    items: deliveryAlertFailures,
+    destinationAgent: agent,
+    subjectOf: (failure) => failure.agent,
+    fingerprintOf: deliveryFailureFingerprint,
+  });
+  if (deliverySplit.withheld.length > 0) {
+    withheldSubjects.push(...deliverySplit.withheld.map((failure) => failure.agent));
+  }
+
+  if (deliverySplit.deliverable.length === 0) {
     nextState.lastFingerprint = undefined;
     nextState.lastDeliveryFingerprint = undefined;
   } else {
-    const fingerprint = deliveryFailureFingerprint(deliveryAlertFailures);
+    const fingerprint = deliverySplit.fingerprint as string;
     const previous = state.lastDeliveryFingerprint ?? state.lastFingerprint;
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
       alerts.push({
-        text: formatDeliveryFailureAlert({ ...report, agents: deliveryAlertFailures }),
-        subjects: deliveryAlertFailures.map((failure) => failure.agent),
+        text: formatDeliveryFailureAlert({ ...report, agents: deliverySplit.deliverable }),
+        subjects: deliverySplit.deliverable.map((failure) => failure.agent),
       });
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
@@ -413,16 +479,28 @@ async function main(): Promise<void> {
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
 
-  if (inboundAlertMisses.length === 0) {
+  // Same ordering as the delivery path above, for the same reason: the fingerprint must
+  // describe the DELIVERED set only, so a withheld finding re-raises every run.
+  const inboundSplit = planAlertDispatch({
+    items: inboundAlertMisses,
+    destinationAgent: agent,
+    subjectOf: (miss) => miss.agent,
+    fingerprintOf: inboundReplyMissFingerprint,
+  });
+  if (inboundSplit.withheld.length > 0) {
+    withheldSubjects.push(...inboundSplit.withheld.map((miss) => miss.agent));
+  }
+
+  if (inboundSplit.deliverable.length === 0) {
     nextState.lastInboundReplyFingerprint = undefined;
   } else {
-    const fingerprint = inboundReplyMissFingerprint(inboundAlertMisses);
+    const fingerprint = inboundSplit.fingerprint as string;
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
       alerts.push({
-        text: formatInboundReplyMissAlert({ ...inboundResult, misses: inboundAlertMisses }),
-        subjects: inboundAlertMisses.map((miss) => miss.agent),
+        text: formatInboundReplyMissAlert({ ...inboundResult, misses: inboundSplit.deliverable }),
+        subjects: inboundSplit.deliverable.map((miss) => miss.agent),
       });
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
@@ -443,6 +521,16 @@ async function main(): Promise<void> {
     deliveryFindings: deliveryAlertFailures.length,
     agentsKnown: supervisorStatuses.length,
   });
+
+  if (withheldSubjects.length > 0) {
+    process.stdout.write(
+      `runtime monitor WITHHELD ${withheldSubjects.length} finding(s) about `
+      + `${[...new Set(withheldSubjects)].join(', ')} from destination ${agent}`
+      + ` (delivered ${alerts.reduce((total, entry) => total + entry.subjects.length, 0)} finding(s) in the same pass):`
+      + ` a finding cannot be delivered to its own subject's channel.`
+      + ` NOT DELIVERED ANYWHERE, and NOT fingerprinted, so they re-raise every run until routed.\n`,
+    );
+  }
 
   if (alerts.length === 0) {
     process.stdout.write(`runtime delivery/reply monitor ok at ${report.generatedAtIso} — ${summary}\n`);
