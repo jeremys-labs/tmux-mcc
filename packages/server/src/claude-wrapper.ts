@@ -124,7 +124,7 @@ const pollers = startRuntimeInboxPollers({
     submitHandoff: async (prompt) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
       await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
-      await stdinGate.run(() => submitRuntimePrompt(term, prompt, { submitDelayMs: 250 }));
+      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'handoff',

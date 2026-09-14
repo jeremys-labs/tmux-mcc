@@ -53,7 +53,7 @@ describe('runtime pty — a large prompt must not outrun the terminal', () => {
     expect(writes[writes.length - 1]).toBe('\r');
   });
 
-  it('scales the pre-submit delay with prompt size rather than a flat 80ms', async () => {
+  it('scales the pre-submit delay with prompt size rather than a flat constant', async () => {
     const waits: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
     // @ts-expect-error test double
@@ -65,15 +65,57 @@ describe('runtime pty — a large prompt must not outrun the terminal', () => {
     }
 
     // The last wait is the pre-Enter delay.
-    expect(waits[waits.length - 1]).toBeGreaterThanOrEqual(250);
+    expect(waits[waits.length - 1]).toBe(529);
   });
 
-  it('leaves a short prompt as a single write, so existing behaviour is unchanged', async () => {
+  it('caps the scaled pre-submit delay for anomalously large prompts', async () => {
+    const waits: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    // @ts-expect-error test double
+    globalThis.setTimeout = (fn: () => void, ms?: number) => { waits.push(ms ?? 0); fn(); return 0; };
+    try {
+      await submitRuntimePrompt({ write: () => {} }, 'z'.repeat(100_000), { clearDelayMs: 0, chunkDelayMs: 0 });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(waits[waits.length - 1]).toBe(1_000);
+  });
+
+  it('leaves a short prompt as one write with the original 80ms submit delay', async () => {
     const writes: string[] = [];
-    await submitRuntimePrompt({ write: (data) => writes.push(data) }, 'hello', {
+    const waits: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    // @ts-expect-error test double
+    globalThis.setTimeout = (fn: () => void, ms?: number) => { waits.push(ms ?? 0); fn(); return 0; };
+    try {
+      await submitRuntimePrompt({ write: (data) => writes.push(data) }, 'hello', {
+        clearDelayMs: 0,
+      });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(writes).toEqual(['\x15', 'hello', '\r']);
+    expect(waits[waits.length - 1]).toBe(80);
+  });
+
+  it('never splits a surrogate pair across PTY writes at the default boundary', async () => {
+    const writes: string[] = [];
+    const prompt = `${'x'.repeat(511)}😀tail`;
+
+    await submitRuntimePrompt({ write: (data) => writes.push(data) }, prompt, {
       clearDelayMs: 0,
+      chunkDelayMs: 0,
       submitDelayMs: 0,
     });
-    expect(writes).toEqual(['\x15', 'hello', '\r']);
+
+    const body = writes.slice(1, -1);
+    expect(body.join('')).toBe(prompt);
+    expect(body).toEqual(['x'.repeat(511), '😀tail']);
+    for (const chunk of body) {
+      expect(chunk).not.toMatch(/^[\uDC00-\uDFFF]/);
+      expect(chunk).not.toMatch(/[\uD800-\uDBFF]$/);
+    }
   });
 });

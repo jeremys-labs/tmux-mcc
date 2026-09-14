@@ -13,6 +13,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const DEFAULT_CHUNK_SIZE = 512;
+const SHORT_PROMPT_SUBMIT_DELAY_MS = 80;
+const LARGE_PROMPT_MIN_SUBMIT_DELAY_MS = 250;
+const LARGE_PROMPT_MAX_SUBMIT_DELAY_MS = 1_000;
+
 export async function submitRuntimePrompt(
   term: RuntimeWritablePty,
   prompt: string,
@@ -26,17 +31,37 @@ export async function submitRuntimePrompt(
   // normally -- the wrapper logged `submitted` for all of them. The 250ms already
   // hardcoded at the handoff call site was this same bug, fixed for one caller.
   const clearDelayMs = options.clearDelayMs ?? 40;
-  const chunkSize = options.chunkSize ?? 512;
+  const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
   const chunkDelayMs = options.chunkDelayMs ?? 10;
-  // Scale with size rather than pick a bigger constant: a constant is just a larger
-  // prompt away from being wrong again.
-  const submitDelayMs = options.submitDelayMs ?? Math.max(250, Math.ceil(prompt.length / 10));
+  // Preserve the old 80ms latency for short prompts. Large prompts scale to cover
+  // terminal ingest, with a cap so an anomalous answer-context cannot hold stdinGate
+  // for an unbounded pre-submit delay.
+  const defaultSubmitDelayMs = prompt.length <= DEFAULT_CHUNK_SIZE
+    ? SHORT_PROMPT_SUBMIT_DELAY_MS
+    : Math.min(
+      LARGE_PROMPT_MAX_SUBMIT_DELAY_MS,
+      Math.max(LARGE_PROMPT_MIN_SUBMIT_DELAY_MS, Math.ceil(prompt.length / 10)),
+    );
+  const submitDelayMs = options.submitDelayMs ?? defaultSubmitDelayMs;
 
   term.write('\x15');
   await delay(clearDelayMs);
   if (chunkSize > 0 && prompt.length > chunkSize) {
-    for (let index = 0; index < prompt.length; index += chunkSize) {
-      term.write(prompt.slice(index, index + chunkSize));
+    for (let index = 0; index < prompt.length;) {
+      let end = Math.min(index + chunkSize, prompt.length);
+      const splitsSurrogatePair =
+        end < prompt.length &&
+        prompt.charCodeAt(end - 1) >= 0xd800 &&
+        prompt.charCodeAt(end - 1) <= 0xdbff &&
+        prompt.charCodeAt(end) >= 0xdc00 &&
+        prompt.charCodeAt(end) <= 0xdfff;
+      if (splitsSurrogatePair) {
+        // Keep each PTY write valid UTF-16. For chunkSize=1 the pair cannot fit
+        // by moving the boundary backward, so let this chunk exceed the target.
+        end = end - index === 1 ? end + 1 : end - 1;
+      }
+      term.write(prompt.slice(index, end));
+      index = end;
       if (chunkDelayMs > 0) await delay(chunkDelayMs);
     }
   } else {
