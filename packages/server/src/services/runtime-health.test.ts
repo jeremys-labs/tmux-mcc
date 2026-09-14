@@ -348,6 +348,7 @@ describe('runtime health', () => {
       now: new Date('2026-05-12T01:45:00.000Z'),
       includeOpenBrainSearch: false,
       includeOpenBrainMetadata: false,
+      diskCheck: { status: 'ok', detail: 'pinned by fixture' },
     });
 
     expect(report.agents[0].codexInboundBridge.status).toBe('warn');
@@ -356,12 +357,35 @@ describe('runtime health', () => {
     expect(report.agents[0].codexOutboundDiscordMcp.detail).toContain('Codex config missing');
     expect(report.agents[0].migrationReadiness.status).toBe('error');
     expect(report.agents[0].migrationReadiness.detail).toContain('ob1-key');
-    // `worstStatus` returns 'error' if ANY check is error, and migrationReadiness above IS
-    // error -- so 'warn' here asserted that the summary DOWNGRADES an error, which would be
-    // the false-green shape this repo spends its time eliminating. The production code was
-    // always right; this expectation went stale in 420ded8 and took the suite's usability
-    // as a gate with it for a month.
-    expect(report.summary.status).toBe('error');
+    // CORRECTED 2026-09-13. 5874cc8 flipped this to 'error' reasoning that migrationReadiness
+    // (error, above) escalates the summary. It does not: migrationReadiness is not in the
+    // summary's check list. What made the summary read 'error' was `system.diskRoot`, a LIVE
+    // `df` of the machine's root disk, which was below the 2 GiB error floor when that commit
+    // was verified and was not by the evening. The test was asserting free disk space. With
+    // disk pinned, the worst included check is the Codex adapter 'warn'.
+    expect(report.summary.status).toBe('warn');
+  });
+
+  it('lets an injected disk result drive the summary, so the pin above is a real control', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    const base = {
+      agents: [],
+      agentsRoot: path.join(root, 'agents'),
+      schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing-agent-mail.db'),
+      scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      now: new Date('2026-05-12T01:45:00.000Z'),
+      includeOpenBrainSearch: false,
+      includeOpenBrainMetadata: false,
+    };
+
+    const critical = await buildRuntimeHealthReport({ ...base, diskCheck: { status: 'error', detail: 'pinned critical' } });
+    expect(critical.system.diskRoot.detail).toBe('pinned critical');
+    expect(critical.summary.status).toBe('error');
   });
 
   it('passes Codex adapter checks when inbound bridge and outbound MCP are configured', async () => {
