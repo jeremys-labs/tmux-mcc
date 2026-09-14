@@ -101,6 +101,10 @@ export interface RuntimeHealthOptions {
   contentRoot?: string;
   openPrDigestStatusPath?: string;
   diskCheckPath?: string;
+  // Injected disk result. The live `df` is the only input to the summary a fixture cannot
+  // control, so a test that asserts `summary.status` without pinning it is asserting the
+  // free space of whatever machine runs it.
+  diskCheck?: HealthCheck;
 }
 
 interface SchedulerJob {
@@ -789,7 +793,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     options.openPrDigestStatusPath ?? DEFAULT_OPEN_PR_DIGEST_STATUS_PATH,
   );
   const system: SystemHealth = {
-    diskRoot: diskSpaceCheck(options.diskCheckPath ?? DEFAULT_DISK_CHECK_PATH),
+    diskRoot: options.diskCheck ?? diskSpaceCheck(options.diskCheckPath ?? DEFAULT_DISK_CHECK_PATH),
   };
   const agentMail = buildAgentMailHealth(
     options.agentMailDbPath ?? DEFAULT_AGENT_MAIL_DB,
