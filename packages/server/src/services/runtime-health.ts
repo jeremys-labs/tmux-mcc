@@ -59,6 +59,7 @@ export interface SchedulerHealth {
     staleOneShots: HealthCheck;
     staleRecurring: HealthCheck;
     schedulerHeartbeat: HealthCheck;
+    schedulerTickPhase: HealthCheck;
     openPrDigest: HealthCheck;
   };
 }
@@ -478,6 +479,40 @@ function openPrDigestStatusCheck(jobs: SchedulerJob[], statusPath: string, now: 
   return check(reason === 'delivery_failed' ? 'error' : 'warn', detail);
 }
 
+// Aligned ticks (agent-supervisor #25) land a fixed ~1s past each minute boundary, so phase
+// is now a CONSTANT, not a number that grows with uptime. A phase far from the offset means an
+// event-loop stall or a clock jump -- rarer and more serious than the weekly drift it replaced.
+// The supervisor writes it into the heartbeat every tick; this is the reader (dc-20260914-001).
+const TICK_PHASE_WARN_MS = 5_000;
+const TICK_PHASE_ERROR_MS = 15_000;
+
+function schedulerTickPhaseCheck(schedulerRoot: string, now: Date): HealthCheck {
+  const heartbeat = readJsonFile<{ lastTickAt?: string; phaseMs?: number; tickMs?: number }>(
+    path.join(schedulerRoot, '.scheduler-heartbeat'),
+  );
+  if (!heartbeat) return check('unknown', 'scheduler tick phase unknown - no heartbeat file to read');
+  if (typeof heartbeat.phaseMs !== 'number' || !Number.isFinite(heartbeat.phaseMs)) {
+    // An older supervisor writes a heartbeat without a phase. Unknown, never ok: "no phase
+    // reported" and "phase is fine" must not look the same.
+    return check('unknown', `scheduler heartbeat has no usable phaseMs (got ${JSON.stringify(heartbeat.phaseMs)})`);
+  }
+  const phaseMs = heartbeat.phaseMs;
+  const lastTickMs = heartbeat.lastTickAt ? new Date(heartbeat.lastTickAt).getTime() : Number.NaN;
+  // A phase read from a heartbeat nobody has updated describes the past, not now. The
+  // staleness itself is schedulerHeartbeatCheck's finding; here it only disqualifies the value.
+  if (Number.isFinite(lastTickMs) && now.getTime() - lastTickMs > 5 * 60_000) {
+    return check('unknown', `scheduler tick phase ${phaseMs}ms is from a stale heartbeat (${Math.round((now.getTime() - lastTickMs) / 1000)}s old) - not current`);
+  }
+  const detail = `scheduler tick phase ${phaseMs}ms of a ${heartbeat.tickMs ?? '?'}ms tick`;
+  if (phaseMs > TICK_PHASE_ERROR_MS) {
+    return check('error', `${detail} - ticks are landing far from the boundary; event-loop stall or clock jump, NOT a restart-timing problem`);
+  }
+  if (phaseMs > TICK_PHASE_WARN_MS) {
+    return check('warn', `${detail} - above the ${TICK_PHASE_WARN_MS}ms alignment threshold; expected ~1s`);
+  }
+  return check('ok', detail);
+}
+
 function schedulerHeartbeatCheck(schedulerRoot: string, now: Date): HealthCheck {
   const heartbeatPath = path.join(schedulerRoot, '.scheduler-heartbeat');
   const heartbeat = readJsonFile<{ lastTickAt?: string; tickCount?: number }>(heartbeatPath);
@@ -579,6 +614,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         ? check('ok', 'recurring jobs have recent logs where estimable')
         : check('warn', `${staleRecurringJobs.length} recurring job(s) have stale or missing logs`),
       schedulerHeartbeat: schedulerHeartbeatCheck(schedulerRoot, now),
+      schedulerTickPhase: schedulerTickPhaseCheck(schedulerRoot, now),
       openPrDigest: openPrDigestStatusCheck(jobs, openPrDigestStatusPath, now),
     },
   };
@@ -839,6 +875,7 @@ export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {
     scheduler.checks.staleOneShots,
     scheduler.checks.staleRecurring,
     scheduler.checks.schedulerHeartbeat,
+    scheduler.checks.schedulerTickPhase,
     scheduler.checks.openPrDigest,
     agentMail.outbox,
     ...agentHealth.flatMap((agent) => [
@@ -912,6 +949,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
   lines.push(`- stale one-shots: ${report.scheduler.checks.staleOneShots.status} - ${report.scheduler.checks.staleOneShots.detail}`);
   lines.push(`- recurring logs: ${report.scheduler.checks.staleRecurring.status} - ${report.scheduler.checks.staleRecurring.detail}`);
   lines.push(`- heartbeat: ${report.scheduler.checks.schedulerHeartbeat.status} - ${report.scheduler.checks.schedulerHeartbeat.detail}`);
+  lines.push(`- tick phase: ${report.scheduler.checks.schedulerTickPhase.status} - ${report.scheduler.checks.schedulerTickPhase.detail}`);
   lines.push(`- open-PR digest: ${report.scheduler.checks.openPrDigest.status} - ${report.scheduler.checks.openPrDigest.detail}`);
   for (const job of report.scheduler.invalidTypeJobs.slice(0, 8)) {
     lines.push(`  invalid type: ${job.id} (${job.label}) type=${job.type}`);
