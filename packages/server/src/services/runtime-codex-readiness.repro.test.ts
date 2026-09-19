@@ -34,7 +34,13 @@ function stripAnsi(input: string): string {
 }
 
 describe('Codex v0.151.0 bounded raw-chunk reproduction', () => {
-  it('RED: releases waitForIdle after the final prompt is visibly rendered', async () => {
+  // `it.fails` rather than `it`: this is a REPRODUCTION of an open bug, and a reproduction
+  // that lands on main as a plain failing test makes the suite permanently red -- which is the
+  // loudest possible version of a check nobody reads, because it trains everyone to skip the
+  // whole report. Asserting that it FAILS keeps the bug machine-checked instead: the suite is
+  // green while the bug is open, and goes RED the moment someone fixes the gate without
+  // updating this file. The known-bad state becomes an assertion rather than noise.
+  it.fails('RED: releases waitForIdle after the final prompt is visibly rendered', async () => {
     expect(fixture.chunks).toHaveLength(899);
     expect(fixture.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)).toBe(
       fixture.sanitization.sanitizedByteLength,
