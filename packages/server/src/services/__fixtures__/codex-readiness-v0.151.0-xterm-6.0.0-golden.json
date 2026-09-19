@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "renderer": {
+    "package": "@xterm/headless",
+    "version": "6.0.0",
+    "options": {
+      "cols": 120,
+      "rows": 40,
+      "scrollback": 1000,
+      "allowProposedApi": true
+    }
+  },
+  "source": {
+    "fixtureSha256": "a5e2f86f23e85961c03e103e3c71d975ae1d1b0d824ac823e8f051de872d2b89",
+    "captureTimestamp": "2026-09-03T23:18:33.789Z",
+    "callbackCount": 899,
+    "streamSha256": "e52ac26e69ddbf4b80e3b204a65047ed82a7bddcb4b15df3f7c9a7b622a5fa88"
+  },
+  "viewport": {
+    "baseY": 0,
+    "viewportY": 0,
+    "cursorX": 2,
+    "cursorY": 22,
+    "lines": [
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "╭─────────────────────────────────────────────────────────╮                                                             ",
+      "│ >_ OpenAI Codex (v0.151.0)                              │                                                             ",
+      "│                                                         │                                                             ",
+      "│ model:     gpt-5.6-terra medium   /model to change      │                                                             ",
+      "│ directory: /Volumes/…/codex-readiness-capture-workspace │                                                             ",
+      "╰─────────────────────────────────────────────────────────╯                                                             ",
+      "                                                                                                                        ",
+      "  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true                    ",
+      "                                                                                                                        ",
+      "⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.               ",
+      "                                                                                                                        ",
+      "• You have 1 usage limit reset available. Run /usage to use one.                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "› Reply with exactly CODEX_READINESS_CAPTURE_DONE_20260904 and no other text. Do not use tools.                         ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "• CODEX_READINESS_CAPTURE_DONE_20260904                                                                                 ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "› Ask Codex to do anything                                                                                              ",
+      "                                                                                                                        ",
+      "  gpt-5.6-terra medium · xxxxxxxxxxxxxxxxxxx/src/.worktrees/mcc-codex-readiness-repro/packages/server/src/__fixtures__/…",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        ",
+      "                                                                                                                        "
+    ]
+  }
+}

@@ -45,6 +45,7 @@
     "@agent-comms/mailbox": "file:../../../agent-comms/packages/mailbox",
     "@agent-system/agent-memory": "file:../../../agent-memory",
     "@agent-system/agent-skills": "file:../../../agent-skills",
+    "@xterm/headless": "6.0.0",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
