@@ -160,3 +160,132 @@ describe('a bare bullet is content, not a spinner frame', () => {
     await expect(gate.waitForIdle()).resolves.toBeUndefined();
   });
 });
+
+
+const STATIC_BUSY_FRAMES = 20;
+
+// ---------------------------------------------------------------------------
+// Busy-marker change rule. GUARDRAILS FIRST, deliberately: a decay whose only
+// proven branch is the one that RELEASES the pin has no teeth in the direction
+// that costs us silently. Tests 1-6 all assert the gate does NOT release.
+// ---------------------------------------------------------------------------
+describe('codex readiness — a busy marker must CHANGE to hold the gate', () => {
+  const frame = (line: string) => `${line}\n› \n`;
+
+  it('1. silence is not evidence of idle — data stops cold and the gate holds', async () => {
+    const gate = createCodexReadinessGate();
+    gate.onData(frame('Working (12s • esc to interrupt)'));
+    // No further data at all. Nothing is evaluated, so nothing can conclude idle.
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  it('2. streaming non-prompt output does not release a working agent', async () => {
+    const gate = createCodexReadinessGate();
+    gate.onData(frame('Working (12s • esc to interrupt)'));
+    for (let i = 0; i < 50; i += 1) gate.onData(`tool output chunk ${i}\n`);
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  it('3. genuine work — a changing counter stays busy well past the limit', async () => {
+    const gate = createCodexReadinessGate();
+    for (let i = 0; i < STATIC_BUSY_FRAMES * 3; i += 1) {
+      gate.onData(frame(`Working (${i}s • esc to interrupt)`));
+    }
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  it('4. genuine work — an animating spinner stays busy (the unit is the LINE, not the glyph)', async () => {
+    const gate = createCodexReadinessGate();
+    const glyphs = ['✱', '✻', '✽'];
+    for (let i = 0; i < STATIC_BUSY_FRAMES * 3; i += 1) {
+      gate.onData(frame(`${glyphs[i % 3]} Thinking`));
+    }
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  it('5. a busy line split across two chunks is compared once, whole', async () => {
+    const gate = createCodexReadinessGate();
+    // Same logical line every frame, but the CHUNK boundary moves. Comparing partials would
+    // see a different string each time and never release; comparing complete lines releases.
+    for (let i = 0; i < STATIC_BUSY_FRAMES + 2; i += 1) {
+      gate.onData('✻ Think');
+      gate.onData('ing\n› \n');
+    }
+    await expect(gate.waitForIdle()).resolves.toBeUndefined();
+  });
+
+  it('6. an over-long fragment is an ABSENCE of an observation — state unchanged, no comparison', async () => {
+    const notices: string[] = [];
+    const gate = createCodexReadinessGate({ onNotice: (m) => notices.push(m) });
+    gate.onData(frame('Working (12s • esc to interrupt)'));
+    gate.onData('x'.repeat(9000)); // no newline anywhere
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(notices.some((m) => m.startsWith('oversized-fragment-dropped'))).toBe(true);
+  });
+
+  it('6b. cap exceeded DROPS the fragment — trimming it would rejoin a truncated head to the next line', async () => {
+    // probe-mutate found that test 6 could NOT see the difference between dropping and
+    // trimming: both hold the gate, so the assertion proved nothing about Isla's residual.
+    // This one discriminates. Each frame overflows the cap with DIFFERENT filler, then sends
+    // an identical busy tail. Under DROP the completed line is exactly the busy tail every
+    // time -> identical -> releases. Under TRIM the retained filler is prepended, the line
+    // differs every frame, and it never releases. Asserting the release is what makes the
+    // trim variant red.
+    const gate = createCodexReadinessGate();
+    for (let i = 0; i < STATIC_BUSY_FRAMES + 1; i += 1) {
+      gate.onData(String.fromCharCode(97 + (i % 26)).repeat(9000)); // no newline: overflows
+      gate.onData('✻ Thinking\n› \n');
+    }
+    await expect(gate.waitForIdle()).resolves.toBeUndefined();
+  });
+
+  it('7. THE CLASS REGRESSION — a byte-identical busy line releases and names itself', async () => {
+    // Descends from the 2026-08-24 incident rather than reproducing it: that incident's own
+    // line ("• You have 1 usage limit reset available.") no longer classifies busy at all
+    // after 03e2d6e, so it would be green against current code and prove nothing.
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({ onTransition: (s, m) => transitions.push([s, m]) });
+    for (let i = 0; i < STATIC_BUSY_FRAMES + 1; i += 1) gate.onData(frame('✻ Thinking'));
+    await expect(gate.waitForIdle()).resolves.toBeUndefined();
+    const release = transitions.find(([s]) => s === 'idle');
+    expect(release?.[1]).toContain('static-busy-line');
+    expect(release?.[1]).toContain('✻ Thinking');
+  });
+
+  it('8. queued-input never participates in the rule', async () => {
+    const gate = createCodexReadinessGate();
+    for (let i = 0; i < STATIC_BUSY_FRAMES * 2; i += 1) {
+      gate.onData('Messages to be submitted after next tool call\n');
+    }
+    let resolved = false;
+    void gate.waitForIdle().then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  it('9. the logged line is bounded and control-stripped, but the COMPARISON uses the full line', async () => {
+    const transitions: Array<[string, string]> = [];
+    const gate = createCodexReadinessGate({ onTransition: (s, m) => transitions.push([s, m]) });
+    const long = `✻ Thinking ${'y'.repeat(600)}`;
+    for (let i = 0; i < STATIC_BUSY_FRAMES + 1; i += 1) gate.onData(frame(long));
+    await expect(gate.waitForIdle()).resolves.toBeUndefined();
+    const release = transitions.find(([s]) => s === 'idle')?.[1] ?? '';
+    expect(release.length).toBeLessThan(400);
+    expect(release).toContain('digest');
+  });
+});
