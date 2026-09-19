@@ -500,7 +500,14 @@ function schedulerTickPhaseCheck(schedulerRoot: string, now: Date): HealthCheck 
   const lastTickMs = heartbeat.lastTickAt ? new Date(heartbeat.lastTickAt).getTime() : Number.NaN;
   // A phase read from a heartbeat nobody has updated describes the past, not now. The
   // staleness itself is schedulerHeartbeatCheck's finding; here it only disqualifies the value.
-  if (Number.isFinite(lastTickMs) && now.getTime() - lastTickMs > 5 * 60_000) {
+  //
+  // Scaled to the tick, not a bare constant: at a 60s tick the floor is 5 ticks of margin, but
+  // a fixed 5 minutes against a tick raised past 5 minutes would make this check PERMANENTLY
+  // unknown with nothing saying why -- a config-coupled dead check, the same family as the
+  // heartbeat nobody wrote. (Isla, review of #29.)
+  const tickMs = typeof heartbeat.tickMs === 'number' && Number.isFinite(heartbeat.tickMs) ? heartbeat.tickMs : 0;
+  const staleAfterMs = Math.max(5 * 60_000, 5 * tickMs);
+  if (Number.isFinite(lastTickMs) && now.getTime() - lastTickMs > staleAfterMs) {
     return check('unknown', `scheduler tick phase ${phaseMs}ms is from a stale heartbeat (${Math.round((now.getTime() - lastTickMs) / 1000)}s old) - not current`);
   }
   const detail = `scheduler tick phase ${phaseMs}ms of a ${heartbeat.tickMs ?? '?'}ms tick`;

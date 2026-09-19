@@ -435,6 +435,28 @@ describe('runtime health', () => {
     expect(stale.scheduler.checks.schedulerTickPhase.detail).toContain('stale heartbeat');
   });
 
+  it('scales the tick-phase staleness window to the tick, so a slow tick cannot make the check permanently unknown', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    const now = new Date('2026-09-19T13:00:30.000Z');
+    // A 10-minute tick, last ticked 8 minutes ago: fresher than one tick, but well past the
+    // bare 5-minute floor that would have called it stale.
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 8 * 60_000).toISOString(), tickCount: 7, phaseMs: 1_004, tickMs: 600_000,
+    });
+    const report = await buildRuntimeHealthReport({
+      agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      now, includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+      diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+    });
+    expect(report.scheduler.checks.schedulerTickPhase.status).toBe('ok');
+    expect(report.scheduler.checks.schedulerTickPhase.detail).toContain('1004ms');
+  });
+
   it('lets an injected disk result drive the summary, so the pin above is a real control', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
