@@ -256,6 +256,7 @@ of existing live skills.
 | `AGENTS_DIR` | `~/.tmux-mcc/agents` | Directory containing one subdirectory per agent. Only agents with a matching subdirectory here are shown in the UI. Place `avatar.png` inside each subdirectory for custom avatars. |
 | `TMUX_SESSION` | `agents` | Name of the tmux session your agents run in. All agent windows must be in this session. |
 | `SERVER_PORT` | `8081` | Server listen port |
+| `SERVER_HOST` | `127.0.0.1` | Server listen address; set explicitly to expose beyond the local host |
 | `CLIENT_PORT` | `3001` | Vite dev server port |
 | `WHISPER_SERVER_URL` | `http://127.0.0.1:8090/inference` | Whisper HTTP server for STT |
 | `WHISPER_CLI` | auto-detected | Path to whisper CLI binary |
