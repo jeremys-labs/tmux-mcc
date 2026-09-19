@@ -366,6 +366,97 @@ describe('runtime health', () => {
     expect(report.summary.status).toBe('warn');
   });
 
+  // dc-20260914-001. The supervisor writes tick phase into the heartbeat every tick; these are
+  // the reader's contracts. The planted over-threshold phase is the acceptance test: it has to
+  // surface as a non-ok CHECK, not only as a line in a launchd log.
+  it('reports an aligned tick phase as ok, and a planted stalled phase as a non-ok check that reaches the summary', async () => {
+    const run = async (phaseMs: number) => {
+      const root = tempDir();
+      const schedulerRoot = path.join(root, 'scheduler');
+      writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+      writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+      fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+      const now = new Date('2026-09-19T13:00:30.000Z');
+      writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+        lastTickAt: new Date(now.getTime() - 20_000).toISOString(), tickCount: 42, phaseMs, tickMs: 60_000,
+      });
+      return buildRuntimeHealthReport({
+        agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+        agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+        now, includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+        diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+      });
+    };
+
+    const aligned = await run(1_002);
+    expect(aligned.scheduler.checks.schedulerTickPhase.status).toBe('ok');
+    expect(aligned.scheduler.checks.schedulerTickPhase.detail).toContain('1002ms');
+    // NOT asserting summary==='ok' here: with no agents configured other checks are already
+    // 'unknown', so an aligned phase cannot make the summary ok. What matters is that a
+    // non-ok PHASE reaches the summary, which the two cases below pin.
+    expect(aligned.summary.status).not.toBe('warn');
+
+    const stalled = await run(8_000);
+    expect(stalled.scheduler.checks.schedulerTickPhase.status).toBe('warn');
+    expect(stalled.scheduler.checks.schedulerTickPhase.detail).toContain('5000ms alignment threshold');
+    expect(stalled.summary.status).toBe('warn');
+
+    const wild = await run(40_000);
+    expect(wild.scheduler.checks.schedulerTickPhase.status).toBe('error');
+    expect(wild.scheduler.checks.schedulerTickPhase.detail).toContain('event-loop stall or clock jump');
+    expect(wild.summary.status).toBe('error');
+
+    expect(formatRuntimeHealthSummary(wild)).toContain('- tick phase: error');
+  });
+
+  it('never reports ok when the phase is absent or stale: unknown and ok must not look alike', async () => {
+    const build = async (heartbeat: unknown) => {
+      const root = tempDir();
+      const schedulerRoot = path.join(root, 'scheduler');
+      writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+      writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+      fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+      if (heartbeat !== undefined) writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), heartbeat);
+      return buildRuntimeHealthReport({
+        agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+        agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+        now: new Date('2026-09-19T13:00:30.000Z'), includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+        diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+      });
+    };
+
+    // No file at all -- the live state before the supervisor wrote one.
+    expect((await build(undefined)).scheduler.checks.schedulerTickPhase.status).toBe('unknown');
+    // An older supervisor: heartbeat without a phase.
+    expect((await build({ lastTickAt: '2026-09-19T13:00:10.000Z', tickCount: 5 })).scheduler.checks.schedulerTickPhase.status).toBe('unknown');
+    // A good-looking phase from a heartbeat nobody has updated for an hour describes the past.
+    const stale = await build({ lastTickAt: '2026-09-19T12:00:10.000Z', phaseMs: 1_000, tickMs: 60_000 });
+    expect(stale.scheduler.checks.schedulerTickPhase.status).toBe('unknown');
+    expect(stale.scheduler.checks.schedulerTickPhase.detail).toContain('stale heartbeat');
+  });
+
+  it('scales the tick-phase staleness window to the tick, so a slow tick cannot make the check permanently unknown', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    const now = new Date('2026-09-19T13:00:30.000Z');
+    // A 10-minute tick, last ticked 8 minutes ago: fresher than one tick, but well past the
+    // bare 5-minute floor that would have called it stale.
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 8 * 60_000).toISOString(), tickCount: 7, phaseMs: 1_004, tickMs: 600_000,
+    });
+    const report = await buildRuntimeHealthReport({
+      agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      now, includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+      diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+    });
+    expect(report.scheduler.checks.schedulerTickPhase.status).toBe('ok');
+    expect(report.scheduler.checks.schedulerTickPhase.detail).toContain('1004ms');
+  });
+
   it('lets an injected disk result drive the summary, so the pin above is a real control', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
