@@ -26,10 +26,31 @@ describe('classifyIntentLane', () => {
     expect(lane('why are my agents slower than ChatGPT?')).toBe('fast_chat');
   });
 
-  it('classifies meta-follow-ups as fast_chat', () => {
-    for (const text of ['shorter', 'explain that', 'why?', 'tl;dr']) {
-      expect(lane(text), text).toBe('fast_chat');
+  // Jeremy 2026-09-20: a bare meta-follow-up is evidence that context EXISTS,
+  // not that it is unnecessary. "why?" is meaningless without the turn before
+  // it, so routing it to the context-free lane is precisely backwards.
+  it('never classifies bare meta-follow-ups as fast_chat', () => {
+    for (const text of [
+      'shorter',
+      'longer',
+      'simpler',
+      'explain that',
+      'why?',
+      'why',
+      'how so?',
+      'say more',
+      'expand',
+      'tl;dr',
+      'tldr',
+      'really?',
+    ]) {
+      expect(lane(text), text).toBe('personal_context');
     }
+  });
+
+  it('still allows self-contained why-questions to go fast', () => {
+    expect(lane('why are my agents slower than ChatGPT?')).toBe('fast_chat');
+    expect(lane('why is the sky blue')).toBe('fast_chat');
   });
 
   it('forces prior-context references to at least personal_context (Isla regression)', () => {

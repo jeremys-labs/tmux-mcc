@@ -39,6 +39,13 @@ const AGENT_NAMES =
 const PERSON_NAMES =
   /\b(alison|lizzy|elisabeth|alex|alexander|cindy|tom|mike|wife|kids?|son|daughter|family|mom|dad|parents)\b/i;
 
+// A bare meta-follow-up ("why?", "shorter", "say more") is meaningless without
+// the turn it refers to. It is evidence that context EXISTS, not that it is
+// unnecessary — so it must never reach the thin fast context. Anchored to the
+// whole message so self-contained questions ("why is the sky blue") stay fast.
+const META_FOLLOWUP =
+  /^(shorter|longer|simpler|explain that|why\??|how so\??|say more|expand|tl;?dr|really\??)[.!?\s]*$/i;
+
 const PRIOR_CONTEXT =
   /\b(remember|last time|we (discussed|talked|agreed)|did you|have you|status of|what happened|where did we land|follow[- ]?up|that thing|you (said|mentioned)|earlier)\b/i;
 
@@ -77,10 +84,6 @@ const FAST_PATTERNS: Array<{ reason: string; pattern: RegExp }> = [
     pattern: /^(what('| i)?s the difference between|what (is|are)|define|explain|how (does|do)\b)/i,
   },
   { reason: 'general_why', pattern: /^why\b/i },
-  {
-    reason: 'meta_followup',
-    pattern: /^(shorter|longer|simpler|explain that|why\??|how so\??|say more|expand|tl;?dr|really\??)[.!?\s]*$/i,
-  },
 ];
 
 export function classifyIntentLane(input: IntentLaneInput): IntentLaneDecision {
@@ -105,6 +108,7 @@ export function classifyIntentLane(input: IntentLaneInput): IntentLaneDecision {
   if (AGENT_NAMES.test(text)) return { lane: 'coordination', reasons: ['agent_name'] };
   if (PERSON_NAMES.test(text)) return { lane: 'personal_context', reasons: ['person_name'] };
   if (PRIOR_CONTEXT.test(text)) return { lane: 'personal_context', reasons: ['prior_context_reference'] };
+  if (META_FOLLOWUP.test(text)) return { lane: 'personal_context', reasons: ['meta_followup_reference'] };
   if (WORK_WORDS.test(text)) return { lane: 'deep_work', reasons: ['work_words'] };
   if (TIME_WORDS.test(text)) return { lane: 'deep_work', reasons: ['time_words'] };
   if (CURRENT_LOOKUP.test(text)) return { lane: 'current_lookup', reasons: ['current_lookup_words'] };
