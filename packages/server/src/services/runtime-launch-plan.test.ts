@@ -94,7 +94,25 @@ describe('runtime launch plan', () => {
       agentDir,
       '--',
       '--dangerously-bypass-approvals-and-sandbox',
+      '-c',
+      'mcp_servers.open-brain.command="/Volumes/Repo-Drive/agents/enzo/bin/open-brain-mcp-wrapper"',
     ]);
+  });
+
+  it('binds the Codex OpenBrain MCP command to the declared agent, not shared user config', () => {
+    const zaraPlan = buildRuntimeLaunchPlan({
+      agent: 'zara',
+      agentDir: '/Volumes/Repo-Drive/agents/zara',
+      runtime: 'codex',
+      mccRoot,
+      homeDir: '/Users/jeremy',
+      env: {},
+    });
+
+    expect(zaraPlan.args).toContain(
+      'mcp_servers.open-brain.command="/Volumes/Repo-Drive/agents/zara/bin/open-brain-mcp-wrapper"',
+    );
+    expect(zaraPlan.args.join(' ')).not.toContain('/agents/eli/bin/open-brain-mcp-wrapper');
   });
 
   // The Codex plan above passes NO model, which is why this suite stayed green while
