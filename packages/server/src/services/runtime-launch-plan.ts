@@ -86,7 +86,15 @@ export function buildRuntimeLaunchPlan(input: RuntimeLaunchPlanInput): RuntimeLa
   // silently inert: accepted by the launcher, parsed, threaded in here, and discarded.
   // Every layer reported success and nothing said the model had been ignored. Eli carried
   // `--model gpt-5.6-sol` for weeks and it was never once applied (2026-08-23).
-  const codexArgs = ['--dangerously-bypass-approvals-and-sandbox'];
+  // Codex loads MCP servers from the shared user config, so without an explicit
+  // per-launch override every agent inherits whichever agent wrapper that file
+  // happens to name. Bind OpenBrain to the declared agent directory instead.
+  const openBrainWrapper = path.join(input.agentDir, 'bin/open-brain-mcp-wrapper');
+  const codexArgs = [
+    '--dangerously-bypass-approvals-and-sandbox',
+    '-c',
+    `mcp_servers.open-brain.command=${JSON.stringify(openBrainWrapper)}`,
+  ];
   if (input.model) codexArgs.push('--model', input.model);
   return {
     agent: input.agent,
