@@ -362,6 +362,14 @@ export function alertFrom<T>(
   return { text: format(deliverable), subjects: deliverable.map(subjectOf) };
 }
 
+/** A repair must reach the same channel a failure would -- see the call site. */
+export function formatInboundRecoveryNotice(
+  entries: Array<{ key: string; agent: string; action: string; reason: string }>,
+): string {
+  const lines = entries.map((entry) => `- ${entry.agent} (${entry.action}): ${entry.reason}`);
+  return [`runtime monitor self-healed ${entries.length} inbound miss(es):`, ...lines].join('\n');
+}
+
 async function main(): Promise<void> {
   const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
   const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
@@ -455,6 +463,7 @@ async function main(): Promise<void> {
   });
   const inboundAlertMisses = [] as typeof inboundResult.misses;
   const recoveryAttempts = { ...(state.inboundRecoveryAttempts ?? {}) };
+  const recoveredThisPass: Array<{ key: string; agent: string; action: string; reason: string }> = [];
   const outboundNow = readOutboundSent(contentRoot);
   for (const [key, attempt] of Object.entries(recoveryAttempts)) {
     if (outboundNow.some((sent) =>
@@ -502,11 +511,37 @@ async function main(): Promise<void> {
         agent: miss.agent,
         chatId: miss.chatId,
       };
+      recoveredThisPass.push({ key: miss.key, agent: miss.agent, action: recovery.action, reason: recovery.reason });
     } else {
       inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
     }
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
+
+  // A repair must reach the same channel a failure would. `alerts.length === 0` below
+  // early-returns before any of this pass's stdout-only recovery lines are seen by anyone
+  // but a log reader -- the only self-healing the team could see was the kind that did not
+  // work. (Filed 2026-09-13, parked-bets-backlog.md "RECOVERY ROUTING".) Routed through the
+  // same partition + alertFrom path as a failure, so it inherits the same "never into the
+  // subject's own channel" guarantee for free.
+  if (recoveredThisPass.length > 0) {
+    const recoverySplit = planAlertDispatch({
+      items: recoveredThisPass,
+      destinationAgent: agent,
+      subjectOf: (entry) => entry.agent,
+      fingerprintOf: (entries) => entries.map((entry) => entry.key).sort().join(','),
+    });
+    if (recoverySplit.withheld.length > 0) {
+      withheldSubjects.push(...recoverySplit.withheld.map((entry) => entry.agent));
+    }
+    if (recoverySplit.deliverable.length > 0) {
+      alerts.push(alertFrom(
+        recoverySplit.deliverable,
+        formatInboundRecoveryNotice,
+        (entry) => entry.agent,
+      ));
+    }
+  }
 
   // Same ordering as the delivery path above, for the same reason: the fingerprint must
   // describe the DELIVERED set only, so a withheld finding re-raises every run.

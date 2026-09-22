@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  alertFrom,
   deliveryFailureFingerprint,
   findDeliveryFailures,
   formatDeliveryFailureAlert,
+  formatInboundRecoveryNotice,
   recoverDeliveryFailuresBeforeAlert,
   recoveryAttemptStillInGrace,
   withholdReason,
@@ -257,5 +259,56 @@ describe('a withheld finding must never advance the dedup fingerprint', () => {
     const result = plan(['dana', 'eli'], 'isla');
     expect(result.withheld).toHaveLength(0);
     expect(result.fingerprint).toBe(deliveryFailureFingerprint([failure('dana'), failure('eli')] as never));
+  });
+});
+
+describe('a repair must reach the same channel a failure would (2026-09-13 RECOVERY ROUTING)', () => {
+  // Before this fix, `recoverInboundMiss` succeeding only wrote a stdout line — if that was
+  // the only thing that happened this pass, `alerts.length === 0` returned before anyone
+  // outside a log reader learned a repair had occurred. This suite covers the notice that
+  // now routes a recovery through the same alertFrom/planAlertDispatch path as a failure.
+  const recovered = (agent: string, key = `${agent}:miss`) => ({
+    key, agent, action: 'replay_consumed', reason: `queued message replayed for ${agent}`,
+  });
+
+  it('formats a plain-language notice naming the agent, action, and reason', () => {
+    const text = formatInboundRecoveryNotice([recovered('dana')]);
+    expect(text).toContain('dana');
+    expect(text).toContain('replay_consumed');
+    expect(text).toContain('queued message replayed for dana');
+    expect(text).toContain('self-healed 1 inbound miss(es)');
+  });
+
+  it('a recovery notice about the destination itself is withheld, never routed to its own channel', () => {
+    // Same invariant as a failure alert (2026-09-12): a finding about the destination agent
+    // cannot be delivered into that agent's own channel.
+    const split = planAlertDispatch({
+      items: [recovered('eli'), recovered('dana')],
+      destinationAgent: 'eli',
+      subjectOf: (entry) => entry.agent,
+      fingerprintOf: (entries) => entries.map((entry) => entry.key).sort().join(','),
+    });
+    expect(split.deliverable.map((entry) => entry.agent)).toEqual(['dana']);
+    expect(split.withheld.map((entry) => entry.agent)).toEqual(['eli']);
+  });
+
+  it('a delivered recovery becomes an alert entry carrying the recovered agent as its subject', () => {
+    const split = planAlertDispatch({
+      items: [recovered('dana')],
+      destinationAgent: 'eli',
+      subjectOf: (entry) => entry.agent,
+      fingerprintOf: (entries) => entries.map((entry) => entry.key).sort().join(','),
+    });
+    const alert = alertFrom(split.deliverable, formatInboundRecoveryNotice, (entry) => entry.agent);
+    expect(alert.subjects).toEqual(['dana']);
+    expect(alert.text).toContain('self-healed');
+    expect(alert.text).toContain('dana');
+  });
+
+  it('multiple recoveries in one pass are named individually, not collapsed into a count', () => {
+    const text = formatInboundRecoveryNotice([recovered('dana'), recovered('simone', 'simone:miss')]);
+    expect(text).toContain('self-healed 2 inbound miss(es)');
+    expect(text).toContain('dana');
+    expect(text).toContain('simone');
   });
 });
