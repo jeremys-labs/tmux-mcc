@@ -11,6 +11,10 @@ import {
   monitorSummary,
   partitionBySubject,
   planAlertDispatch,
+  findSchedulerFailures,
+  schedulerFailureFingerprint,
+  formatSchedulerAlert,
+  SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
@@ -310,5 +314,98 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     expect(text).toContain('self-healed 2 inbound miss(es)');
     expect(text).toContain('dana');
     expect(text).toContain('simone');
+  });
+});
+
+
+describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
+  // Until this class existed, `report.scheduler` had NO scheduled consumer. The 5-minute
+  // monitor read `discordInboxDelivery` and the inbound reconcile and nothing else, so a
+  // non-ok scheduler check was computed every run and reached no one. `grep -c scheduler`
+  // in the monitor was 0. (Eli's trace on PR #29.) These tests pin that it is read.
+  function schedulerReport(checks: Record<string, { status: string; detail: string }>, staleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }> = []) {
+    const base = report();
+    base.scheduler.checks = { ...base.scheduler.checks, ...checks } as never;
+    base.scheduler.staleRecurringJobs = staleJobs as never;
+    return base;
+  }
+
+  it('turns a non-ok scheduler check into a DELIVERED alert', () => {
+    const r = schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'scheduler tick phase 45000ms of a 600000ms tick - ticks are landing far from the boundary' },
+    });
+    const findings = findSchedulerFailures(r);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ check: 'schedulerTickPhase', status: 'error', subject: SCHEDULER_FLEET_SUBJECT });
+
+    const split = planAlertDispatch({
+      items: findings,
+      destinationAgent: 'isla',
+      subjectOf: (f) => f.subject,
+      fingerprintOf: schedulerFailureFingerprint,
+    });
+    // Fleet-level: the subject is not an agent, so it can never collide with a destination.
+    expect(split.withheld).toHaveLength(0);
+    expect(split.deliverable).toHaveLength(1);
+    expect(formatSchedulerAlert(split.deliverable)).toContain('45000ms');
+  });
+
+  it('keeps `unknown` distinct from `error` instead of folding it into ok', () => {
+    // "I could not tell" and "the scheduler is broken" have different remedies. Folding
+    // unknown into ok is the false-clean this row exists to prevent; folding it into error
+    // pages someone for a missing file. It alarms, and it says which it is.
+    const r = schedulerReport({
+      schedulerHeartbeat: { status: 'unknown', detail: 'no heartbeat file to read' },
+    });
+    const findings = findSchedulerFailures(r);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('unknown');
+  });
+
+  it('suppresses a duplicate across runs, and re-raises when the finding changes', () => {
+    const first = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'phase 45000ms' },
+    }));
+    const same = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'phase 45000ms' },
+    }));
+    const changed = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'phase 61000ms' },
+    }));
+    expect(schedulerFailureFingerprint(first)).toBe(schedulerFailureFingerprint(same));
+    expect(schedulerFailureFingerprint(first)).not.toBe(schedulerFailureFingerprint(changed));
+  });
+
+  it('WITHHOLDS a stale-job finding about the destination and leaves a positive record', () => {
+    // The withheld path is reachable for this class ONLY because staleRecurring findings
+    // carry the owning agent. A stale job usually means that agent's runtime is unwell, so
+    // "your job has not run" into that agent's own channel is the 2026-09-12 defect.
+    //
+    // And the record must be POSITIVE. A withheld finding and an undetected one are both
+    // "no alert in that channel", so absence cannot be the evidence that withholding
+    // happened -- which is why this asserts the withheld subject by name.
+    const r = schedulerReport(
+      { staleRecurring: { status: 'warn', detail: '2 recurring job(s) have stale or missing logs' } },
+      [
+        { id: 'j1', label: 'isla nightly', agent: 'isla', cron: '0 3 * * *', reason: 'no job log found' },
+        { id: 'j2', label: 'nova weekly', agent: 'nova', cron: '0 4 * * 1', reason: 'no job log found' },
+      ],
+    );
+    const findings = findSchedulerFailures(r);
+    expect(findings.map((f) => f.subject).sort()).toEqual(['isla', 'nova']);
+
+    const split = planAlertDispatch({
+      items: findings,
+      destinationAgent: 'isla',
+      subjectOf: (f) => f.subject,
+      fingerprintOf: schedulerFailureFingerprint,
+    });
+    // PARTITION, NOT DROP: nova's finding still ships in the same run.
+    expect(split.withheld.map((f) => f.subject)).toEqual(['isla']);
+    expect(split.deliverable.map((f) => f.subject)).toEqual(['nova']);
+    // The withheld finding must NOT be in the fingerprint, or it marks itself sent and is
+    // suppressed forever -- worse than 09-12, which at least kept shouting.
+    expect(split.fingerprint).not.toContain('isla');
+    expect(split.fingerprint).toContain('nova');
   });
 });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   buildRuntimeHealthReport,
   type AgentRuntimeHealth,
+  type HealthStatus,
   type RuntimeHealthReport,
 } from './services/runtime-health.js';
 import {
@@ -32,6 +33,8 @@ interface MonitorState {
   lastDeliverySentAt?: string;
   lastInboundReplyFingerprint?: string;
   lastInboundReplySentAt?: string;
+  lastSchedulerFingerprint?: string;
+  lastSchedulerSentAt?: string;
   deliveryRecoveryAttempts?: Record<string, {
     attemptedAt: string;
   }>;
@@ -79,6 +82,86 @@ export function deliveryFailureFingerprint(failures: AgentRuntimeHealth[]): stri
     .map((agent) => `${agent.agent}:${agent.discordInboxDelivery.detail}`)
     .sort()
     .join('|');
+}
+
+/**
+ * Scheduler findings are fleet infrastructure, not an agent's runtime, so most of them
+ * have no agent subject at all. This sentinel is deliberately not a valid agent key: it
+ * can never equal a destination, so a fleet-level finding is always deliverable.
+ *
+ * `staleRecurring` is the exception and the reason the partition is not decorative here.
+ * A stale job belongs to an agent, and the usual reason it is stale is that the agent's
+ * runtime is unwell -- so reporting "your job has not run" into that agent's own channel
+ * is the 2026-09-12 defect exactly: correct detection, delivered to the one place that
+ * cannot act on it.
+ */
+export const SCHEDULER_FLEET_SUBJECT = '(scheduler)';
+
+export interface SchedulerFinding {
+  check: string;
+  status: HealthStatus;
+  detail: string;
+  subject: string;
+}
+
+/**
+ * Every scheduler check that is not `ok`.
+ *
+ * `unknown` is included and is NOT collapsed into the others. It means the monitor could
+ * not tell, which is a different claim from "the scheduler is broken" and has a different
+ * remedy; the status travels with the finding so a reader can separate them. Folding
+ * `unknown` into `ok` would be the false-clean this row exists to prevent, and folding it
+ * into `error` would page someone for a missing file.
+ *
+ * Until now nothing scheduled read `report.scheduler` at all -- the 5-minute monitor
+ * consumed only `discordInboxDelivery` and the inbound reconcile, so a non-ok scheduler
+ * check was computed every run and reached no one. (Eli's trace, PR #29.)
+ */
+export function findSchedulerFailures(report: RuntimeHealthReport): SchedulerFinding[] {
+  const checks = report.scheduler.checks;
+  const findings: SchedulerFinding[] = [];
+  for (const [name, check] of Object.entries(checks)) {
+    if (check.status === 'ok') continue;
+    if (name === 'staleRecurring') continue; // fanned out per owning agent below
+    findings.push({
+      check: name,
+      status: check.status,
+      detail: check.detail,
+      subject: SCHEDULER_FLEET_SUBJECT,
+    });
+  }
+  // One finding per owning agent, so the partition can withhold the destination's own
+  // stale jobs while still delivering everyone else's in the same run.
+  if (checks.staleRecurring.status !== 'ok') {
+    const byAgent = new Map<string, string[]>();
+    for (const job of report.scheduler.staleRecurringJobs) {
+      const owner = job.agent ?? SCHEDULER_FLEET_SUBJECT;
+      const list = byAgent.get(owner) ?? [];
+      list.push(`${job.id} (${job.label}): ${job.reason}`);
+      byAgent.set(owner, list);
+    }
+    for (const [owner, jobs] of [...byAgent.entries()].sort()) {
+      findings.push({
+        check: 'staleRecurring',
+        status: checks.staleRecurring.status,
+        detail: `${jobs.length} stale recurring job(s): ${jobs.join('; ')}`,
+        subject: owner,
+      });
+    }
+  }
+  return findings;
+}
+
+export function schedulerFailureFingerprint(findings: SchedulerFinding[]): string {
+  return findings
+    .map((f) => `${f.check}:${f.subject}:${f.status}:${f.detail}`)
+    .sort()
+    .join('|');
+}
+
+export function formatSchedulerAlert(findings: SchedulerFinding[]): string {
+  const lines = findings.map((f) => `- [${f.status}] ${f.check}${f.subject === SCHEDULER_FLEET_SUBJECT ? '' : ` (${f.subject})`}: ${f.detail}`);
+  return [`runtime monitor scheduler check(s) not ok (${findings.length}):`, ...lines].join('\n');
 }
 
 export function recoveryAttemptStillInGrace(input: {
@@ -569,6 +652,36 @@ async function main(): Promise<void> {
       ));
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
+    }
+  }
+
+  // SCHEDULER CHECKS. Same partition-then-fingerprint ordering as the two classes above,
+  // for the same reason: the fingerprint must describe the DELIVERED set only, or a
+  // withheld finding marks itself sent and is suppressed forever.
+  const schedulerSplit = planAlertDispatch({
+    items: findSchedulerFailures(report),
+    destinationAgent: agent,
+    subjectOf: (finding) => finding.subject,
+    fingerprintOf: schedulerFailureFingerprint,
+  });
+  if (schedulerSplit.withheld.length > 0) {
+    withheldSubjects.push(...schedulerSplit.withheld.map((finding) => finding.subject));
+  }
+
+  if (schedulerSplit.deliverable.length === 0) {
+    nextState.lastSchedulerFingerprint = undefined;
+  } else {
+    const fingerprint = schedulerSplit.fingerprint as string;
+    if (state.lastSchedulerFingerprint === fingerprint && !hasFlag('--repeat')) {
+      process.stdout.write(`runtime scheduler monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
+    } else {
+      alerts.push(alertFrom(
+        schedulerSplit.deliverable,
+        formatSchedulerAlert,
+        (finding) => finding.subject,
+      ));
+      nextState.lastSchedulerFingerprint = fingerprint;
+      nextState.lastSchedulerSentAt = report.generatedAtIso;
     }
   }
 

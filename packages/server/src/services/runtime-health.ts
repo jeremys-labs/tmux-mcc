@@ -53,7 +53,7 @@ export interface SchedulerHealth {
   jobCount: number;
   invalidTypeJobs: Array<{ id: string; label: string; type: string }>;
   staleOneShotJobs: Array<{ id: string; label: string; fireAt: string; staleMinutes: number }>;
-  staleRecurringJobs: Array<{ id: string; label: string; cron: string; lastLogAt?: string; staleHours?: number; reason: string }>;
+  staleRecurringJobs: Array<{ id: string; label: string; agent?: string; cron: string; lastLogAt?: string; staleHours?: number; reason: string }>;
   checks: {
     jobTypes: HealthCheck;
     staleOneShots: HealthCheck;
@@ -576,6 +576,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         return [{
           id: job.id ?? 'unknown',
           label: job.label ?? 'unlabeled',
+          agent: job.agent,
           cron: job.cron ?? '',
           reason: 'cron period could not be estimated',
         }];
@@ -585,6 +586,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         return [{
           id: job.id ?? 'unknown',
           label: job.label ?? 'unlabeled',
+          agent: job.agent,
           cron: job.cron ?? '',
           reason: 'no job log found',
         }];
@@ -594,6 +596,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       return [{
         id: job.id ?? 'unknown',
         label: job.label ?? 'unlabeled',
+        agent: job.agent,
         cron: job.cron ?? '',
         lastLogAt,
         staleHours: Math.round(staleMs / 36_000) / 100,

@@ -457,6 +457,47 @@ describe('runtime health', () => {
     expect(report.scheduler.checks.schedulerTickPhase.detail).toContain('1004ms');
   });
 
+  // THE ALARM PATH, WHICH THE TEST ABOVE DOES NOT REACH. That one plants a HEALTHY phase
+  // (1004ms) and proves only that the scaled window lets the check be evaluated at all.
+  // A pass-shaped `unknown` and a genuine `ok` are both non-alarming, so nothing there
+  // establishes that an over-threshold phase is ever actually reported.
+  //
+  // This plants an over-threshold phase in a heartbeat that is fresh ONLY under the scaled
+  // window -- 8 minutes old against a 10-minute tick, which a bare 5-minute floor would
+  // call stale. So the assertion is load-bearing in two directions at once:
+  //   * revert `max(5 * 60_000, 5 * tickMs)` to a bare floor -> the heartbeat reads stale,
+  //     the check degrades to `unknown`, and THE STATUS ASSERTION BELOW GOES RED.
+  //   * lose the error branch -> status is not 'error' and it goes red too.
+  //
+  // The status is pinned EXACTLY rather than "not ok" on purpose. `unknown` is also not
+  // ok, so a weaker assertion would stay green under the floor mutation while the check
+  // silently stopped measuring anything -- testing that an alarm fires, not that it fires
+  // for the right reason. (The `2baa9c1` lesson: assertion strength was inverse to case
+  // importance, and the case that mattered had the weakest assertion.)
+  it('reports an over-threshold tick phase as error when the heartbeat is fresh only under the scaled window', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    fs.mkdirSync(path.join(schedulerRoot, 'logs'), { recursive: true });
+    const now = new Date('2026-09-19T13:00:30.000Z');
+    writeJson(path.join(schedulerRoot, '.scheduler-heartbeat'), {
+      lastTickAt: new Date(now.getTime() - 8 * 60_000).toISOString(),
+      tickCount: 7,
+      phaseMs: 45_000,
+      tickMs: 600_000,
+    });
+    const report = await buildRuntimeHealthReport({
+      agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'outbox.jsonl'),
+      now, includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+      diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+    });
+    expect(report.scheduler.checks.schedulerTickPhase.status).toBe('error');
+    expect(report.scheduler.checks.schedulerTickPhase.detail).toContain('45000ms');
+    expect(report.scheduler.checks.schedulerTickPhase.detail).not.toContain('stale heartbeat');
+  });
+
   it('lets an injected disk result drive the summary, so the pin above is a real control', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
