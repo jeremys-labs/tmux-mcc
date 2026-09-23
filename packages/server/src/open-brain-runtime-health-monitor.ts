@@ -100,8 +100,23 @@ export const SCHEDULER_FLEET_SUBJECT = '(scheduler)';
 export interface SchedulerFinding {
   check: string;
   status: HealthStatus;
+  /** Human-readable, and DELIBERATELY NOT part of incident identity -- see below. */
   detail: string;
   subject: string;
+  /**
+   * Stable incident identity beyond check+subject+severity.
+   *
+   * Empty for scalar checks. For set-valued checks it is the sorted affected job ids, so
+   * a MEMBERSHIP change re-alerts while a re-measurement of the same set does not.
+   *
+   * This exists because `detail` carries live telemetry: schedulerTickPhase embeds the
+   * current phaseMs, and a stale-heartbeat detail embeds an age in seconds that grows
+   * every run. Fingerprinting the detail meant one continuing incident acquired a new
+   * identity every five minutes and alerted every five minutes -- and my own dedupe test
+   * codified that as intended behaviour, asserting 45000ms -> 61000ms should re-raise.
+   * It is not a new incident; it is a new sample of the same one. (Eli, blocker on f477335.)
+   */
+  identity: string;
 }
 
 /**
@@ -128,17 +143,22 @@ export function findSchedulerFailures(report: RuntimeHealthReport): SchedulerFin
       status: check.status,
       detail: check.detail,
       subject: SCHEDULER_FLEET_SUBJECT,
+      identity: setValuedIdentity(name, report),
     });
   }
   // One finding per owning agent, so the partition can withhold the destination's own
   // stale jobs while still delivering everyone else's in the same run.
   if (checks.staleRecurring.status !== 'ok') {
     const byAgent = new Map<string, string[]>();
+    const ids = new Map<string, string[]>();
     for (const job of report.scheduler.staleRecurringJobs) {
       const owner = job.agent ?? SCHEDULER_FLEET_SUBJECT;
       const list = byAgent.get(owner) ?? [];
       list.push(`${job.id} (${job.label}): ${job.reason}`);
       byAgent.set(owner, list);
+      const idList = ids.get(owner) ?? [];
+      idList.push(job.id);
+      ids.set(owner, idList);
     }
     for (const [owner, jobs] of [...byAgent.entries()].sort()) {
       findings.push({
@@ -146,17 +166,38 @@ export function findSchedulerFailures(report: RuntimeHealthReport): SchedulerFin
         status: checks.staleRecurring.status,
         detail: `${jobs.length} stale recurring job(s): ${jobs.join('; ')}`,
         subject: owner,
+        identity: ids.get(owner)?.slice().sort().join(',') ?? '',
       });
     }
   }
   return findings;
 }
 
+/**
+ * Identity is check + subject + SEVERITY + stable ids. `detail` is excluded on purpose:
+ * it carries a live measurement, so including it turns every re-measurement of one
+ * continuing incident into a fresh alert every five minutes.
+ *
+ * What still re-alerts, which is the half that must not be lost: a severity TRANSITION
+ * (warn -> error), a MEMBERSHIP change in a set-valued check, and a recovery followed by
+ * a recurrence -- the last because an empty deliverable set clears the stored fingerprint.
+ */
 export function schedulerFailureFingerprint(findings: SchedulerFinding[]): string {
   return findings
-    .map((f) => `${f.check}:${f.subject}:${f.status}:${f.detail}`)
+    .map((f) => `${f.check}:${f.subject}:${f.status}:${f.identity}`)
     .sort()
     .join('|');
+}
+
+/** Sorted affected ids for the set-valued checks, so membership changes re-alert. */
+function setValuedIdentity(check: string, report: RuntimeHealthReport): string {
+  if (check === 'staleOneShots') {
+    return report.scheduler.staleOneShotJobs.map((j) => j.id).sort().join(',');
+  }
+  if (check === 'jobTypes') {
+    return report.scheduler.invalidTypeJobs.map((j) => j.id).sort().join(',');
+  }
+  return '';
 }
 
 export function formatSchedulerAlert(findings: SchedulerFinding[]): string {

@@ -323,10 +323,11 @@ describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
   // monitor read `discordInboxDelivery` and the inbound reconcile and nothing else, so a
   // non-ok scheduler check was computed every run and reached no one. `grep -c scheduler`
   // in the monitor was 0. (Eli's trace on PR #29.) These tests pin that it is read.
-  function schedulerReport(checks: Record<string, { status: string; detail: string }>, staleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }> = []) {
+  function schedulerReport(checks: Record<string, { status: string; detail: string }>, staleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }> = [], oneShots: Array<{ id: string; label: string; fireAt: string; staleMinutes: number }> = []) {
     const base = report();
     base.scheduler.checks = { ...base.scheduler.checks, ...checks } as never;
     base.scheduler.staleRecurringJobs = staleJobs as never;
+    base.scheduler.staleOneShotJobs = oneShots as never;
     return base;
   }
 
@@ -362,18 +363,81 @@ describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
     expect(findings[0].status).toBe('unknown');
   });
 
-  it('suppresses a duplicate across runs, and re-raises when the finding changes', () => {
-    const first = findSchedulerFailures(schedulerReport({
-      schedulerTickPhase: { status: 'error', detail: 'phase 45000ms' },
+  // THE DEDUPE CONTRACT. The version of this test on f477335 asserted that
+  // 45000ms -> 61000ms should re-raise, and called that "the finding changed". It is not a
+  // new incident, it is a new SAMPLE of the same one -- and because scheduler details embed
+  // live telemetry (current phaseMs; a heartbeat age in seconds that grows every run), that
+  // made one continuing incident alert every five minutes while the test called it correct.
+  // A test can encode the defect as the specification. (Eli, blocker on f477335.)
+  it('does NOT re-alert when only the measurement changes', () => {
+    const a = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'scheduler tick phase 45000ms of a 600000ms tick' },
     }));
-    const same = findSchedulerFailures(schedulerReport({
-      schedulerTickPhase: { status: 'error', detail: 'phase 45000ms' },
+    const b = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'scheduler tick phase 61000ms of a 600000ms tick' },
     }));
-    const changed = findSchedulerFailures(schedulerReport({
-      schedulerTickPhase: { status: 'error', detail: 'phase 61000ms' },
+    expect(a[0].detail).not.toBe(b[0].detail);              // the display really did change
+    expect(schedulerFailureFingerprint(a)).toBe(schedulerFailureFingerprint(b)); // identity did not
+  });
+
+  it('DOES re-alert on a severity transition', () => {
+    const warn = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'warn', detail: 'phase 7000ms' },
     }));
-    expect(schedulerFailureFingerprint(first)).toBe(schedulerFailureFingerprint(same));
-    expect(schedulerFailureFingerprint(first)).not.toBe(schedulerFailureFingerprint(changed));
+    const error = findSchedulerFailures(schedulerReport({
+      schedulerTickPhase: { status: 'error', detail: 'phase 7000ms' },
+    }));
+    expect(schedulerFailureFingerprint(warn)).not.toBe(schedulerFailureFingerprint(error));
+  });
+
+  it('DOES re-alert when the affected set changes membership', () => {
+    const one = findSchedulerFailures(schedulerReport(
+      { staleRecurring: { status: 'warn', detail: 'stale jobs' } },
+      [{ id: 'j1', label: 'a', agent: 'nova', cron: '0 3 * * *', reason: 'no job log found' }],
+    ));
+    const two = findSchedulerFailures(schedulerReport(
+      { staleRecurring: { status: 'warn', detail: 'stale jobs' } },
+      [
+        { id: 'j1', label: 'a', agent: 'nova', cron: '0 3 * * *', reason: 'no job log found' },
+        { id: 'j2', label: 'b', agent: 'nova', cron: '0 4 * * *', reason: 'no job log found' },
+      ],
+    ));
+    expect(schedulerFailureFingerprint(one)).not.toBe(schedulerFailureFingerprint(two));
+  });
+
+  it('is stable when a set is re-reported in a different order', () => {
+    // Otherwise "membership changed" would fire on nothing more than iteration order.
+    const forward = findSchedulerFailures(schedulerReport(
+      { staleRecurring: { status: 'warn', detail: 'stale jobs' } },
+      [
+        { id: 'j1', label: 'a', agent: 'nova', cron: '0 3 * * *', reason: 'r' },
+        { id: 'j2', label: 'b', agent: 'nova', cron: '0 4 * * *', reason: 'r' },
+      ],
+    ));
+    const reversed = findSchedulerFailures(schedulerReport(
+      { staleRecurring: { status: 'warn', detail: 'stale jobs' } },
+      [
+        { id: 'j2', label: 'b', agent: 'nova', cron: '0 4 * * *', reason: 'r' },
+        { id: 'j1', label: 'a', agent: 'nova', cron: '0 3 * * *', reason: 'r' },
+      ],
+    ));
+    expect(schedulerFailureFingerprint(forward)).toBe(schedulerFailureFingerprint(reversed));
+  });
+
+  it('is stable under set order for the SCALAR set-valued checks too, not just staleRecurring', () => {
+    // My first version of the order test used staleRecurring only. Dropping `.sort()` from
+    // the staleOneShots identity then survived the mutation -- one outcome (a set-valued
+    // identity) reached by two code paths, with the control covering one. Found by probing
+    // my own fix, not by reading it.
+    const one = (a: string, b: string) => findSchedulerFailures(schedulerReport(
+      { staleOneShots: { status: 'warn', detail: 'stale one-shots' } },
+      [],
+      [
+        { id: a, label: a, fireAt: '2026-09-01T00:00:00Z', staleMinutes: 99 },
+        { id: b, label: b, fireAt: '2026-09-01T00:00:00Z', staleMinutes: 99 },
+      ],
+    ));
+    expect(schedulerFailureFingerprint(one('s1', 's2'))).toBe(schedulerFailureFingerprint(one('s2', 's1')));
   });
 
   it('WITHHOLDS a stale-job finding about the destination and leaves a positive record', () => {
