@@ -11,6 +11,8 @@ import {
   monitorSummary,
   partitionBySubject,
   planAlertDispatch,
+  ALERT_CHANNELS,
+  channelFor,
   findSchedulerFailures,
   schedulerFailureFingerprint,
   formatSchedulerAlert,
@@ -471,5 +473,50 @@ describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
     // suppressed forever -- worse than 09-12, which at least kept shouting.
     expect(split.fingerprint).not.toContain('isla');
     expect(split.fingerprint).toContain('nova');
+  });
+});
+
+
+describe('where each alarm class speaks (dc-20260923-003)', () => {
+  // 2026-09-23: the scheduler class's first live run put ~5,600 characters of stale-job
+  // UUIDs into the principal's DM. Operator diagnostics and principal escalation shared a
+  // destination because they shared a code path, and nothing named which was which.
+  //
+  // Repointing the Discord flag was never available: start-runtime-health-monitor.sh lists
+  // precedence "1. isla 2. Jeremy's DM" and BOTH resolve to the same channel id. (Isla.)
+
+  it('sends operator diagnostics to the operator, not the principal', () => {
+    expect(channelFor('scheduler')).toBe('operator');
+  });
+
+  it('leaves the classes it did not own on the principal channel', () => {
+    // Silently re-routing someone else's alarm class while fixing mine would be the same
+    // move in the other direction.
+    expect(channelFor('delivery')).toBe('principal');
+    expect(channelFor('inbound')).toBe('principal');
+  });
+
+  it('keeps a repair on the SAME channel as the failure it repairs', () => {
+    // Asserted as an EQUALITY against inbound, not as the literal 'principal'. The literal
+    // passes even if inbound later moves and recovery does not -- and that divergence is
+    // exactly the split `formatInboundRecoveryNotice` exists to close: on 2026-09-13 a
+    // successful self-repair went to a log file while its failure went to Discord, so six
+    // recoveries across five agents were invisible and Dana acted on a $4k payload twice.
+    //
+    // The weaker assertion would be true of both the correct and the broken arrangement,
+    // which is the shape that made my channel mislabel survive a green suite.
+    expect(channelFor('inboundRecovery')).toBe(channelFor('inbound'));
+  });
+
+  it('forces a destination decision for every class, with no silent default', () => {
+    // The Record type makes a missing entry a compile error; this pins that no class was
+    // added to the table without one, and that the table has not grown a member nothing
+    // routes through.
+    expect(Object.keys(ALERT_CHANNELS).sort()).toEqual(
+      ['delivery', 'inbound', 'inboundRecovery', 'scheduler'],
+    );
+    for (const channel of Object.values(ALERT_CHANNELS)) {
+      expect(['principal', 'operator']).toContain(channel);
+    }
   });
 });
