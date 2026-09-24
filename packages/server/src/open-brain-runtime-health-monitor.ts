@@ -540,6 +540,22 @@ export function channelFor(cls: AlertClass): AlertChannel {
   return ALERT_CHANNELS[cls];
 }
 
+export interface RoutedAlert {
+  text: string;
+  subjects: string[];
+  channel: AlertChannel;
+}
+
+export async function dispatchRoutedAlert(
+  alert: RoutedAlert,
+  destinations: {
+    principal: (entry: RoutedAlert) => Promise<void>;
+    operator: (entry: RoutedAlert) => Promise<void>;
+  },
+): Promise<void> {
+  await destinations[alert.channel](alert);
+}
+
 export function alertFrom<T>(
   deliverable: Deliverable<T>,
   format: (items: T[]) => string,
@@ -598,7 +614,7 @@ async function main(): Promise<void> {
   // Delivery and inbound classes keep `principal` deliberately: they predate this row and
   // silently re-routing somebody else's alarm class while fixing mine would be the same
   // move in the other direction.
-  const alerts: Array<{ text: string; subjects: string[]; channel: 'principal' | 'operator' }> = [];
+  const alerts: RoutedAlert[] = [];
   // Findings whose subject IS the destination. They cannot go to that channel, so they are
   // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
   // (operator -> Jeremy's DM -> log honestly) this list is what the second hop must carry;
@@ -854,16 +870,15 @@ async function main(): Promise<void> {
       // operator finding reaching the principal's DM is the 2026-09-23 incident; a
       // principal finding quietly diverted to mail would be the same defect inverted,
       // which is why the tag is set where the finding is built and only read here.
-      if (entry.channel === 'operator') {
-        await sendOperatorMail({
+      await dispatchRoutedAlert(entry, {
+        operator: (alert) => sendOperatorMail({
           to: operatorAgent,
-          subject: `runtime monitor: ${entry.subjects.length} finding(s) at ${report.generatedAtIso}`,
-          body: entry.text,
-          mailDir: mailDir,
-        });
-      } else {
-        await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
-      }
+          subject: `runtime monitor: ${alert.subjects.length} finding(s) at ${report.generatedAtIso}`,
+          body: alert.text,
+          mailDir,
+        }),
+        principal: (alert) => sendDiscordMessage({ agent, chatId, text: alert.text, socketPath }),
+      });
     }
     writeMonitorState(statePath, nextState);
   }

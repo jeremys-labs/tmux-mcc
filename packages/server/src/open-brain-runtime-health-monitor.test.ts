@@ -13,6 +13,7 @@ import {
   planAlertDispatch,
   ALERT_CHANNELS,
   channelFor,
+  dispatchRoutedAlert,
   findSchedulerFailures,
   schedulerFailureFingerprint,
   formatSchedulerAlert,
@@ -518,5 +519,37 @@ describe('where each alarm class speaks (dc-20260923-003)', () => {
     for (const channel of Object.values(ALERT_CHANNELS)) {
       expect(['principal', 'operator']).toContain(channel);
     }
+  });
+
+  it('dispatches an operator-tagged alert only through the operator transport', async () => {
+    const principal = vi.fn(async () => undefined);
+    const operator = vi.fn(async () => undefined);
+    const alert = { text: 'scheduler detail', subjects: ['remy'], channel: 'operator' as const };
+
+    await dispatchRoutedAlert(alert, { principal, operator });
+
+    expect(operator).toHaveBeenCalledWith(alert);
+    expect(principal).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a principal-tagged alert only through the principal transport', async () => {
+    const principal = vi.fn(async () => undefined);
+    const operator = vi.fn(async () => undefined);
+    const alert = { text: 'decision needed', subjects: ['remy'], channel: 'principal' as const };
+
+    await dispatchRoutedAlert(alert, { principal, operator });
+
+    expect(principal).toHaveBeenCalledWith(alert);
+    expect(operator).not.toHaveBeenCalled();
+  });
+
+  it('propagates operator transport failure instead of recording a silent delivery', async () => {
+    await expect(dispatchRoutedAlert(
+      { text: 'scheduler detail', subjects: ['remy'], channel: 'operator' },
+      {
+        principal: vi.fn(async () => undefined),
+        operator: vi.fn(async () => { throw new Error('agent-mail failed'); }),
+      },
+    )).rejects.toThrow('agent-mail failed');
   });
 });
