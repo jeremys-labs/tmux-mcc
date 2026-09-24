@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import {
   buildRuntimeHealthReport,
@@ -290,6 +291,40 @@ export function formatDeliveryFailureAlert(report: RuntimeHealthReport): string 
   return lines.join('\n');
 }
 
+/**
+ * Detail to the operator over agent-mail. Deliberately NOT Discord: the monitor has no
+ * channel that is not Jeremy's DM -- `start-runtime-health-monitor.sh` lists precedence
+ * "1. isla 2. Jeremy's DM" and BOTH resolve to 1493425484036309092, so repointing the
+ * flag could never have fixed this. (Isla's finding; I would have repointed it and
+ * reported it fixed.)
+ *
+ * Failure is reported, never swallowed: a routing change whose failure mode is silence
+ * would reproduce the defect it exists to fix, one layer along.
+ */
+async function sendOperatorMail(input: {
+  to: string;
+  subject: string;
+  body: string;
+  mailDir: string;
+}): Promise<void> {
+  const { execFile } = await import('node:child_process');
+  const file = path.join(os.tmpdir(), `runtime-monitor-${Date.now()}.md`);
+  fs.writeFileSync(file, `${input.body}\n`);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile('agent-mail', [
+        'send', '--from', 'marcus', '--to', input.to,
+        '--type', 'note', '--subject', input.subject, '--body-file', file,
+      ], { env: { ...process.env, AGENT_MAIL_DIR: input.mailDir } }, (error, _stdout, stderr) => {
+        if (error) reject(new Error(stderr || error.message));
+        else resolve();
+      });
+    });
+  } finally {
+    try { fs.unlinkSync(file); } catch { /* best effort */ }
+  }
+}
+
 async function sendDiscordMessage(input: {
   agent: string;
   chatId: string;
@@ -478,6 +513,33 @@ export function planAlertDispatch<T>(input: {
  * The ONLY constructor of an alert entry. Takes a `Deliverable`, so an alert cannot be
  * built from an unpartitioned set without a compile error.
  */
+/**
+ * WHERE each alarm class speaks. One table, exported, so the policy is testable and so a
+ * new class cannot acquire a destination by sitting next to an existing send call.
+ *
+ * Before 2026-09-23 this decision did not exist: every class reached Discord because the
+ * send loop only knew how to do that. The scheduler class's first live run put ~5,600
+ * characters of stale-job UUIDs into the principal's DM.
+ *
+ * `inboundRecovery` is `principal` on purpose and is the one worth reading twice: a repair
+ * must reach the same channel its failure would, so it mirrors `inbound` rather than being
+ * routed on its own merits. Sending the repair to the operator while the failure goes to
+ * Discord would reopen the split that notice exists to close.
+ */
+export type AlertChannel = 'principal' | 'operator';
+export type AlertClass = 'delivery' | 'inbound' | 'inboundRecovery' | 'scheduler';
+
+export const ALERT_CHANNELS: Record<AlertClass, AlertChannel> = {
+  delivery: 'principal',
+  inbound: 'principal',
+  inboundRecovery: 'principal',
+  scheduler: 'operator',
+};
+
+export function channelFor(cls: AlertClass): AlertChannel {
+  return ALERT_CHANNELS[cls];
+}
+
 export function alertFrom<T>(
   deliverable: Deliverable<T>,
   format: (items: T[]) => string,
@@ -502,6 +564,11 @@ async function main(): Promise<void> {
   const chatId = readArg('--chat-id') ?? DEFAULT_CHAT_ID;
   const agent = readArg('--agent') ?? DEFAULT_AGENT;
   const dryRun = hasFlag('--dry-run');
+  // Operator destination is configurable but defaults to the agent who owns fleet
+  // infrastructure. Unlike the Discord flag, this one CAN point somewhere that is not
+  // Jeremy's DM, which is the whole point of the change.
+  const operatorAgent = readArg('--operator-agent') ?? 'isla';
+  const mailDir = readArg('--mail-dir') ?? process.env.AGENT_MAIL_DIR ?? '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
   const report = await buildRuntimeHealthReport({
     includeOpenBrainSearch: false,
     contentRoot,
@@ -519,7 +586,19 @@ async function main(): Promise<void> {
   // On 2026-09-12 `consumed_idle_no_reply` for a dead runtime was posted into that
   // runtime's own channel -- correct detection, delivered to the one place that could not
   // act on it. The detector was never broken; the destination was. (Isla's diagnosis.)
-  const alerts: Array<{ text: string; subjects: string[] }> = [];
+  // WHERE a finding goes is now a declared property of the finding, not a property of
+  // which send call happened to be nearest. 2026-09-23: the scheduler class's first live
+  // run put ~5,600 characters of stale-job UUIDs into Jeremy's DM and he told us so --
+  // "I'm not reading all that." Operator diagnostics and principal escalation had the same
+  // destination because they had the same code path.
+  //
+  // `operator` -> agent-mail (full detail, durable, addressed to someone whose lane it is)
+  // `principal` -> Discord (few lines, only where a human decision is actually needed)
+  //
+  // Delivery and inbound classes keep `principal` deliberately: they predate this row and
+  // silently re-routing somebody else's alarm class while fixing mine would be the same
+  // move in the other direction.
+  const alerts: Array<{ text: string; subjects: string[]; channel: 'principal' | 'operator' }> = [];
   // Findings whose subject IS the destination. They cannot go to that channel, so they are
   // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
   // (operator -> Jeremy's DM -> log honestly) this list is what the second hop must carry;
@@ -565,11 +644,11 @@ async function main(): Promise<void> {
     if (previous === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alerts.push(alertFrom(
+      alerts.push({ ...alertFrom(
         deliverySplit.deliverable,
         (agents) => formatDeliveryFailureAlert({ ...report, agents }),
         (failure) => failure.agent,
-      ));
+      ), channel: channelFor('delivery') });
       nextState.lastDeliveryFingerprint = fingerprint;
       nextState.lastDeliverySentAt = report.generatedAtIso;
       nextState.lastFingerprint = fingerprint;
@@ -659,11 +738,15 @@ async function main(): Promise<void> {
       withheldSubjects.push(...recoverySplit.withheld.map((entry) => entry.agent));
     }
     if (recoverySplit.deliverable.length > 0) {
-      alerts.push(alertFrom(
+      // `principal`, matching the inbound FAILURE class deliberately. This notice exists
+      // because a repair must reach the same channel a failure would -- routing the repair
+      // to the operator while the failure goes to Discord would recreate the split it was
+      // built to close, in the change that introduced routing at all.
+      alerts.push({ ...alertFrom(
         recoverySplit.deliverable,
         formatInboundRecoveryNotice,
         (entry) => entry.agent,
-      ));
+      ), channel: channelFor('inboundRecovery') });
     }
   }
 
@@ -686,11 +769,11 @@ async function main(): Promise<void> {
     if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
-      alerts.push(alertFrom(
+      alerts.push({ ...alertFrom(
         inboundSplit.deliverable,
         (misses) => formatInboundReplyMissAlert({ ...inboundResult, misses }),
         (miss) => miss.agent,
-      ));
+      ), channel: channelFor('inbound') });
       nextState.lastInboundReplyFingerprint = fingerprint;
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }
@@ -716,11 +799,11 @@ async function main(): Promise<void> {
     if (state.lastSchedulerFingerprint === fingerprint && !hasFlag('--repeat')) {
       process.stdout.write(`runtime scheduler monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
-      alerts.push(alertFrom(
+      alerts.push({ ...alertFrom(
         schedulerSplit.deliverable,
         formatSchedulerAlert,
         (finding) => finding.subject,
-      ));
+      ), channel: channelFor('scheduler') });
       nextState.lastSchedulerFingerprint = fingerprint;
       nextState.lastSchedulerSentAt = report.generatedAtIso;
     }
@@ -767,7 +850,20 @@ async function main(): Promise<void> {
       // fingerprint, holding Eli's permanent-suppression bug intact behind an upstream
       // guarantee. Latent defect + second mechanism that hides it = the safe-looking
       // change is the one that arms it. (Isla found this in re-review of 75d0bac.)
-      await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
+      // Route by the DECLARED destination, not by which sender is in scope here. An
+      // operator finding reaching the principal's DM is the 2026-09-23 incident; a
+      // principal finding quietly diverted to mail would be the same defect inverted,
+      // which is why the tag is set where the finding is built and only read here.
+      if (entry.channel === 'operator') {
+        await sendOperatorMail({
+          to: operatorAgent,
+          subject: `runtime monitor: ${entry.subjects.length} finding(s) at ${report.generatedAtIso}`,
+          body: entry.text,
+          mailDir: mailDir,
+        });
+      } else {
+        await sendDiscordMessage({ agent, chatId, text: entry.text, socketPath });
+      }
     }
     writeMonitorState(statePath, nextState);
   }
