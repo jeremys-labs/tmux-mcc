@@ -83,6 +83,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
 
   let handoffSettled = false;
   let handoffInFlight = false;
+  let postHandoffDiscordContextNeeded = false;
 
   const tick = () => {
     if (handoff && !handoffSettled && !handoffInFlight) {
@@ -94,6 +95,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
             events,
             submitHandoff: handoff.submitHandoff,
           });
+          if (outcome === 'delivered') postHandoffDiscordContextNeeded = true;
           // Only a deferred attempt (window never opened) is worth retrying.
           if (outcome !== 'deferred') handoffSettled = true;
         } catch {
@@ -127,6 +129,8 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       openBrainConfig,
       runtimeLogPath,
       submitPrompt: discord.submitPrompt,
+      needsPostHandoffContext: () => postHandoffDiscordContextNeeded,
+      markPostHandoffContextLoaded: () => { postHandoffDiscordContextNeeded = false; },
       enqueue,
     });
 

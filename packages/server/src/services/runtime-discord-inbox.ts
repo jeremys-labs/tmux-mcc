@@ -10,7 +10,12 @@ import {
   classifyIntentLane,
   fastContextEnabled,
   recordDiscordTurnLatency,
+  requiresPriorConversationContext,
 } from './discord-fast-lane.js';
+import {
+  loadRecentDiscordHistory,
+  type LoadRecentDiscordHistoryInput,
+} from './discord-conversation-context.js';
 import {
   captureDiscordInboxEntry,
   type OpenBrainRuntimeConfig,
@@ -31,11 +36,15 @@ export interface RuntimeDiscordInboxDeliveryInput {
   submitPrompt: (prompt: string, entry: CodexBridgeInboxEntry) => Promise<void>;
   runtimeLogPath: string;
   openBrainConfig?: OpenBrainRuntimeConfig | null;
+  postHandoffContext?: boolean;
+  loadDiscordHistory?: (input: LoadRecentDiscordHistoryInput) => Promise<string>;
 }
 
 export interface EnqueuePendingRuntimeDiscordInboxInput extends Omit<RuntimeDiscordInboxDeliveryInput, 'entry'> {
   deliveredIds: DeliveredIdSet;
   enqueue: (task: () => Promise<void>, opts?: EnqueueOptions) => void;
+  needsPostHandoffContext?: () => boolean;
+  markPostHandoffContextLoaded?: () => void;
 }
 
 // A replay preserves the real Discord message id in the prompt and cursor
@@ -88,6 +97,22 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
       }
       const contextStart = Date.now();
 
+      const historyRequired = Boolean(input.postHandoffContext) || requiresPriorConversationContext({
+        text: entry.content,
+        hasAttachments: (entry.attachments?.length ?? 0) > 0,
+        ...(entry.referencedMessageId ? { referencedMessageId: entry.referencedMessageId } : {}),
+      });
+      const discordHistory = historyRequired
+        ? await (input.loadDiscordHistory ?? loadRecentDiscordHistory)({
+          agentKey,
+          chatId: entry.channelId,
+          beforeMessageId: entry.id,
+        }).catch((error) => {
+          appendRuntimeLog(runtimeLogPath, `required discord history failed ${entry.id}: ${String(error)}`);
+          throw error;
+        })
+        : '';
+
       let answerContext = '';
       if (fastPathUsed) {
         try {
@@ -135,7 +160,7 @@ export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliv
         );
       }
 
-      return [answerContext, formatInboxEntryForCodex(entry)].filter(Boolean).join('\n\n');
+      return [answerContext, discordHistory, formatInboxEntryForCodex(entry)].filter(Boolean).join('\n\n');
     },
     submitPrompt: (prompt) => submitPrompt(prompt, entry),
     acknowledgeDelivery: () => {
@@ -156,7 +181,9 @@ export function enqueuePendingRuntimeDiscordInbox(input: EnqueuePendingRuntimeDi
     input.deliveredIds.add(deliveryKey);
     input.enqueue(async () => {
       try {
-        await deliverRuntimeDiscordInbox({ ...input, entry });
+        const postHandoffContext = input.needsPostHandoffContext?.() ?? false;
+        await deliverRuntimeDiscordInbox({ ...input, entry, postHandoffContext });
+        if (postHandoffContext) input.markPostHandoffContextLoaded?.();
         // Delivered and acked (cursor advanced) — safe to let the cap evict this id.
         input.deliveredIds.settle?.(deliveryKey);
       } catch (error) {

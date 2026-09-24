@@ -7,6 +7,7 @@ import {
   classifyIntentLane,
   fastContextEnabled,
   recordDiscordTurnLatency,
+  requiresPriorConversationContext,
 } from './discord-fast-lane.js';
 
 const lane = (text: string, extra: Partial<Parameters<typeof classifyIntentLane>[0]> = {}) =>
@@ -58,6 +59,15 @@ describe('classifyIntentLane', () => {
     expect(lane('remember what we discussed last time?')).toBe('personal_context');
     expect(lane("what's the status of that thing")).toBe('personal_context');
     expect(lane('where did we land on the follow-up?')).toBe('personal_context');
+    expect(lane("I saw another repsonse. Waht's new?")).toBe('personal_context');
+    expect(lane('Do it')).toBe('personal_context');
+  });
+
+  it('identifies prompts that require bounded same-channel history', () => {
+    expect(requiresPriorConversationContext({ text: "I saw another repsonse. Waht's new?" })).toBe(true);
+    expect(requiresPriorConversationContext({ text: 'Do it' })).toBe(true);
+    expect(requiresPriorConversationContext({ text: 'nice', referencedMessageId: '123' })).toBe(true);
+    expect(requiresPriorConversationContext({ text: 'what is photosynthesis?' })).toBe(false);
   });
 
   it('routes named agents to coordination', () => {

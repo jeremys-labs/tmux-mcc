@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 export {};
-import http from 'node:http';
 import { pathToFileURL } from 'node:url';
+import { requestDiscordBridge } from './discord-bridge-socket.js';
 
 type Args = {
   agent?: string;
@@ -69,30 +69,7 @@ export function buildHistoryPayload(args: Args): string {
 }
 
 export async function requestHistory(socketPath: string, payload: string): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const req = http.request({
-      socketPath,
-      path: '/history',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-      },
-    }, (res) => {
-      let responseBody = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { responseBody += chunk; });
-      res.on('end', () => {
-        if ((res.statusCode ?? 500) < 200 || (res.statusCode ?? 500) >= 300) {
-          reject(new Error(responseBody));
-          return;
-        }
-        resolve(responseBody);
-      });
-    });
-    req.on('error', reject);
-    req.end(payload);
-  });
+  return requestDiscordBridge(socketPath, '/history', payload);
 }
 
 async function main(): Promise<void> {

@@ -47,7 +47,24 @@ const META_FOLLOWUP =
   /^(shorter|longer|simpler|explain that|why\??|how so\??|say more|expand|tl;?dr|really\??)[.!?\s]*$/i;
 
 const PRIOR_CONTEXT =
-  /\b(remember|last time|we (discussed|talked|agreed)|did you|have you|status of|what happened|where did we land|follow[- ]?up|that thing|you (said|mentioned)|earlier)\b/i;
+  /\b(remember|last time|we (discussed|talked|agreed)|did you|have you|status of|what happened|where did we land|follow[- ]?up|that thing|you (said|mentioned)|earlier|read up in discord)\b/i;
+
+const CONVERSATION_DEPENDENT =
+  /\b(another|new|latest)\s+(response|repsonse|reply|message|email|update)\b|\bwhat(?:'s| is)\s+new\b/i;
+
+const CONTEXTUAL_ACK =
+  /^(do it|send it|go ahead|proceed|yes|yep|yeah|no|nope|correct|exactly)[.!?\s]*$/i;
+
+export function requiresPriorConversationContext(input: IntentLaneInput): boolean {
+  const text = input.text.trim();
+  return Boolean(
+    input.referencedMessageId ||
+    PRIOR_CONTEXT.test(text) ||
+    META_FOLLOWUP.test(text) ||
+    CONVERSATION_DEPENDENT.test(text) ||
+    CONTEXTUAL_ACK.test(text)
+  );
+}
 
 // Action words that always mean scheduling/automation work — checked before names.
 const SCHEDULE_ACTIONS = /\b(remind(er)? me|schedule|cron|newsletter|every (day|week|morning|night)|daily|weekly|job)\b/i;
@@ -107,8 +124,7 @@ export function classifyIntentLane(input: IntentLaneInput): IntentLaneDecision {
   // coordination, "is Tom around next week?" is personal — both non-fast.
   if (AGENT_NAMES.test(text)) return { lane: 'coordination', reasons: ['agent_name'] };
   if (PERSON_NAMES.test(text)) return { lane: 'personal_context', reasons: ['person_name'] };
-  if (PRIOR_CONTEXT.test(text)) return { lane: 'personal_context', reasons: ['prior_context_reference'] };
-  if (META_FOLLOWUP.test(text)) return { lane: 'personal_context', reasons: ['meta_followup_reference'] };
+  if (requiresPriorConversationContext(input)) return { lane: 'personal_context', reasons: ['prior_context_reference'] };
   if (WORK_WORDS.test(text)) return { lane: 'deep_work', reasons: ['work_words'] };
   if (TIME_WORDS.test(text)) return { lane: 'deep_work', reasons: ['time_words'] };
   if (CURRENT_LOOKUP.test(text)) return { lane: 'current_lookup', reasons: ['current_lookup_words'] };

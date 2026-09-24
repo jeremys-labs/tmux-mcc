@@ -149,6 +149,7 @@ describe('startRuntimeInboxPollers', () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     await tasks.shift()!();
     expect(injectHandoff).toHaveBeenCalledTimes(1);
+    expect(enqueueDiscord.mock.calls.at(-1)?.[0].needsPostHandoffContext()).toBe(false);
 
     // Tick 2 → deferred, so retries.
     handle.tick();
@@ -159,6 +160,10 @@ describe('startRuntimeInboxPollers', () => {
     handle.tick();
     expect(tasks).toHaveLength(0);
     expect(injectHandoff).toHaveBeenCalledTimes(2);
+    const discordArgs = enqueueDiscord.mock.calls.at(-1)?.[0];
+    expect(discordArgs.needsPostHandoffContext()).toBe(true);
+    discordArgs.markPostHandoffContextLoaded();
+    expect(discordArgs.needsPostHandoffContext()).toBe(false);
   });
 
   it('does not re-enqueue a handoff attempt while one is in flight', async () => {

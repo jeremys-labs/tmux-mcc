@@ -21,6 +21,11 @@ vi.mock('./open-brain-runtime.js', () => ({
   captureDiscordInboxEntry: vi.fn(),
 }));
 
+vi.mock('./discord-conversation-context.js', async (importActual) => ({
+  ...(await importActual<typeof import('./discord-conversation-context.js')>()),
+  loadRecentDiscordHistory: vi.fn(async () => '<recent_discord_history>(test history)</recent_discord_history>'),
+}));
+
 function entry(overrides: Partial<CodexBridgeInboxEntry> = {}): CodexBridgeInboxEntry {
   return {
     id: 'discord_1',
@@ -108,6 +113,78 @@ describe('runtime discord inbox delivery', () => {
       messageId: 'reply_1',
       referencedMessageId: 'scheduled_question_1',
     }));
+  });
+
+  it('injects exact-channel history for Dana\'s context-dependent post-compaction follow-up', async () => {
+    const item = entry({
+      id: '1552767744179437609',
+      agentKey: 'dana',
+      bindingName: 'dana',
+      channelId: '1531066562172293200',
+      content: "I saw another repsonse. Waht's new?",
+    });
+    writeInbox(tmpDir, 'dana', [item]);
+    const loadDiscordHistory = vi.fn(async () => [
+      '<recent_discord_history>',
+      '[2026-09-24T02:33:10Z] Dana: Airbnb confirmed the supervisor escalation is queued.',
+      '</recent_discord_history>',
+    ].join('\n'));
+    const submitPrompt = vi.fn(async () => {});
+
+    await deliverRuntimeDiscordInbox({
+      agentKey: 'dana',
+      contentRoot: tmpDir,
+      entry: item,
+      events: createRuntimeEventEmitter({ agent: 'dana', runtime: 'claude', sinks: [] }),
+      submitPrompt,
+      runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+      loadDiscordHistory,
+    });
+
+    expect(loadDiscordHistory).toHaveBeenCalledWith({
+      agentKey: 'dana',
+      chatId: '1531066562172293200',
+      beforeMessageId: '1552767744179437609',
+    });
+    expect(submitPrompt.mock.calls[0][0]).toContain('Airbnb confirmed the supervisor escalation');
+  });
+
+  it('injects history on the first Discord turn after a consumed runtime handoff', async () => {
+    const item = entry({ id: 'first_after_handoff', content: 'What is 2 + 2?' });
+    writeInbox(tmpDir, 'enzo', [item]);
+    const loadDiscordHistory = vi.fn(async () => '<recent_discord_history>(prior channel turns)</recent_discord_history>');
+    const submitPrompt = vi.fn(async () => {});
+
+    await deliverRuntimeDiscordInbox({
+      agentKey: 'enzo',
+      contentRoot: tmpDir,
+      entry: item,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt,
+      runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+      postHandoffContext: true,
+      loadDiscordHistory,
+    });
+
+    expect(loadDiscordHistory).toHaveBeenCalledTimes(1);
+    expect(submitPrompt.mock.calls[0][0]).toContain('prior channel turns');
+  });
+
+  it('fails closed without advancing the cursor when required Discord history cannot load', async () => {
+    const item = entry({ id: 'history_failure', content: 'Do it' });
+    writeInbox(tmpDir, 'enzo', [item]);
+
+    await expect(deliverRuntimeDiscordInbox({
+      agentKey: 'enzo',
+      contentRoot: tmpDir,
+      entry: item,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt: vi.fn(async () => {}),
+      runtimeLogPath: path.join(tmpDir, 'runtime.log'),
+      loadDiscordHistory: vi.fn(async () => { throw new Error('history unavailable'); }),
+    })).rejects.toThrow('history unavailable');
+
+    expect(readInboxCursor(tmpDir, 'enzo').lineCount).toBe(0);
   });
 
   it('does not advance the inbox cursor when prompt submission fails', async () => {
