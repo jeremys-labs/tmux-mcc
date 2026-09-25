@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { lastOccurrenceBefore } from './cron-occurrence.js';
 import { execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { resolveOpenBrainRuntimeConfig } from './open-brain-runtime.js';
@@ -54,10 +55,12 @@ export interface SchedulerHealth {
   invalidTypeJobs: Array<{ id: string; label: string; type: string }>;
   staleOneShotJobs: Array<{ id: string; label: string; fireAt: string; staleMinutes: number }>;
   staleRecurringJobs: Array<{ id: string; label: string; agent?: string; cron: string; lastLogAt?: string; staleHours?: number; reason: string }>;
+  unevaluableScheduleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }>;
   checks: {
     jobTypes: HealthCheck;
     staleOneShots: HealthCheck;
     staleRecurring: HealthCheck;
+    scheduleEvaluable: HealthCheck;
     schedulerHeartbeat: HealthCheck;
     schedulerTickPhase: HealthCheck;
     openPrDigest: HealthCheck;
@@ -423,10 +426,31 @@ function loadSchedulerJobs(schedulerRoot: string): SchedulerJob[] {
   return parsed?.jobs ?? [];
 }
 
-function latestLogMtimeForJob(logsDir: string, jobId: string): string | undefined {
+/**
+ * Newest COMPLETION evidence for a job, or undefined.
+ *
+ * dc-20260923-004. This read `.log` only. The scheduler stopped writing per-job `.log`
+ * around the June/July 2026 artifact cutover -- newest per-job `.log` on disk is
+ * 2026-06-07, while `.run-result.json` runs to today -- so for three and a half months the
+ * check could not see a fresh artifact for ANY job. All 63 enabled recurring jobs were
+ * flagged, every day, which is zero true negatives: a job that genuinely stopped was
+ * formally indistinguishable from the 62 that hadn't.
+ *
+ * `.prompt.txt` and `.system.txt` are EXCLUDED deliberately. Both are written BEFORE spawn,
+ * so counting them would report a job healthy because it was ATTEMPTED -- a check passing
+ * because its input arrived, which is the exact defect class this row exists for. Only
+ * `persistRunResult` (scheduler-firing.ts) writes `.run-result.json`, and it writes on
+ * child close for success, failure and timeout. (Eli's correction; I had listed all three
+ * extensions together in my own report.)
+ *
+ * Legacy `.log` stays readable through the migration but cannot outrank current evidence:
+ * newest accepted artifact wins, whichever format it is.
+ */
+function latestCompletionMtimeForJob(logsDir: string, jobId: string): string | undefined {
   try {
     const prefix = `${jobId}-`;
-    const files = fs.readdirSync(logsDir).filter((name) => name.startsWith(prefix) && name.endsWith('.log'));
+    const files = fs.readdirSync(logsDir).filter((name) => name.startsWith(prefix)
+      && (name.endsWith('.run-result.json') || name.endsWith('.log')));
     let latest: string | undefined;
     for (const file of files) {
       const mtime = fileMtimeIso(path.join(logsDir, file));
@@ -437,6 +461,7 @@ function latestLogMtimeForJob(logsDir: string, jobId: string): string | undefine
     return undefined;
   }
 }
+
 
 function cronPeriodMs(expr: string): number | null {
   const parts = expr.trim().split(/\s+/);
@@ -568,39 +593,51 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       staleMinutes,
     }));
 
+  // DUE-NESS, not an estimated period. A recurring job is stale when a SCHEDULED
+  // OCCURRENCE has passed beyond the grace with no completion after it.
+  //
+  // The old rule asked whether the newest artifact was older than 2x an approximated
+  // period, which is not a question about the schedule at all. A job that runs 07:00 on
+  // 4 June has no "period" to be twice of, and `cronPeriodMs` returned null for it and
+  // filed that null AS A FAULT IN THE JOB -- reporting the anniversary of the day Jeremy
+  // met Alison as a dead job. 14 of 73 recurring jobs were unevaluable that way, 13 of
+  // them Hank's seasonal month-lists, all of whose crons are correct.
+  //
+  // Un-evaluable is now its own state and NEVER stale. A checker that cannot read an
+  // expression is reporting its own limitation; attributing that to the job is the
+  // wrong-subject defect, and folding it into `ok` would be the false-clean instead.
+  const SCHEDULE_GRACE_MS = 60 * 60_000;
+  const unevaluableScheduleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }> = [];
   const staleRecurringJobs = jobs
     .filter((job) => job.type === 'recurring' && job.cron)
     .flatMap((job) => {
-      const period = cronPeriodMs(job.cron ?? '');
-      if (!period) {
-        return [{
-          id: job.id ?? 'unknown',
-          label: job.label ?? 'unlabeled',
-          agent: job.agent,
-          cron: job.cron ?? '',
-          reason: 'cron period could not be estimated',
-        }];
-      }
-      const lastLogAt = latestLogMtimeForJob(logsDir, job.id ?? '');
-      if (!lastLogAt) {
-        return [{
-          id: job.id ?? 'unknown',
-          label: job.label ?? 'unlabeled',
-          agent: job.agent,
-          cron: job.cron ?? '',
-          reason: 'no job log found',
-        }];
-      }
-      const staleMs = now.getTime() - new Date(lastLogAt).getTime();
-      if (staleMs <= period * 2) return [];
-      return [{
+      const base = {
         id: job.id ?? 'unknown',
         label: job.label ?? 'unlabeled',
         agent: job.agent,
         cron: job.cron ?? '',
-        lastLogAt,
+      };
+      let due: Date | null;
+      try {
+        due = lastOccurrenceBefore(job.cron ?? '', now);
+      } catch (error) {
+        unevaluableScheduleJobs.push({ ...base, reason: `schedule could not be evaluated: ${(error as Error).message}` });
+        return [];
+      }
+      // No occurrence inside the lookback: nothing was due, so nothing was missed.
+      if (!due) return [];
+      const dueWithGrace = due.getTime() + SCHEDULE_GRACE_MS;
+      if (now.getTime() < dueWithGrace) return [];
+      const lastCompletionAt = latestCompletionMtimeForJob(logsDir, job.id ?? '');
+      if (lastCompletionAt && new Date(lastCompletionAt).getTime() >= due.getTime()) return [];
+      const staleMs = now.getTime() - due.getTime();
+      return [{
+        ...base,
+        lastLogAt: lastCompletionAt,
         staleHours: Math.round(staleMs / 36_000) / 100,
-        reason: 'last log older than 2x estimated cron period',
+        reason: lastCompletionAt
+          ? `no completion since the ${due.toISOString()} occurrence`
+          : `no completion evidence, and the ${due.toISOString()} occurrence has passed`,
       }];
     });
 
@@ -611,6 +648,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
     invalidTypeJobs,
     staleOneShotJobs,
     staleRecurringJobs,
+    unevaluableScheduleJobs,
     checks: {
       jobTypes: validJobTypes.length === 0
         ? check('error', 'scheduler job-types contract is missing or empty')
@@ -620,9 +658,13 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       staleOneShots: staleOneShotJobs.length === 0
         ? check('ok', 'no stale fired one-shot jobs')
         : check('error', `${staleOneShotJobs.length} one-shot job(s) are past fireAt by >5min`),
+      scheduleEvaluable: unevaluableScheduleJobs.length === 0
+        ? check('ok', `all ${jobs.filter((j) => j.type === 'recurring' && j.cron).length} recurring schedules evaluable`)
+        // `unknown`, never `warn`: this is the checker's limit, not a fault in the jobs.
+        : check('unknown', `${unevaluableScheduleJobs.length} recurring schedule(s) could not be evaluated`),
       staleRecurring: staleRecurringJobs.length === 0
-        ? check('ok', 'recurring jobs have recent logs where estimable')
-        : check('warn', `${staleRecurringJobs.length} recurring job(s) have stale or missing logs`),
+        ? check('ok', 'no recurring job has missed a scheduled occurrence')
+        : check('warn', `${staleRecurringJobs.length} recurring job(s) have missed a scheduled occurrence`),
       schedulerHeartbeat: schedulerHeartbeatCheck(schedulerRoot, now),
       schedulerTickPhase: schedulerTickPhaseCheck(schedulerRoot, now),
       openPrDigest: openPrDigestStatusCheck(jobs, openPrDigestStatusPath, now),
