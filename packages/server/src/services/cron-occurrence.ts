@@ -31,6 +31,16 @@
 export class CronParseError extends Error {}
 
 function expand(field: string, min: number, max: number): Set<number> {
+  // Match agent-supervisor's accepted grammar exactly. In particular, its evaluator
+  // rejects range/list mixtures and stepped ranges; accepting those here would invent
+  // occurrences for schedules the live scheduler skips as invalid.
+  if (field !== '*'
+    && !(/^\*\/\d+$/.test(field))
+    && !(/^\d+-\d+$/.test(field))
+    && !(/^\d+(,\d+)+$/.test(field))
+    && !(/^\d+$/.test(field))) {
+    throw new CronParseError(`bad field ${field}`);
+  }
   const out = new Set<number>();
   for (const part of field.split(',')) {
     const [rangePart, stepPart] = part.split('/');
@@ -71,8 +81,9 @@ export function parseCron(expr: string): CronFields {
     hour: expand(ho, 0, 23),
     dayOfMonth: expand(dom, 1, 31),
     month: expand(mo, 1, 12),
-    // 0 and 7 both mean Sunday in POSIX cron.
-    dayOfWeek: new Set([...expand(dow, 0, 7)].map((d) => (d === 7 ? 0 : d))),
+    // The live scheduler compares against Date#getDay() (0..6) without POSIX's
+    // 7-to-Sunday normalization. Keep 7 as 7 so it never creates a phantom Sunday.
+    dayOfWeek: expand(dow, 0, 7),
   };
 }
 

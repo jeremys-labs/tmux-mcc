@@ -34,6 +34,15 @@ describe('agrees with the scheduler it is standing in for', () => {
     expect(m('0 9 15 * 1', new Date(2026, 6, 15, 9, 0))).toBe(false); // 15th, not a Monday
   });
 
+  it('does not normalize day-of-week 7 to Sunday because the scheduler does not', () => {
+    expect(m('0 9 * * 7', new Date(2026, 5, 7, 9, 0))).toBe(false); // Sunday
+  });
+
+  it('rejects compound field forms the scheduler rejects', () => {
+    expect(() => parseCron('0 9 * * 1-3,5')).toThrow(CronParseError);
+    expect(() => parseCron('0 9 * * 1-5/2')).toThrow(CronParseError);
+  });
+
   it('refuses an expression it cannot parse instead of reporting no-match', () => {
     // A parse failure and "this minute does not match" must never be the same answer: one
     // is the checker's limit and the other is a fact about the schedule.

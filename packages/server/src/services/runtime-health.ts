@@ -462,22 +462,6 @@ function latestCompletionMtimeForJob(logsDir: string, jobId: string): string | u
   }
 }
 
-
-function cronPeriodMs(expr: string): number | null {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
-  if (minute.startsWith('*/') && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    const minutes = Number(minute.slice(2));
-    return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : null;
-  }
-  if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') return 60 * 60_000;
-  if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') return 24 * 60 * 60_000;
-  if (dayOfMonth === '*' && month === '*' && dayOfWeek !== '*') return 7 * 24 * 60 * 60_000;
-  if (dayOfMonth !== '*' && month === '*' && dayOfWeek === '*') return 31 * 24 * 60 * 60_000;
-  return null;
-}
-
 function isOpenPrDigestJob(job: SchedulerJob): boolean {
   const haystack = `${job.id ?? ''} ${job.label ?? ''} ${job.command ?? ''} ${job.prompt ?? ''}`.toLowerCase();
   return haystack.includes('open-pr-digest');
