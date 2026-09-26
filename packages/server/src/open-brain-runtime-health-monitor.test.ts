@@ -17,6 +17,9 @@ import {
   findSchedulerFailures,
   schedulerFailureFingerprint,
   formatSchedulerAlert,
+  formatWithheldEscalation,
+  planWithheldEscalation,
+  withheldEscalationFingerprint,
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
@@ -490,11 +493,22 @@ describe('where each alarm class speaks (dc-20260923-003)', () => {
     expect(channelFor('scheduler')).toBe('operator');
   });
 
-  it('leaves the classes it did not own on the principal channel', () => {
-    // Silently re-routing someone else's alarm class while fixing mine would be the same
-    // move in the other direction.
-    expect(channelFor('delivery')).toBe('principal');
-    expect(channelFor('inbound')).toBe('principal');
+  it('routes delivery and inbound to the operator too (dc-20260924-004)', () => {
+    // 2026-09-23 deliberately left these two alone: re-routing someone else's alarm class
+    // while fixing mine would have been the same overreach inverted. Jeremy closed that
+    // gap -- they are ALSO agent-addressed and ALSO exited through his DM. A delivery
+    // failure is fixed by a restart and an inbound miss by a replay; both are the
+    // operator's lane, and this monitor already attempts them itself before alerting.
+    expect(channelFor('delivery')).toBe('operator');
+    expect(channelFor('inbound')).toBe('operator');
+  });
+
+  it('leaves NO alarm class pointing at the principal', () => {
+    // THE CONTROL FOR "an agent-addressed finding does not land in the principal's DM".
+    // Asserted over the whole table rather than per class, so a class added later cannot
+    // acquire a principal destination without this failing. The principal's only remaining
+    // message is the withheld escalation, which is not an alarm class and is not in here.
+    expect(Object.values(ALERT_CHANNELS)).not.toContain('principal');
   });
 
   it('keeps a repair on the SAME channel as the failure it repairs', () => {
@@ -551,5 +565,132 @@ describe('where each alarm class speaks (dc-20260923-003)', () => {
         operator: vi.fn(async () => { throw new Error('agent-mail failed'); }),
       },
     )).rejects.toThrow('agent-mail failed');
+  });
+});
+
+describe('withheld findings escalate to the principal (dc-20260924-004)', () => {
+  // Before 2026-09-26 a withheld finding reached stdout and nowhere else. That was
+  // survivable only while delivery and inbound still had a principal path of their own.
+  // With every alarm class on `operator`, a finding ABOUT the operator would have had zero
+  // destinations -- the 2026-09-12 defect with an extra step. "Findings still reach
+  // someone" is an acceptance condition of this row, not a nicety.
+
+  it('states the required action in the FIRST line', () => {
+    const text = formatWithheldEscalation({ destinationAgent: 'isla', subjects: ['isla'] });
+    const firstLine = text.split('\n')[0];
+
+    // Jeremy's rule after the 09-23 dump: what he has to DO, first line, or it does not
+    // belong in his DM. Asserted on line ONE specifically -- a message that explains
+    // itself for two paragraphs and asks at the bottom is the thing he told us to stop.
+    expect(firstLine).toContain('Restart isla');
+    expect(firstLine.length).toBeLessThan(120);
+  });
+
+  it('names every withheld subject, deduplicated and ordered', () => {
+    const text = formatWithheldEscalation({
+      destinationAgent: 'isla',
+      subjects: ['isla', 'isla', 'dana'],
+    });
+
+    // Ordered, so the same set does not produce two different messages between runs.
+    expect(text).toContain('Withheld findings name dana, isla —');
+    // Once, not twice: the same subject can be withheld by more than one alarm class in a
+    // single pass, and a repeated name reads as two separate problems. Counted on `dana`,
+    // which appears ONLY in the subject list -- `isla` is also the destination and is named
+    // again in the action line, so counting it would measure the wrong thing.
+    expect(text.match(/dana/g)?.length).toBe(1);
+  });
+
+  it('says the rest of the pass was unaffected, so silence is not read as an outage', () => {
+    const text = formatWithheldEscalation({ destinationAgent: 'isla', subjects: ['isla'] });
+    expect(text).toContain('every other finding this pass was delivered normally');
+  });
+
+  it('fingerprints the SET, so a standing condition escalates once and not every run', () => {
+    // The findings themselves must re-raise every pass -- withholding means nobody has been
+    // told. The ESCALATION must not: this monitor runs every five minutes, and a permanent
+    // condition paging a human on that cadence IS the noise this row exists to remove.
+    expect(withheldEscalationFingerprint(['isla', 'dana']))
+      .toBe(withheldEscalationFingerprint(['dana', 'isla', 'dana']));
+  });
+
+  it('changes fingerprint when a NEW subject is withheld', () => {
+    // The other half, and the half a sort-and-join can silently lose: dedup must not
+    // collapse a genuinely larger problem into an already-suppressed one.
+    expect(withheldEscalationFingerprint(['isla']))
+      .not.toBe(withheldEscalationFingerprint(['isla', 'dana']));
+  });
+});
+
+describe('the withheld escalation is actually wired to a destination (dc-20260924-004)', () => {
+  // These are the controls that matter. The four tests above check the TEXT; a perfectly
+  // worded message that nothing sends is the defect this row was registered to fix, one
+  // layer down. The escalation is the only alert built outside the branded `Deliverable`
+  // path, so the compiler is not holding this up and the suite has to.
+
+  it('gives a withheld finding a destination, and that destination is the principal', () => {
+    const { alert } = planWithheldEscalation({ subjects: ['isla'], destinationAgent: 'isla' });
+
+    expect(alert).not.toBeNull();
+    expect(alert?.channel).toBe('principal');
+    expect(alert?.subjects).toEqual(['isla']);
+  });
+
+  it('actually reaches the principal transport when dispatched', async () => {
+    // End-to-end within the seam: planner output handed straight to the real dispatcher.
+    // Asserting `channel === 'principal'` alone would pass even if `dispatchRoutedAlert`
+    // later stopped honouring the tag.
+    const principal = vi.fn(async () => undefined);
+    const operator = vi.fn(async () => undefined);
+    const { alert } = planWithheldEscalation({ subjects: ['isla'], destinationAgent: 'isla' });
+
+    await dispatchRoutedAlert(alert!, { principal, operator });
+
+    expect(principal).toHaveBeenCalledTimes(1);
+    expect(operator).not.toHaveBeenCalled();
+  });
+
+  it('produces NOTHING when nothing was withheld', () => {
+    const { alert, fingerprint } = planWithheldEscalation({ subjects: [], destinationAgent: 'isla' });
+
+    expect(alert).toBeNull();
+    // Cleared, not left standing: a stale fingerprint would suppress the next real one.
+    expect(fingerprint).toBeUndefined();
+  });
+
+  it('suppresses a repeat of the same set but STILL returns the fingerprint', () => {
+    // The half that is easy to get wrong. If the suppressed branch returned undefined, the
+    // next pass would see no prior fingerprint and escalate again -- a five-minute DM loop
+    // dressed up as deduplication.
+    const { alert, fingerprint } = planWithheldEscalation({
+      subjects: ['isla'],
+      destinationAgent: 'isla',
+      lastFingerprint: withheldEscalationFingerprint(['isla']),
+    });
+
+    expect(alert).toBeNull();
+    expect(fingerprint).toBe('isla');
+  });
+
+  it('escalates again when a NEW subject joins an already-escalated set', () => {
+    const { alert } = planWithheldEscalation({
+      subjects: ['isla', 'dana'],
+      destinationAgent: 'isla',
+      lastFingerprint: withheldEscalationFingerprint(['isla']),
+    });
+
+    expect(alert).not.toBeNull();
+    expect(alert?.subjects).toEqual(['dana', 'isla']);
+  });
+
+  it('honours --repeat, so an operator can force the escalation out', () => {
+    const { alert } = planWithheldEscalation({
+      subjects: ['isla'],
+      destinationAgent: 'isla',
+      lastFingerprint: withheldEscalationFingerprint(['isla']),
+      repeat: true,
+    });
+
+    expect(alert).not.toBeNull();
   });
 });
