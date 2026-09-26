@@ -893,3 +893,98 @@ describe('runtime health', () => {
     expect(report.agents[0].preSessionContext.detail).toContain('memory=false');
   });
 });
+
+
+describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (dc-20260923-004)', () => {
+  // On 2026-09-23 this check flagged all 63 enabled recurring jobs, every day, and had done
+  // since the June/July artifact cutover. Zero true negatives: a job that genuinely stopped
+  // was formally indistinguishable from the 62 that hadn't, so the check could not detect
+  // the one condition it exists for.
+  //
+  // The two controls below pull in OPPOSITE directions and neither is sufficient alone.
+  // With no baseline discrimination to regress from, "the finding count went down" is
+  // satisfiable by any change that makes the check quieter, including a wrong one. These
+  // are the only two assertions that can distinguish a repair from a lobotomy.
+  function scheduler(jobs: unknown[], artifacts: Array<{ name: string; ageMs: number }>, now: Date) {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const logsDir = path.join(schedulerRoot, 'logs');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs });
+    fs.mkdirSync(logsDir, { recursive: true });
+    for (const a of artifacts) {
+      const f = path.join(logsDir, a.name);
+      fs.writeFileSync(f, 'x');
+      const t = new Date(now.getTime() - a.ageMs);
+      fs.utimesSync(f, t, t);
+    }
+    return buildRuntimeHealthReport({
+      agents: [], agentsRoot: path.join(root, 'agents'), schedulerRoot,
+      agentMailDbPath: path.join(root, 'missing.db'), scheduledOutboxPath: path.join(root, 'out.jsonl'),
+      now, includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+      diskCheck: { status: 'ok', detail: 'pinned by fixture' },
+    });
+  }
+
+  const NOW = new Date(2026, 8, 24, 18, 0); // 2026-09-24 18:00 local
+  const daily = { id: 'daily-job', label: 'daily', agent: 'nova', type: 'recurring', cron: '0 9 * * *' };
+  const annual = { id: 'annual-job', label: 'Annual met-day reminder', agent: 'isla', type: 'recurring', cron: '0 7 4 6 *' };
+
+  it('CONTROL 1 — flags a job whose last completion predates a missed occurrence', () => {
+    // Without this, the false positives get "fixed" by making the check blind, and that is
+    // undetectable because the population simply goes quiet and quiet reads as healthy.
+    return scheduler([daily], [{ name: 'daily-job-old.run-result.json', ageMs: 5 * 24 * 3600_000 }], NOW)
+      .then((r) => {
+        const ids = r.scheduler.staleRecurringJobs.map((j) => j.id);
+        expect(ids).toContain('daily-job');
+        expect(r.scheduler.checks.staleRecurring.status).toBe('warn');
+      });
+  });
+
+  it('CONTROL 2 — does NOT flag a correct rare-cadence job with only legacy completion', () => {
+    // 492a3b3c's real shape: an ANNUAL job that fired on 2026-06-04 and is not due again
+    // until 2027, whose only artifact is a pre-cutover `.log`. It has completion evidence;
+    // what it lacks is the current FORMAT. Any rule keyed on "a recent .run-result.json
+    // exists" flags every annual and rare-cadence job forever, and that reads as the check
+    // working because the population stays noisy.
+    const juneFourth = new Date(2026, 5, 4, 7, 0);
+    return scheduler([annual], [{ name: 'annual-job-2026-06-04T11-00-00.log', ageMs: NOW.getTime() - juneFourth.getTime() }], NOW)
+      .then((r) => {
+        expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('annual-job');
+        expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).not.toContain('annual-job');
+      });
+  });
+
+  it('does not count PRE-SPAWN artifacts as completion', () => {
+    // .prompt.txt and .system.txt are written BEFORE the child spawns, so treating them as
+    // freshness reports a job healthy because it was ATTEMPTED -- a check passing because
+    // its input arrived, which is this row's own defect class. (Eli's correction.)
+    return scheduler([daily], [
+      { name: 'daily-job-now.prompt.txt', ageMs: 60_000 },
+      { name: 'daily-job-now.system.txt', ageMs: 60_000 },
+    ], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).toContain('daily-job');
+    });
+  });
+
+  it('accepts legacy .log as completion, and lets the newest evidence win', () => {
+    return scheduler([daily], [
+      { name: 'daily-job-stale.run-result.json', ageMs: 5 * 24 * 3600_000 },
+      { name: 'daily-job-fresh.log', ageMs: 30 * 60_000 },
+    ], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('daily-job');
+    });
+  });
+
+  it('reports an unreadable schedule as UNKNOWN — not stale, and not ok', () => {
+    // A checker that cannot read an expression is reporting its own limitation. Filing that
+    // against the job is the wrong-subject defect that reported the anniversary of the day
+    // Jeremy met Alison as a dead job; folding it into ok would be the false-clean instead.
+    const broken = { id: 'broken-cron', label: 'bad', agent: 'nova', type: 'recurring', cron: '0 99 * * *' };
+    return scheduler([broken], [], NOW).then((r) => {
+      expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).toContain('broken-cron');
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('broken-cron');
+      expect(r.scheduler.checks.scheduleEvaluable.status).toBe('unknown');
+    });
+  });
+});
