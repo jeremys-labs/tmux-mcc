@@ -181,14 +181,15 @@ describe('a finding is never delivered into a subject\'s own channel (2026-09-12
 describe('a bare ok is not a result', () => {
   it('states the denominator even when there is nothing to report', () => {
     const summary = monitorSummary({
-      inboundFindings: 0, expectedCount: 1369, matchedCount: 1300,
-      deferredCount: 60, skippedCount: 9, deliveryFindings: 0, agentsKnown: 15,
+      inboundFindings: 0, expectedCount: 1369, matchedCount: 1296,
+      deferredCount: 60, skippedCount: 9, undecidableCount: 4, deliveryFindings: 0, agentsKnown: 15,
     });
     // Assert the WHOLE line. A red-verify showed that checking three substrings let most
     // of the denominator be deleted without any test noticing — the same assertion-strength
     // gap I have flagged in other people's work.
     expect(summary).toBe(
-      'inbound 0 finding(s) over 1369 expectation(s) (matched 1300, deferred 60, skipped 9);'
+      'inbound 0 finding(s) over 1369 expectation(s) (matched 1296, deferred 60, skipped 9,'
+      + ' undecidable 4);'
       + ' delivery 0 finding(s) over 15 agent(s) known to the supervisor',
     );
   });
@@ -196,15 +197,38 @@ describe('a bare ok is not a result', () => {
   it('distinguishes "nothing to report" from "looked at almost nothing"', () => {
     const healthy = monitorSummary({
       inboundFindings: 0, expectedCount: 1369, matchedCount: 1369,
-      deferredCount: 0, skippedCount: 0, deliveryFindings: 0, agentsKnown: 15,
+      deferredCount: 0, skippedCount: 0, undecidableCount: 0, deliveryFindings: 0, agentsKnown: 15,
     });
     const blind = monitorSummary({
       inboundFindings: 0, expectedCount: 0, matchedCount: 0,
-      deferredCount: 0, skippedCount: 0, deliveryFindings: 0, agentsKnown: 0,
+      deferredCount: 0, skippedCount: 0, undecidableCount: 0, deliveryFindings: 0, agentsKnown: 0,
     });
     // Both are "no findings". Only the denominator separates them, which is the entire point.
     expect(healthy).not.toEqual(blind);
     expect(blind).toContain('over 0 expectation(s)');
+    // Eli's blocker 2, and the guard matters more than the two fields it is guarding.
+    // tsconfig.json EXCLUDES src/**/*.test.ts, so tsc never typechecks these callers, and
+    // vitest transpiles without checking -- a newly-required field can be omitted in every
+    // test caller and render as `undefined` with neither instrument noticing. Both of these
+    // did exactly that and both tests still passed. The type system is absent here, so the
+    // mechanical check has to be in the assertion.
+    expect(healthy).not.toContain('undefined');
+    expect(blind).not.toContain('undefined');
+  });
+
+  it('the buckets ACCOUNT to the denominator', () => {
+    // Eli's blocker 1. My exact-output fixture read 1300 matched + 60 + 9 + 4 undecidable =
+    // 1373 against expectedCount 1369: I added a bucket without reducing another, so the test
+    // whose whole purpose is protecting the denominator was certifying impossible output.
+    // Asserting the rendered string cannot catch that -- only the arithmetic can.
+    const buckets = { inboundFindings: 2, matchedCount: 1290, deferredCount: 60, skippedCount: 9, undecidableCount: 4 };
+    const expectedCount = buckets.inboundFindings + buckets.matchedCount
+      + buckets.deferredCount + buckets.skippedCount + buckets.undecidableCount;
+    expect(expectedCount).toBe(1365);
+    const summary = monitorSummary({ ...buckets, expectedCount, deliveryFindings: 0, agentsKnown: 15 });
+    expect(summary).toContain('over 1365 expectation(s)');
+    expect(summary).toContain('matched 1290, deferred 60, skipped 9, undecidable 4');
+    expect(summary).not.toContain('undefined');
   });
 });
 

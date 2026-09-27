@@ -112,6 +112,16 @@ describe('reconcileInboundReplies', () => {
       agent: 'cecelia',
       inboundMessageId: 'in-1',
     });
+    // Moved here 2026-09-27 from the consumed_idle_no_reply test, which no longer produces a
+    // miss. This was the ONLY inboundReplyMissFingerprint assertion in the suite: leaving it
+    // where it was would have made it assert over an always-empty array, and deleting it would
+    // have removed that function's entire coverage to make a change of mine pass.
+    expect(inboundReplyMissFingerprint(result.misses)).toContain('cecelia:chat-1:in-1:unknown_consumption_no_reply');
+    // Relocated with it for the same reason: this was the suite's ONLY
+    // formatInboundReplyMissAlert assertion, and it also lived in the test whose class no
+    // longer produces a miss. Changing one class's routing knocked out the sole coverage of
+    // TWO exported functions, which is worth knowing about this suite.
+    expect(formatInboundReplyMissAlert(result)).toContain('class=unknown_consumption_no_reply');
   });
 
   it('honors per-agent opt-outs and grace windows', () => {
@@ -172,7 +182,12 @@ describe('reconcileInboundReplies', () => {
     expect(result.misses).toEqual([]);
   });
 
-  it('classifies consumed idle no-reply misses', () => {
+  // RETARGETED 2026-09-27 misses -> undecidable. The property is unchanged: the class is
+  // CLASSIFIED and not dropped. What changed is that it is no longer a FINDING, because
+  // `hasReply` reads an outbox that never records an interactive send, so a healthy agent and
+  // a dead one produce the identical observation and this branch has no true-positive
+  // capability. Dead/hung/blocked keep their own classes and still flag.
+  it('classifies consumed idle no-reply as UNDECIDABLE, not as a finding', () => {
     const root = tempDir();
     const inboxPath = path.join(root, 'bridge', 'inbox', 'cecelia.jsonl');
     writeJsonl(inboxPath, [{ id: 'in-1' }]);
@@ -186,12 +201,15 @@ describe('reconcileInboundReplies', () => {
       now: new Date('2026-07-12T13:30:00.000Z'),
     });
 
-    expect(result.misses[0]).toMatchObject({
+    expect(result.misses).toHaveLength(0);
+    expect(result.undecidable).toHaveLength(1);
+    expect(result.undecidable[0]).toMatchObject({
       failureClass: 'consumed_idle_no_reply',
       ageMinutes: 30,
       graceMinutes: 10,
     });
-    expect(inboundReplyMissFingerprint(result.misses)).toContain('cecelia:chat-1:in-1:consumed_idle_no_reply');
-    expect(formatInboundReplyMissAlert(result)).toContain('class=consumed_idle_no_reply');
+    // The NEGATIVE, which is the property that matters: an undecidable never reaches the alert.
+    // Asserting only the bucket would pass if the formatter also read `undecidable`.
+    expect(formatInboundReplyMissAlert(result)).not.toContain('consumed_idle_no_reply');
   });
 });
