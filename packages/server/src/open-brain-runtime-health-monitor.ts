@@ -861,7 +861,27 @@ export function planWithheldEscalation(input: {
         operatorAddressedCount: input.operatorAddressedCount,
       }),
       subjects: [...new Set(input.incidents.map((incident) => incident.subject))].sort(),
-      channel: 'principal',
+      // OPERATOR, not principal. 2026-09-27: Jeremy was paged three times in one day --
+      // 00:18:33Z, 13:24:51Z, 14:50:34Z -- with "Restart isla and check its scheduled jobs"
+      // while isla was actively answering him in that same channel. The escalation asked the
+      // PRINCIPAL to perform an operational recovery on an agent that was demonstrably fine.
+      //
+      // On 09-24 Jeremy asked "You have agent-mail, why are jobs sending to your discord at
+      // all?" and we shipped ALERT_CHANNELS so scheduler alerts route to mail. THIS PATH WENT
+      // AROUND IT, because it is specifically the path for findings that cannot be routed
+      // normally -- so the exception to the routing fix inherited none of the routing fix.
+      // (Isla's phrasing, and it is the whole defect in one sentence.)
+      //
+      // Mailing the operator is sound even when the operator IS a subject, which is today's
+      // case: the 2026-09-12 defect was a finding delivered into a DEAD RUNTIME'S OWN UI,
+      // which is unreadable by construction. agent-mail is DURABLE -- a dead agent reads it on
+      // wake -- so subject-as-recipient here degrades to "late", not "never".
+      //
+      // NOT YET BUILT, and it is the remaining gap: principal as LAST resort when the operator
+      // is unreachable. Jeremy should be the hop after every agent is unreachable, not the
+      // second hop. sendOperatorMail already reports its failures rather than swallowing them,
+      // so a failed escalation is visible today; it is not yet re-routed.
+      channel: 'operator',
     },
     fingerprint,
   };

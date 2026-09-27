@@ -812,11 +812,17 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
     detail: 'job j2 has not fired since 2026-09-19',
   };
 
-  it('gives a withheld finding a destination, and that destination is the principal', () => {
+  // RETARGETED 2026-09-27 principal -> operator. The property these two tests protect is that
+  // the escalation reaches a REAL TRANSPORT and is not silently dropped -- that was the whole
+  // point of dc-20260924-004, the verifier's own silence being audible. That property is
+  // unchanged and still asserted. What changed is a deliberate routing decision: Jeremy was
+  // paged three times on 2026-09-27 telling him to restart an agent that was answering him in
+  // the same channel, and the principal is not the fallback operator.
+  it('gives a withheld finding a destination, and that destination is the OPERATOR', () => {
     const { alert } = planWithheldEscalation({ incidents: [inboundMiss], destinationAgent: 'isla', operatorAddressedCount: 4 });
 
     expect(alert).not.toBeNull();
-    expect(alert?.channel).toBe('principal');
+    expect(alert?.channel).toBe('operator');
     expect(alert?.subjects).toEqual(['isla']);
   });
 
@@ -834,7 +840,7 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
     expect(alert?.text).toContain('staleRecurring:j2');
   });
 
-  it('actually reaches the principal transport when dispatched', async () => {
+  it('actually reaches the operator transport when dispatched, and NOT the principal', async () => {
     // End-to-end within the seam: planner output handed straight to the real dispatcher.
     // Asserting `channel === 'principal'` alone would pass even if `dispatchRoutedAlert`
     // later stopped honouring the tag.
@@ -844,8 +850,10 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
 
     await dispatchRoutedAlert(alert!, { principal, operator });
 
-    expect(principal).toHaveBeenCalledTimes(1);
-    expect(operator).not.toHaveBeenCalled();
+    expect(operator).toHaveBeenCalledTimes(1);
+    // The half that matters now: the principal must NOT be paged. This is the assertion that
+    // would have caught 2026-09-27 before Jeremy saw it three times.
+    expect(principal).not.toHaveBeenCalled();
   });
 
   it('produces NOTHING when nothing was withheld', () => {
