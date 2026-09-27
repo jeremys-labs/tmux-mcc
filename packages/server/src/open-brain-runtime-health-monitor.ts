@@ -595,37 +595,130 @@ export function formatInboundRecoveryNotice(
 }
 
 /**
+ * A withheld finding, carried as a TYPED INCIDENT rather than a subject name.
+ *
+ * The first version of this aggregated `withheldSubjects: string[]`, and Eli rejected it on
+ * two counts that are really one: a name is not a finding. Two distinct incidents about the
+ * same agent -- an inbound miss and a stale recurring job -- collapsed into the single string
+ * "isla", so (a) the second one could not change the fingerprint and never escalated at all,
+ * and (b) the message that did go out could not say what either of them was. The comment
+ * claiming "the detail stays in the operator mailbox" was false: operator alerts are built
+ * only from the DELIVERABLE partitions, so a withheld finding reaches neither destination.
+ *
+ * `identity` vs `detail` is the distinction this file already paid for once (Eli's blocker on
+ * f477335): `detail` carries live telemetry -- ages in seconds, phase milliseconds -- and
+ * grows every run. It is for a human to read and MUST NOT enter the fingerprint, or one
+ * continuing incident acquires a new identity every five minutes. `identity` is the stable
+ * part: a miss key, a sorted job-id set, a check name.
+ */
+export interface WithheldIncident {
+  alarmClass: AlertClass;
+  subject: string;
+  /** Stable. Class-specific. NEVER telemetry. Empty is legal for scalar checks. */
+  identity: string;
+  /** Human-readable, may carry live telemetry, deliberately NOT part of identity. */
+  detail: string;
+}
+
+/**
+ * What a human actually has to DO about each class, which is not the same question as where
+ * the class is routed.
+ *
+ * The first version hardcoded "Restart <agent>" for every mix. Eli's third point: restarting
+ * isla may clear an inbound miss, but it does not repair or explain a missed recurring job --
+ * "the planner erased the class before choosing the action." A first-line action is only
+ * worth the rule if it is TRUE for the set it is summarising.
+ */
+const WITHHELD_REMEDY: Record<AlertClass, 'restart' | 'jobs'> = {
+  delivery: 'restart',
+  inbound: 'restart',
+  inboundRecovery: 'restart',
+  scheduler: 'jobs',
+};
+
+/** At most this many incident lines in the principal message; the rest are counted. */
+const WITHHELD_DETAIL_LINES = 6;
+/** Per-line cap, so one pathological detail cannot turn this into the 09-23 dump. */
+const WITHHELD_DETAIL_CHARS = 160;
+
+export function withheldFirstLineAction(input: {
+  destinationAgent: string;
+  incidents: WithheldIncident[];
+}): string {
+  const remedies = new Set(input.incidents.map((incident) => WITHHELD_REMEDY[incident.alarmClass]));
+  const count = input.incidents.length;
+  const tail = `${count} monitor finding(s) about ${input.destinationAgent} cannot be delivered to it.`;
+  if (remedies.has('restart') && remedies.has('jobs')) {
+    return `Restart ${input.destinationAgent} and check its scheduled jobs — ${tail}`;
+  }
+  if (remedies.has('jobs')) {
+    return `Check ${input.destinationAgent}'s scheduled jobs — ${tail}`;
+  }
+  return `Restart ${input.destinationAgent} — ${tail}`;
+}
+
+/**
  * THE ONLY THING THAT STILL REACHES THE PRINCIPAL, and the reason the table above has no
  * `principal` member. A withheld finding is one whose SUBJECT is the destination -- the
  * operator is the broken party -- so there is no agent left who can act on it and Jeremy is
  * the last actor in the chain.
  *
- * FIRST LINE IS THE ACTION, NOT THE DIAGNOSIS. Jeremy's rule after the 2026-09-23 dump:
- * anything that reaches his DM states what he has to do in the first line or it should not be
- * there at all. The detail lives in the operator's mailbox and the log; this message exists to
- * get one restart out of a human.
+ * FIRST LINE IS THE ACTION, NOT THE DIAGNOSIS, and it now derives from the classes actually
+ * present rather than assuming a restart fixes everything. The body carries bounded per-
+ * incident detail: this is the ONLY place a withheld finding is ever stated, so "see the log"
+ * alone would be the information loss Eli rejected, and an unbounded dump would be the 09-23
+ * incident. Six lines, 160 chars each, then a count.
  */
 export function formatWithheldEscalation(input: {
   destinationAgent: string;
-  subjects: string[];
+  incidents: WithheldIncident[];
+  /**
+   * How many findings actually went out in the same pass. REQUIRED, and not defaulted.
+   *
+   * The first version ended with a flat "Every other finding this pass was delivered
+   * normally." The first live dry-run printed it in a pass where the scheduler alert had been
+   * suppressed as a duplicate and NOTHING else was delivered -- an unfalsifiable reassurance
+   * that happened to be false the first time it ran. Same class as a `|| echo "<good news>"`
+   * fallback: a sentence that soothes whether or not the thing it describes is true. Now it
+   * states a number, and says nothing at all when the number is zero.
+   */
+  deliveredCount: number;
 }): string {
-  const unique = [...new Set(input.subjects)].sort();
-  return [
-    `Restart ${input.destinationAgent} — the fleet monitor has findings it cannot deliver.`,
-    `Withheld findings name ${unique.join(', ')} — ${input.destinationAgent} is the destination,`
-    + ' so routing them there would report a broken runtime to itself.',
-    'Nothing else is affected; every other finding this pass was delivered normally.',
-  ].join('\n');
+  const shown = input.incidents.slice(0, WITHHELD_DETAIL_LINES);
+  const hidden = input.incidents.length - shown.length;
+  const lines = [
+    withheldFirstLineAction(input),
+    `Routing them to ${input.destinationAgent} would report a broken runtime to itself, so they`
+    + ' are stated here in full and nowhere else — they are absent from the operator mailbox by'
+    + ' construction.',
+    ...shown.map((incident) => {
+      const id = incident.identity ? ` ${incident.identity}` : '';
+      const detail = incident.detail.length > WITHHELD_DETAIL_CHARS
+        ? `${incident.detail.slice(0, WITHHELD_DETAIL_CHARS - 1)}…`
+        : incident.detail;
+      return `- [${incident.alarmClass}]${id}: ${detail}`;
+    }),
+  ];
+  if (hidden > 0) lines.push(`- …and ${hidden} more withheld finding(s); full set in the monitor log.`);
+  if (input.deliveredCount > 0) {
+    lines.push(`The other ${input.deliveredCount} finding(s) this pass were delivered normally.`);
+  }
+  return lines.join('\n');
 }
 
 /**
- * Stable across runs for the same set of withheld subjects, so the escalation is sent once
- * rather than every five minutes. Withheld findings deliberately re-raise every pass (nobody
- * has been told), which is correct for the LOG and would be a 5-minute DM loop -- the precise
- * noise this row exists to remove.
+ * Stable across runs for the same set of withheld INCIDENTS, so a standing condition is
+ * escalated once rather than every five minutes -- and a NEW incident for an
+ * already-withheld subject still changes it. The subject-set version could not do the second
+ * thing, which is Eli's blocker 1: a new stale-job finding joining an existing inbound miss
+ * for isla left the fingerprint at "isla" and escalated nothing.
+ *
+ * Identity only. `detail` is excluded on purpose -- see WithheldIncident.
  */
-export function withheldEscalationFingerprint(subjects: string[]): string {
-  return [...new Set(subjects)].sort().join(',');
+export function withheldEscalationFingerprint(incidents: WithheldIncident[]): string {
+  return [...new Set(incidents.map(
+    (incident) => `${incident.alarmClass}:${incident.subject}:${incident.identity}`,
+  ))].sort().join('|');
 }
 
 /**
@@ -639,13 +732,14 @@ export function withheldEscalationFingerprint(subjects: string[]): string {
  * re-stamp, or the next pass sees no prior fingerprint and sends again.
  */
 export function planWithheldEscalation(input: {
-  subjects: string[];
+  incidents: WithheldIncident[];
   destinationAgent: string;
+  deliveredCount: number;
   lastFingerprint?: string;
   repeat?: boolean;
 }): { alert: RoutedAlert | null; fingerprint: string | undefined } {
-  if (input.subjects.length === 0) return { alert: null, fingerprint: undefined };
-  const fingerprint = withheldEscalationFingerprint(input.subjects);
+  if (input.incidents.length === 0) return { alert: null, fingerprint: undefined };
+  const fingerprint = withheldEscalationFingerprint(input.incidents);
   if (input.lastFingerprint === fingerprint && !input.repeat) {
     return { alert: null, fingerprint };
   }
@@ -653,9 +747,10 @@ export function planWithheldEscalation(input: {
     alert: {
       text: formatWithheldEscalation({
         destinationAgent: input.destinationAgent,
-        subjects: input.subjects,
+        incidents: input.incidents,
+        deliveredCount: input.deliveredCount,
       }),
-      subjects: [...new Set(input.subjects)].sort(),
+      subjects: [...new Set(input.incidents.map((incident) => incident.subject))].sort(),
       channel: 'principal',
     },
     fingerprint,
@@ -701,16 +796,18 @@ async function main(): Promise<void> {
   // `operator` -> agent-mail (full detail, durable, addressed to someone whose lane it is)
   // `principal` -> Discord (few lines, only where a human decision is actually needed)
   //
-  // Delivery and inbound classes keep `principal` deliberately: they predate this row and
-  // silently re-routing somebody else's alarm class while fixing mine would be the same
-  // move in the other direction.
+  // 2026-09-26: delivery and inbound moved to `operator` too, so NO alarm class points at the
+  // principal any more. The principal's only message is the withheld escalation below -- the
+  // one case where the operator is the broken party and a human is the last actor left.
   const alerts: RoutedAlert[] = [];
   // Findings whose subject IS the destination. They cannot go to that channel, so they are
   // reported as an explicit, loud gap rather than silently absent. Under the agreed chain
   // (operator -> Jeremy's DM -> log honestly) this list is what the second hop must carry;
   // until that hop exists these findings reach the log and nowhere else, and saying so is
   // the point.
-  const withheldSubjects: string[] = [];
+  // TYPED INCIDENTS, not names. A name cannot say what the finding was, and two distinct
+  // incidents about the same agent collapsed into one string could not re-escalate.
+  const withheldIncidents: WithheldIncident[] = [];
 
   const deliveryRecovery = await recoverDeliveryFailuresBeforeAlert({
     failures,
@@ -738,7 +835,14 @@ async function main(): Promise<void> {
     fingerprintOf: deliveryFailureFingerprint,
   });
   if (deliverySplit.withheld.length > 0) {
-    withheldSubjects.push(...deliverySplit.withheld.map((failure) => failure.agent));
+    withheldIncidents.push(...deliverySplit.withheld.map((failure) => ({
+      alarmClass: 'delivery' as const,
+      subject: failure.agent,
+      // One delivery finding per agent by construction, so the check name is the whole
+      // stable identity. The detail embeds a live cursor position and stays out of it.
+      identity: 'discordInboxDelivery',
+      detail: failure.discordInboxDelivery.detail,
+    })));
   }
 
   if (deliverySplit.deliverable.length === 0) {
@@ -841,7 +945,12 @@ async function main(): Promise<void> {
       fingerprintOf: (entries) => entries.map((entry) => entry.key).sort().join(','),
     });
     if (recoverySplit.withheld.length > 0) {
-      withheldSubjects.push(...recoverySplit.withheld.map((entry) => entry.agent));
+      withheldIncidents.push(...recoverySplit.withheld.map((entry) => ({
+        alarmClass: 'inboundRecovery' as const,
+        subject: entry.agent,
+        identity: entry.key,
+        detail: `${entry.action}: ${entry.reason}`,
+      })));
     }
     if (recoverySplit.deliverable.length > 0) {
       // `principal`, matching the inbound FAILURE class deliberately. This notice exists
@@ -865,7 +974,12 @@ async function main(): Promise<void> {
     fingerprintOf: inboundReplyMissFingerprint,
   });
   if (inboundSplit.withheld.length > 0) {
-    withheldSubjects.push(...inboundSplit.withheld.map((miss) => miss.agent));
+    withheldIncidents.push(...inboundSplit.withheld.map((miss) => ({
+      alarmClass: 'inbound' as const,
+      subject: miss.agent,
+      identity: miss.key,
+      detail: miss.detail,
+    })));
   }
 
   if (inboundSplit.deliverable.length === 0) {
@@ -895,7 +1009,15 @@ async function main(): Promise<void> {
     fingerprintOf: schedulerFailureFingerprint,
   });
   if (schedulerSplit.withheld.length > 0) {
-    withheldSubjects.push(...schedulerSplit.withheld.map((finding) => finding.subject));
+    withheldIncidents.push(...schedulerSplit.withheld.map((finding) => ({
+      alarmClass: 'scheduler' as const,
+      subject: finding.subject,
+      // `check` is required: `identity` is empty for scalar checks, so without it two
+      // different scalar checks about the same subject would share an identity and the
+      // second would be suppressed -- blocker 1 in miniature.
+      identity: finding.identity ? `${finding.check}:${finding.identity}` : finding.check,
+      detail: finding.detail,
+    })));
   }
 
   if (schedulerSplit.deliverable.length === 0) {
@@ -930,19 +1052,28 @@ async function main(): Promise<void> {
     agentsKnown: supervisorStatuses.length,
   });
 
-  if (withheldSubjects.length > 0) {
+  if (withheldIncidents.length > 0) {
+    const withheldSubjects = withheldIncidents.map((incident) => incident.subject);
+    // Counted ONCE and reused, so the log line and the escalation cannot disagree. Note this
+    // is what was actually SENT this pass, which a duplicate-suppressed alert is not.
+    const deliveredCount = alerts.reduce((total, entry) => total + entry.subjects.length, 0);
     process.stdout.write(
-      `runtime monitor WITHHELD ${withheldSubjects.length} finding(s) from destination ${agent}`
-      + ` (delivered ${alerts.reduce((total, entry) => total + entry.subjects.length, 0)} finding(s) in the same pass):`
+      `runtime monitor WITHHELD ${withheldIncidents.length} finding(s) from destination ${agent}`
+      + ` (delivered ${deliveredCount} finding(s) in the same pass):`
       + ` ${withholdReason({ destinationAgent: agent, subjects: withheldSubjects })}.`
-      + ' Escalated to the principal; the detail stays here and in the operator mailbox.\n',
+      + ' Escalated to the principal, which is the ONLY message that states them —'
+      + ' they are absent from the operator mailbox by construction.\n',
     );
+    for (const incident of withheldIncidents) {
+      process.stdout.write(`  withheld [${incident.alarmClass}] ${incident.subject} ${incident.identity}: ${incident.detail}\n`);
+    }
     // THE SECOND HOP. Until 2026-09-26 this list reached stdout and nowhere else, which was
     // survivable only because delivery/inbound still had a principal path of their own. With
     // every class on `operator`, a finding about the operator would have had ZERO destinations
     // -- the 2026-09-12 defect with an extra step, and explicitly not an acceptable fix.
-    // Fingerprinted so it is said once, not every five minutes: the underlying findings must
-    // keep re-raising in the log, the ESCALATION must not.
+    // Fingerprinted on stable INCIDENT IDENTITY so it is said once, not every five minutes --
+    // and so a NEW incident for an already-withheld subject still gets out. The underlying
+    // findings keep re-raising in the log; the escalation does not repeat for an unchanged set.
     //
     // This is the one alert built without `alertFrom`/`Deliverable`, and it does not violate
     // the partition: the rule is "never a finding into its own SUBJECT'S channel", and the
@@ -950,8 +1081,9 @@ async function main(): Promise<void> {
     // exists. Constructing it through the deliverable path is impossible by design -- the
     // partition would withhold it again, forever.
     const escalation = planWithheldEscalation({
-      subjects: withheldSubjects,
+      incidents: withheldIncidents,
       destinationAgent: agent,
+      deliveredCount,
       lastFingerprint: state.lastWithheldFingerprint,
       repeat: hasFlag('--repeat'),
     });

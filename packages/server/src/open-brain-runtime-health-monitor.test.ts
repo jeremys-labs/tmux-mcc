@@ -20,6 +20,7 @@ import {
   formatWithheldEscalation,
   planWithheldEscalation,
   withheldEscalationFingerprint,
+  withheldFirstLineAction,
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
@@ -575,8 +576,21 @@ describe('withheld findings escalate to the principal (dc-20260924-004)', () => 
   // destinations -- the 2026-09-12 defect with an extra step. "Findings still reach
   // someone" is an acceptance condition of this row, not a nicety.
 
+  const inboundMiss = {
+    alarmClass: 'inbound' as const,
+    subject: 'isla',
+    identity: 'inbound-miss-1',
+    detail: 'no reply after 40m',
+  };
+  const staleJob = {
+    alarmClass: 'scheduler' as const,
+    subject: 'isla',
+    identity: 'staleRecurring:j2',
+    detail: 'job j2 has not fired since 2026-09-19',
+  };
+
   it('states the required action in the FIRST line', () => {
-    const text = formatWithheldEscalation({ destinationAgent: 'isla', subjects: ['isla'] });
+    const text = formatWithheldEscalation({ destinationAgent: 'isla', incidents: [inboundMiss], deliveredCount: 4 });
     const firstLine = text.split('\n')[0];
 
     // Jeremy's rule after the 09-23 dump: what he has to DO, first line, or it does not
@@ -586,54 +600,124 @@ describe('withheld findings escalate to the principal (dc-20260924-004)', () => 
     expect(firstLine.length).toBeLessThan(120);
   });
 
-  it('names every withheld subject, deduplicated and ordered', () => {
+  it('names an action that is TRUE for the classes present, not just a restart', () => {
+    // Eli's third point on 1af50a4: restarting isla may clear an inbound miss, but it does
+    // not repair or explain a missed recurring job. The first version hardcoded the restart
+    // for every mix -- "the planner erased the class before choosing the action."
+    expect(withheldFirstLineAction({ destinationAgent: 'isla', incidents: [inboundMiss] }))
+      .toContain('Restart isla —');
+    expect(withheldFirstLineAction({ destinationAgent: 'isla', incidents: [staleJob] }))
+      .toContain("Check isla's scheduled jobs");
+    const mixed = withheldFirstLineAction({ destinationAgent: 'isla', incidents: [inboundMiss, staleJob] });
+    expect(mixed).toContain('Restart isla and check its scheduled jobs');
+    expect(mixed.length).toBeLessThan(120);
+  });
+
+  it('IDENTIFIES each withheld finding — this message is the only place they are stated', () => {
+    // THE CONTROL FOR ELI'S BLOCKER 2. Operator alerts are built only from the DELIVERABLE
+    // partitions, so a withheld finding is in neither operator mail nor any other alert. A
+    // message carrying only subject names loses the finding entirely; the previous version
+    // claimed in a comment that the detail "stays in the operator mailbox", and that was
+    // false.
     const text = formatWithheldEscalation({
       destinationAgent: 'isla',
-      subjects: ['isla', 'isla', 'dana'],
+      incidents: [inboundMiss, staleJob],
+      deliveredCount: 4,
     });
 
-    // Ordered, so the same set does not produce two different messages between runs.
-    expect(text).toContain('Withheld findings name dana, isla —');
-    // Once, not twice: the same subject can be withheld by more than one alarm class in a
-    // single pass, and a repeated name reads as two separate problems. Counted on `dana`,
-    // which appears ONLY in the subject list -- `isla` is also the destination and is named
-    // again in the action line, so counting it would measure the wrong thing.
-    expect(text.match(/dana/g)?.length).toBe(1);
+    expect(text).toContain('[inbound] inbound-miss-1: no reply after 40m');
+    expect(text).toContain('[scheduler] staleRecurring:j2: job j2 has not fired since 2026-09-19');
   });
 
-  it('says the rest of the pass was unaffected, so silence is not read as an outage', () => {
-    const text = formatWithheldEscalation({ destinationAgent: 'isla', subjects: ['isla'] });
-    expect(text).toContain('every other finding this pass was delivered normally');
+  it('bounds the body instead of dumping it', () => {
+    // The other failure mode in the same place. This message exists because of a 5,600-char
+    // dump into the principal's DM; replacing "too little" with "everything" is not a fix.
+    const many = Array.from({ length: 9 }, (_, index) => ({
+      alarmClass: 'scheduler' as const,
+      subject: 'isla',
+      identity: `j${index}`,
+      detail: 'x'.repeat(400),
+    }));
+    const text = formatWithheldEscalation({ destinationAgent: 'isla', incidents: many, deliveredCount: 4 });
+
+    expect(text).toContain('…and 3 more withheld finding(s)');
+    // Six shown lines, each truncated, so the long details cannot carry the message away.
+    expect(text).not.toContain('x'.repeat(200));
   });
 
-  it('fingerprints the SET, so a standing condition escalates once and not every run', () => {
-    // The findings themselves must re-raise every pass -- withholding means nobody has been
-    // told. The ESCALATION must not: this monitor runs every five minutes, and a permanent
-    // condition paging a human on that cadence IS the noise this row exists to remove.
-    expect(withheldEscalationFingerprint(['isla', 'dana']))
-      .toBe(withheldEscalationFingerprint(['dana', 'isla', 'dana']));
+  it('states how many findings DID go out, and says nothing when none did', () => {
+    // The first version ended with a flat "Every other finding this pass was delivered
+    // normally." The first live dry-run printed exactly that in a pass where the scheduler
+    // alert had been suppressed as a duplicate and nothing else went anywhere -- false on its
+    // first real run. A reassurance that is true whether or not the thing it describes holds
+    // is the `|| echo "<good news>"` shape in prose.
+    expect(formatWithheldEscalation({ destinationAgent: 'isla', incidents: [inboundMiss], deliveredCount: 4 }))
+      .toContain('The other 4 finding(s) this pass were delivered normally');
+    expect(formatWithheldEscalation({ destinationAgent: 'isla', incidents: [inboundMiss], deliveredCount: 0 }))
+      .not.toContain('delivered normally');
   });
 
-  it('changes fingerprint when a NEW subject is withheld', () => {
-    // The other half, and the half a sort-and-join can silently lose: dedup must not
-    // collapse a genuinely larger problem into an already-suppressed one.
-    expect(withheldEscalationFingerprint(['isla']))
-      .not.toBe(withheldEscalationFingerprint(['isla', 'dana']));
+  it('fingerprints stable IDENTITY, so a re-measurement of one incident is not a new one', () => {
+    // The distinction this file already paid for once (eli's blocker on f477335): `detail`
+    // carries live telemetry and grows every run, so fingerprinting it turns one continuing
+    // incident into a new alert every five minutes.
+    expect(withheldEscalationFingerprint([inboundMiss]))
+      .toBe(withheldEscalationFingerprint([{ ...inboundMiss, detail: 'no reply after 45m' }]));
+  });
+
+  it('changes fingerprint when a DISTINCT incident joins the same subject', () => {
+    // ELI'S BLOCKER 1, as a control. The subject-set version deduplicated both of these to
+    // "isla", so a new stale-job finding joining an existing inbound miss escalated nothing
+    // and reached nobody.
+    expect(withheldEscalationFingerprint([inboundMiss]))
+      .not.toBe(withheldEscalationFingerprint([inboundMiss, staleJob]));
+  });
+
+  it('does not double-count the same incident reported twice in one pass', () => {
+    expect(withheldEscalationFingerprint([inboundMiss, inboundMiss]))
+      .toBe(withheldEscalationFingerprint([inboundMiss]));
   });
 });
 
 describe('the withheld escalation is actually wired to a destination (dc-20260924-004)', () => {
-  // These are the controls that matter. The four tests above check the TEXT; a perfectly
-  // worded message that nothing sends is the defect this row was registered to fix, one
-  // layer down. The escalation is the only alert built outside the branded `Deliverable`
-  // path, so the compiler is not holding this up and the suite has to.
+  // These are the controls that matter. The tests above check the TEXT; a perfectly worded
+  // message that nothing sends is the defect this row was registered to fix, one layer down.
+  // The escalation is the only alert built outside the branded `Deliverable` path, so the
+  // compiler is not holding this up and the suite has to.
+
+  const inboundMiss = {
+    alarmClass: 'inbound' as const,
+    subject: 'isla',
+    identity: 'inbound-miss-1',
+    detail: 'no reply after 40m',
+  };
+  const staleJob = {
+    alarmClass: 'scheduler' as const,
+    subject: 'isla',
+    identity: 'staleRecurring:j2',
+    detail: 'job j2 has not fired since 2026-09-19',
+  };
 
   it('gives a withheld finding a destination, and that destination is the principal', () => {
-    const { alert } = planWithheldEscalation({ subjects: ['isla'], destinationAgent: 'isla' });
+    const { alert } = planWithheldEscalation({ incidents: [inboundMiss], destinationAgent: 'isla', deliveredCount: 4 });
 
     expect(alert).not.toBeNull();
     expect(alert?.channel).toBe('principal');
     expect(alert?.subjects).toEqual(['isla']);
+  });
+
+  it('carries the withheld DETAIL to that destination, not just the subject', () => {
+    // Eli's required control (b): withheld incident detail reaches the selected destination.
+    // Asserted on the dispatched alert rather than on the formatter, because the formatter
+    // being right is what the previous tip already proved -- and it still lost the detail.
+    const { alert } = planWithheldEscalation({
+      incidents: [inboundMiss, staleJob],
+      destinationAgent: 'isla',
+      deliveredCount: 4,
+    });
+
+    expect(alert?.text).toContain('inbound-miss-1');
+    expect(alert?.text).toContain('staleRecurring:j2');
   });
 
   it('actually reaches the principal transport when dispatched', async () => {
@@ -642,7 +726,7 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
     // later stopped honouring the tag.
     const principal = vi.fn(async () => undefined);
     const operator = vi.fn(async () => undefined);
-    const { alert } = planWithheldEscalation({ subjects: ['isla'], destinationAgent: 'isla' });
+    const { alert } = planWithheldEscalation({ incidents: [inboundMiss], destinationAgent: 'isla', deliveredCount: 4 });
 
     await dispatchRoutedAlert(alert!, { principal, operator });
 
@@ -651,7 +735,7 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
   });
 
   it('produces NOTHING when nothing was withheld', () => {
-    const { alert, fingerprint } = planWithheldEscalation({ subjects: [], destinationAgent: 'isla' });
+    const { alert, fingerprint } = planWithheldEscalation({ incidents: [], destinationAgent: 'isla', deliveredCount: 4 });
 
     expect(alert).toBeNull();
     // Cleared, not left standing: a stale fingerprint would suppress the next real one.
@@ -663,31 +747,51 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
     // next pass would see no prior fingerprint and escalate again -- a five-minute DM loop
     // dressed up as deduplication.
     const { alert, fingerprint } = planWithheldEscalation({
-      subjects: ['isla'],
+      incidents: [inboundMiss],
       destinationAgent: 'isla',
-      lastFingerprint: withheldEscalationFingerprint(['isla']),
+      deliveredCount: 4,
+      lastFingerprint: withheldEscalationFingerprint([inboundMiss]),
     });
 
     expect(alert).toBeNull();
-    expect(fingerprint).toBe('isla');
+    expect(fingerprint).toBe(withheldEscalationFingerprint([inboundMiss]));
   });
 
-  it('escalates again when a NEW subject joins an already-escalated set', () => {
+  it('RE-ESCALATES when a distinct incident appears for an already-withheld subject', () => {
+    // Eli's required control (a), and the blocker that failed 1af50a4 outright: the second
+    // finding reached nobody. Escalating the same SUBJECT again is the point -- the mix
+    // changed, and the action line changes with it.
     const { alert } = planWithheldEscalation({
-      subjects: ['isla', 'dana'],
+      incidents: [inboundMiss, staleJob],
       destinationAgent: 'isla',
-      lastFingerprint: withheldEscalationFingerprint(['isla']),
+      deliveredCount: 4,
+      lastFingerprint: withheldEscalationFingerprint([inboundMiss]),
     });
 
     expect(alert).not.toBeNull();
-    expect(alert?.subjects).toEqual(['dana', 'isla']);
+    expect(alert?.text).toContain('staleRecurring:j2');
+    expect(alert?.text).toContain('Restart isla and check its scheduled jobs');
+  });
+
+  it('does NOT re-escalate when the same incident is merely re-measured', () => {
+    // The necessary other half of the control above. Without it, "re-escalate on change"
+    // passes trivially by escalating on every run -- which is the noise this row removes.
+    const { alert } = planWithheldEscalation({
+      incidents: [{ ...inboundMiss, detail: 'no reply after 45m' }],
+      destinationAgent: 'isla',
+      deliveredCount: 4,
+      lastFingerprint: withheldEscalationFingerprint([inboundMiss]),
+    });
+
+    expect(alert).toBeNull();
   });
 
   it('honours --repeat, so an operator can force the escalation out', () => {
     const { alert } = planWithheldEscalation({
-      subjects: ['isla'],
+      incidents: [inboundMiss],
       destinationAgent: 'isla',
-      lastFingerprint: withheldEscalationFingerprint(['isla']),
+      deliveredCount: 4,
+      lastFingerprint: withheldEscalationFingerprint([inboundMiss]),
       repeat: true,
     });
 
