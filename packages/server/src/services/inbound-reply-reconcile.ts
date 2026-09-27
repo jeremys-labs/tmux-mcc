@@ -89,6 +89,24 @@ export interface ReplyReconcileResult {
   matchedCount: number;
   deferredCount: number;
   skippedCount: number;
+  /**
+   * Classified, past grace, and NOT a finding, because the evidence available cannot decide it.
+   *
+   * 2026-09-27: Jeremy was paged three times telling him to restart isla while she was
+   * answering him in that same channel. `consumed_idle_no_reply` means process running,
+   * progress idle, and no RECORDED reply -- and `hasReply()` reads `readOutboundSent()`, which
+   * `discord-bridge-reply.ts:93` never writes for an interactive send
+   * (`if (!source && !jobId) return;`). So a healthy agent replying in Discord and a dead one
+   * produce the IDENTICAL observation.
+   *
+   * THE CLASS HAS NO TRUE-POSITIVE CAPABILITY ON THIS EVIDENCE, which is why moving it here
+   * forfeits nothing: a genuinely dead, hung or blocked runtime is caught by
+   * `consumed_runtime_dead` / `consumed_hung` / `consumed_blocked`, which all still flag.
+   * Every firing of this one branch was wrong by construction.
+   *
+   * Reported, never silent: suppression that leaves no trace is the defect one layer out.
+   */
+  undecidable: ReplyMiss[];
   misses: ReplyMiss[];
 }
 
@@ -327,6 +345,7 @@ export function reconcileInboundReplies(input: {
   let skippedCount = 0;
   let deferredCount = 0;
   const misses: ReplyMiss[] = [];
+  const undecidable: ReplyMiss[] = [];
 
   const expected = latestInboundExpectations(input.expected);
 
@@ -357,7 +376,7 @@ export function reconcileInboundReplies(input: {
       continue;
     }
 
-    misses.push({
+    const entry = {
       key: `${record.agent}:${record.chat_id}:${record.message_id}`,
       agent: record.agent,
       chatId: record.chat_id,
@@ -367,7 +386,14 @@ export function reconcileInboundReplies(input: {
       graceMinutes: grace,
       failureClass: classified.failureClass,
       detail: classified.detail,
-    });
+    };
+    // Undecidable, not clean and not a finding. See the `undecidable` field for why this one
+    // class cannot produce a distinguishable true positive on the current evidence.
+    if (classified.failureClass === 'consumed_idle_no_reply') {
+      undecidable.push(entry);
+      continue;
+    }
+    misses.push(entry);
   }
 
   return {
@@ -377,6 +403,7 @@ export function reconcileInboundReplies(input: {
     deferredCount,
     skippedCount,
     misses,
+    undecidable,
   };
 }
 

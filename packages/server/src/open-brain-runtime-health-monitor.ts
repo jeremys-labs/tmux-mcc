@@ -471,11 +471,16 @@ export function monitorSummary(input: {
   matchedCount: number;
   deferredCount: number;
   skippedCount: number;
+  /** Past grace, classified, and NOT decidable on the available evidence. Printed because a
+   * suppression nobody can see is the defect one layer out -- and because if this number is
+   * large, the fix is to give the check better evidence, not to keep it quiet. */
+  undecidableCount: number;
   deliveryFindings: number;
   agentsKnown: number;
 }): string {
   return `inbound ${input.inboundFindings} finding(s) over ${input.expectedCount} expectation(s)`
-    + ` (matched ${input.matchedCount}, deferred ${input.deferredCount}, skipped ${input.skippedCount});`
+    + ` (matched ${input.matchedCount}, deferred ${input.deferredCount}, skipped ${input.skippedCount},`
+    + ` undecidable ${input.undecidableCount});`
     + ` delivery ${input.deliveryFindings} finding(s) over ${input.agentsKnown} agent(s) known to the supervisor`;
 }
 
@@ -1178,6 +1183,7 @@ async function main(): Promise<void> {
     matchedCount: inboundResult.matchedCount,
     deferredCount: inboundResult.deferredCount,
     skippedCount: inboundResult.skippedCount,
+    undecidableCount: inboundResult.undecidable.length,
     deliveryFindings: deliveryAlertFailures.length,
     agentsKnown: supervisorStatuses.length,
   });
