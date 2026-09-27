@@ -118,6 +118,7 @@ interface SchedulerJob {
   type?: string;
   cron?: string;
   fireAt?: string;
+  created?: string;
   enabled?: boolean;
   command?: string;
   prompt?: string;
@@ -614,6 +615,41 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       if (now.getTime() < dueWithGrace) return [];
       const lastCompletionAt = latestCompletionMtimeForJob(logsDir, job.id ?? '');
       if (lastCompletionAt && new Date(lastCompletionAt).getTime() >= due.getTime()) return [];
+      // A job cannot have missed an occurrence that predates its own existence. Confirmed
+      // 2026-09-27 across three agents: nova's a3f1c7e2 (created 09-17, cron `17 10 2 * *`,
+      // flagged for 09-02), hank's f4ec9b7b and 6e818c2a (created 07-05, cron months 4 and 5).
+      // Screen of live jobs: 9 of 14 month-restricted recurring jobs are candidates.
+      //
+      // ORDER IS LOAD-BEARING. This sits AFTER the grace and completion checks, so the
+      // cannot-determine branch is only reached for a job we were otherwise about to flag.
+      // A job whose period is shorter than SCHEDULE_GRACE_MS can never be flagged at all,
+      // so hoisting this above them would park such jobs in `unknown` for no benefit.
+      if (job.created !== undefined) {
+        const createdMs = Date.parse(job.created);
+        if (!Number.isFinite(createdMs)) {
+          unevaluableScheduleJobs.push({
+            ...base,
+            reason: `would be flagged stale for the ${due.toISOString()} occurrence, but \`created\` is unparseable (${job.created})`,
+          });
+          return [];
+        }
+        // Not stale: the occurrence happened before the job existed.
+        if (due.getTime() < createdMs) return [];
+      } else if (!lastCompletionAt) {
+        // No `created` AND no completion artifact ever: nothing available establishes that
+        // the job existed at the occurrence, so staleness is genuinely undecidable.
+        unevaluableScheduleJobs.push({
+          ...base,
+          reason: `would be flagged stale for the ${due.toISOString()} occurrence, but the record has no \`created\` timestamp and no completion artifact, so whether the job existed then cannot be determined`,
+        });
+        return [];
+      }
+      // `created` absent but a completion artifact exists: the artifact PROVES the job
+      // existed when it ran, so a phantom pre-creation occurrence is ruled out by evidence
+      // rather than by a field. This is why absent-`created` is not blanket-`unknown`:
+      // 5 of the 6 live jobs missing the field are long-period and genuinely flaggable,
+      // including the newsletter assembly catch-up and the dated-commitment overdue check.
+      // Blanket-`unknown` would have traded a false positive for a blind spot on those.
       const staleMs = now.getTime() - due.getTime();
       return [{
         ...base,
@@ -641,7 +677,14 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         : check('error', `${invalidTypeJobs.length} job(s) use invalid type`),
       staleOneShots: staleOneShotJobs.length === 0
         ? check('ok', 'no stale fired one-shot jobs')
-        : check('error', `${staleOneShotJobs.length} one-shot job(s) are past fireAt by >5min`),
+        // Itemized because the bare count was unactionable AND misleading: it read
+        // "3 one-shot job(s)" for weeks, so nobody could clear them, and when isla
+        // enumerated independently she got 4 (she had not filtered `enabled`, picking up a
+        // deliberately-disabled verifier) and reasonably concluded the count was broken.
+        // An opaque correct answer invites someone to prove it wrong.
+        : check('error', `${staleOneShotJobs.length} one-shot job(s) are past fireAt by >5min: ${staleOneShotJobs
+            .map((j) => `${j.id} (${j.label}, fireAt ${j.fireAt}, ${Math.round(j.staleMinutes / 1440)}d late)`)
+            .join('; ')}`),
       scheduleEvaluable: unevaluableScheduleJobs.length === 0
         ? check('ok', `all ${jobs.filter((j) => j.type === 'recurring' && j.cron).length} recurring schedules evaluable`)
         // `unknown`, never `warn`: this is the checker's limit, not a fault in the jobs.

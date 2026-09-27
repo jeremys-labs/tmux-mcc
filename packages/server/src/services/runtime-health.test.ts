@@ -927,8 +927,12 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
   }
 
   const NOW = new Date(2026, 8, 24, 18, 0); // 2026-09-24 18:00 local
-  const daily = { id: 'daily-job', label: 'daily', agent: 'nova', type: 'recurring', cron: '0 9 * * *' };
-  const annual = { id: 'annual-job', label: 'Annual met-day reminder', agent: 'isla', type: 'recurring', cron: '0 7 4 6 *' };
+  // `created` well before every occurrence these tests construct: the realistic shape, and
+  // the one that keeps each test exercising its own property rather than the pre-creation
+  // guard added 2026-09-27. Absent and pre-creation `created` have dedicated tests below.
+  const CREATED = '2026-01-01T00:00:00Z';
+  const daily = { id: 'daily-job', label: 'daily', agent: 'nova', type: 'recurring', cron: '0 9 * * *', created: CREATED };
+  const annual = { id: 'annual-job', label: 'Annual met-day reminder', agent: 'isla', type: 'recurring', cron: '0 7 4 6 *', created: CREATED };
 
   it('CONTROL 1 — flags a job whose last completion predates a missed occurrence', () => {
     // Without this, the false positives get "fixed" by making the check blind, and that is
@@ -965,6 +969,74 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
     ], NOW).then((r) => {
       expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).toContain('daily-job');
     });
+  });
+
+  // --- pre-creation guard (2026-09-27). A job cannot miss an occurrence that predates it.
+  // Confirmed live across three agents: nova's a3f1c7e2 (created 09-17, cron `17 10 2 * *`,
+  // flagged for 09-02), hank's f4ec9b7b and 6e818c2a (created 07-05, cron months 4 and 5).
+  // Isla relayed two of these downstream as facts before anyone checked `created`.
+
+  it('does NOT flag an occurrence that predates the job\'s own creation', () => {
+    // nova's exact shape: monthly job created after the occurrence it was accused of missing.
+    const born = { ...daily, id: 'born-late', cron: '0 9 2 * *', created: '2026-09-17T15:00:00Z' };
+    return scheduler([born], [], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('born-late');
+      // and it is NOT parked in unknown either -- the answer is known and it is "fine".
+      expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).not.toContain('born-late');
+    });
+  });
+
+  it('still flags a missed occurrence that comes AFTER creation', () => {
+    // The paired positive. Without it, the guard above is satisfiable by never flagging.
+    const born = { ...daily, id: 'born-early', cron: '0 9 2 * *', created: '2026-08-01T00:00:00Z' };
+    return scheduler([born], [], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).toContain('born-early');
+    });
+  });
+
+  it('absent `created` with completion evidence is still evaluated, not parked as unknown', () => {
+    // 5 of the 6 live jobs missing `created` are long-period and genuinely flaggable,
+    // including the newsletter assembly catch-up and the dated-commitment overdue check.
+    // A completion artifact PROVES the job existed when it ran, so existence is established
+    // by evidence rather than by a field. Blanket-unknown would blind those five.
+    const { created, ...noCreated } = daily as Record<string, unknown>;
+    return scheduler([{ ...noCreated, id: 'legacy-job' }], [
+      { name: 'legacy-job-old.run-result.json', ageMs: 5 * 24 * 3600_000 },
+    ], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).toContain('legacy-job');
+      expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).not.toContain('legacy-job');
+    });
+  });
+
+  it('absent `created` AND no completion evidence is unknown, never stale', () => {
+    // Nothing available establishes existence at the occurrence, so the honest answer is
+    // cannot-determine. `unknown` is never folded into ok or warn.
+    const { created, ...noCreated } = daily as Record<string, unknown>;
+    return scheduler([{ ...noCreated, id: 'orphan-job' }], [], NOW).then((r) => {
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('orphan-job');
+      expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).toContain('orphan-job');
+      expect(r.scheduler.checks.scheduleEvaluable.status).toBe('unknown');
+    });
+  });
+
+  it('unparseable `created` is unknown, never silently ignored', () => {
+    return scheduler([{ ...daily, id: 'bad-created', created: 'not-a-date' }], [], NOW).then((r) => {
+      expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).toContain('bad-created');
+      expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('bad-created');
+    });
+  });
+
+  it('staleOneShots NAMES the jobs, because a bare count was unactionable', () => {
+    // It read "3 one-shot job(s)" for weeks so nobody could clear them; and when isla
+    // enumerated independently she got 4 (not filtering `enabled`) and concluded the count
+    // was broken. An opaque correct answer invites someone to prove it wrong.
+    const past = new Date(NOW.getTime() - 3 * 24 * 3600_000).toISOString();
+    return scheduler([{ id: 'one-shot-a', label: 'checkpoint A', type: 'once', fireAt: past }], [], NOW)
+      .then((r) => {
+        expect(r.scheduler.checks.staleOneShots.status).toBe('error');
+        expect(r.scheduler.checks.staleOneShots.detail).toContain('one-shot-a');
+        expect(r.scheduler.checks.staleOneShots.detail).toContain('checkpoint A');
+      });
   });
 
   it('accepts legacy .log as completion, and lets the newest evidence win', () => {
