@@ -22,6 +22,7 @@ import {
   withheldEscalationFingerprint,
   withheldFirstLineAction,
   withheldNeedsPrincipal,
+  formatWithheldLogHeader,
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
@@ -909,5 +910,45 @@ describe('the withheld escalation is actually wired to a destination (dc-2026092
     });
 
     expect(alert).not.toBeNull();
+  });
+});
+
+describe('the withheld LOG HEADER is truthful on both branches (dc-20260924-004)', () => {
+  // The header claimed "The principal escalation below is the ONLY message that carries them"
+  // unconditionally, printed before the planner had decided whether an escalation existed. For
+  // a self-repair-only set there is none, and the next line said "no principal escalation
+  // needed" -- two contradictory claims, consecutively, in the log of the change whose whole
+  // subject is prose outrunning execution. (eli's final blocker.)
+
+  const base = {
+    destinationAgent: 'isla',
+    withheldCount: 2,
+    operatorAddressedCount: 4,
+    reason: 'it is about isla and isla is among its subjects',
+  };
+
+  it('promises the escalation only when there IS one', () => {
+    const header = formatWithheldLogHeader({ ...base, needsPrincipal: true });
+
+    expect(header).toContain('The principal escalation below is the ONLY message that carries them');
+    expect(header).toContain('WITHHELD 2 finding(s)');
+  });
+
+  it('promises NOTHING when the set is self-repair only', () => {
+    const header = formatWithheldLogHeader({ ...base, needsPrincipal: false });
+
+    // The specific false promise, named rather than approximated.
+    expect(header).not.toContain('escalation below');
+    expect(header).toContain('no principal escalation is sent');
+    // Still says the findings exist and where they are -- suppression is not silence.
+    expect(header).toContain('These lines are the only record of them.');
+  });
+
+  it('reports addressing, not delivery, on both branches', () => {
+    for (const needsPrincipal of [true, false]) {
+      const header = formatWithheldLogHeader({ ...base, needsPrincipal });
+      expect(header).toContain('4 finding(s) this pass addressed to the operator');
+      expect(header).not.toMatch(/were delivered|delivered normally|escalated to/i);
+    }
   });
 });
