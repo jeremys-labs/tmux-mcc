@@ -768,34 +768,57 @@ export function withheldEscalationFingerprint(incidents: WithheldIncident[]): st
 }
 
 /**
+ * What `planWithheldEscalation` DECIDED. One value, produced in one place, and the only input
+ * that tells the log header what to claim.
+ *
+ * - `escalating`       an alert exists and is about to be dispatched
+ * - `self_repair_only` every incident is a successful self-heal; nothing needs a human
+ * - `unchanged`        a human has already been told about this exact incident set
+ */
+export type WithheldOutcome = 'escalating' | 'self_repair_only' | 'unchanged';
+
+/**
  * The log header for a withheld set, as a function, because it makes a claim that is only true
- * on ONE of the two branches below it.
+ * on ONE of the planner's three outcomes.
  *
- * It used to say "The principal escalation below is the ONLY message that carries them"
- * unconditionally -- printed before `planWithheldEscalation` had decided whether an escalation
- * existed at all. For a self-repair-only set there is no escalation below, and the very next
- * line said "no principal escalation needed". Two contradictory claims, one after the other,
- * in the log of the change whose entire subject is prose that outruns execution. (eli.)
+ * It said "The principal escalation below is the ONLY message that carries them"
+ * unconditionally, printed before the planner had decided whether an escalation existed. For a
+ * self-repair-only set there is none, and the very next line said "no principal escalation
+ * needed". Two contradictory claims, consecutively. (eli.)
  *
- * `needsPrincipal` is computed ONCE by the caller and passed to both this header and the
- * planner, so the two cannot disagree.
+ * IT TAKES THE PLANNER'S `outcome`, NOT A BOOLEAN IT COULD HAVE COMPUTED ITSELF. My first
+ * attempt passed a `needsPrincipal` flag and the comment claimed it was "computed once and
+ * handed to both, so they cannot disagree" -- while `planWithheldEscalation` went on calling
+ * `withheldNeedsPrincipal` again internally. TWO DECISIONS, and a comment asserting one. eli
+ * traced it: main at one line, the planner at another, the flag never an input or output of the
+ * plan. They agreed only because both called the same pure predicate over the same set.
+ *
+ * ⚡ THE FIX FOR "PROSE OUTRAN EXECUTION" WAS ITSELF PROSE THAT OUTRAN EXECUTION, in the
+ * fifth round of a review about exactly that. The lesson is not "write more careful comments":
+ * it is that a claim of single-sourcing has to be STRUCTURAL. There is now no boolean to
+ * disagree about, because the header cannot reach the predicate -- it can only read the
+ * decision the planner already made.
  */
 export function formatWithheldLogHeader(input: {
   destinationAgent: string;
   withheldCount: number;
   operatorAddressedCount: number;
   reason: string;
-  needsPrincipal: boolean;
+  outcome: WithheldOutcome;
 }): string {
   const head = `runtime monitor WITHHELD ${input.withheldCount} finding(s) from destination ${input.destinationAgent}`
     + ` (${input.operatorAddressedCount} finding(s) this pass addressed to the operator):`
     + ` ${input.reason}.`;
-  if (input.needsPrincipal) {
+  if (input.outcome === 'escalating') {
     return `${head} The principal escalation below is the ONLY message that carries them —`
       + ' they are absent from the operator mailbox by construction.';
   }
-  return `${head} Self-repair only: nothing here needs a human, so no principal escalation is`
-    + ' sent. These lines are the only record of them.';
+  if (input.outcome === 'self_repair_only') {
+    return `${head} Self-repair only: nothing here needs a human, so no principal escalation is`
+      + ' sent. These lines are the only record of them.';
+  }
+  return `${head} The principal was already told about this exact set, so no escalation is`
+    + ' repeated. These lines are the current record of them.';
 }
 
 /**
@@ -814,17 +837,23 @@ export function planWithheldEscalation(input: {
   operatorAddressedCount: number;
   lastFingerprint?: string;
   repeat?: boolean;
-}): { alert: RoutedAlert | null; fingerprint: string | undefined } {
-  if (input.incidents.length === 0) return { alert: null, fingerprint: undefined };
+}): { alert: RoutedAlert | null; fingerprint: string | undefined; outcome: WithheldOutcome } {
+  if (input.incidents.length === 0) return { alert: null, fingerprint: undefined, outcome: 'unchanged' };
   // Every incident is a successful self-repair: nothing for the principal to do, so nothing is
   // sent and nothing is stamped. They remain in the monitor log, which is where the team reads
   // self-healing. Suppression is the other arm of this row's own message rule.
-  if (!withheldNeedsPrincipal(input.incidents)) return { alert: null, fingerprint: undefined };
+  //
+  // THIS IS THE ONLY PLACE THE QUESTION IS ASKED. The log header reads the `outcome` returned
+  // below; it has no boolean of its own and no access to the predicate.
+  if (!withheldNeedsPrincipal(input.incidents)) {
+    return { alert: null, fingerprint: undefined, outcome: 'self_repair_only' };
+  }
   const fingerprint = withheldEscalationFingerprint(input.incidents);
   if (input.lastFingerprint === fingerprint && !input.repeat) {
-    return { alert: null, fingerprint };
+    return { alert: null, fingerprint, outcome: 'unchanged' };
   }
   return {
+    outcome: 'escalating',
     alert: {
       text: formatWithheldEscalation({
         destinationAgent: input.destinationAgent,
@@ -1141,26 +1170,20 @@ async function main(): Promise<void> {
     // --dry-run none of them go anywhere at all. Reporting queued work as completed work was
     // eli's blocker 3, and it had leaked into both this line and the principal's message.
     const operatorAddressedCount = alerts.reduce((total, entry) => total + entry.subjects.length, 0);
-    // Computed ONCE, here, and handed to both the header and the planner. Deciding it twice is
-    // how the header came to promise an escalation the planner then declined to produce.
-    const needsPrincipal = withheldNeedsPrincipal(withheldIncidents);
-    process.stdout.write(`${formatWithheldLogHeader({
-      destinationAgent: agent,
-      withheldCount: withheldIncidents.length,
-      operatorAddressedCount,
-      reason: withholdReason({ destinationAgent: agent, subjects: withheldSubjects }) ?? '',
-      needsPrincipal,
-    })}\n`);
-    for (const incident of withheldIncidents) {
-      process.stdout.write(`  withheld [${incident.alarmClass}] ${incident.subject} ${incident.identity}: ${incident.detail}\n`);
-    }
     // THE SECOND HOP. Until 2026-09-26 this list reached stdout and nowhere else, which was
     // survivable only because delivery/inbound still had a principal path of their own. With
     // every class on `operator`, a finding about the operator would have had ZERO destinations
     // -- the 2026-09-12 defect with an extra step, and explicitly not an acceptable fix.
-    // Fingerprinted on stable INCIDENT IDENTITY so it is said once, not every five minutes --
-    // and so a NEW incident for an already-withheld subject still gets out. The underlying
-    // findings keep re-raising in the log; the escalation does not repeat for an unchanged set.
+    //
+    // THE PLAN IS BUILT BEFORE THE HEADER IS PRINTED, deliberately. The header's claim is only
+    // true on one of the plan's three outcomes, so it has to read the decision rather than
+    // predict it. The previous version printed the header first and asserted in a comment that
+    // the two could not disagree -- while the planner recomputed the same predicate internally.
+    // Ordering was the actual fix; the comment was not.
+    //
+    // Fingerprinted on stable INCIDENT IDENTITY so a standing condition is said once, not every
+    // five minutes -- and so a NEW incident for an already-withheld subject still gets out. The
+    // underlying findings keep re-raising in the log; the escalation does not repeat unchanged.
     //
     // This is the one alert built without `alertFrom`/`Deliverable`, and it does not violate
     // the partition: the rule is "never a finding into its own SUBJECT'S channel", and the
@@ -1175,13 +1198,17 @@ async function main(): Promise<void> {
       repeat: hasFlag('--repeat'),
     });
     nextState.lastWithheldFingerprint = escalation.fingerprint;
-    if (escalation.alert) {
-      alerts.push(escalation.alert);
-    } else if (!needsPrincipal) {
-      // Self-repair only. The header above already said so; nothing further to print.
-    } else {
-      process.stdout.write('withheld escalation unchanged since last pass; not repeated\n');
+    process.stdout.write(`${formatWithheldLogHeader({
+      destinationAgent: agent,
+      withheldCount: withheldIncidents.length,
+      operatorAddressedCount,
+      reason: withholdReason({ destinationAgent: agent, subjects: withheldSubjects }) ?? '',
+      outcome: escalation.outcome,
+    })}\n`);
+    for (const incident of withheldIncidents) {
+      process.stdout.write(`  withheld [${incident.alarmClass}] ${incident.subject} ${incident.identity}: ${incident.detail}\n`);
     }
+    if (escalation.alert) alerts.push(escalation.alert);
   } else {
     nextState.lastWithheldFingerprint = undefined;
   }

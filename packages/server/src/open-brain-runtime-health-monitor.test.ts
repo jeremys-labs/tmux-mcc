@@ -928,14 +928,14 @@ describe('the withheld LOG HEADER is truthful on both branches (dc-20260924-004)
   };
 
   it('promises the escalation only when there IS one', () => {
-    const header = formatWithheldLogHeader({ ...base, needsPrincipal: true });
+    const header = formatWithheldLogHeader({ ...base, outcome: 'escalating' as const });
 
     expect(header).toContain('The principal escalation below is the ONLY message that carries them');
     expect(header).toContain('WITHHELD 2 finding(s)');
   });
 
   it('promises NOTHING when the set is self-repair only', () => {
-    const header = formatWithheldLogHeader({ ...base, needsPrincipal: false });
+    const header = formatWithheldLogHeader({ ...base, outcome: 'self_repair_only' as const });
 
     // The specific false promise, named rather than approximated.
     expect(header).not.toContain('escalation below');
@@ -944,11 +944,101 @@ describe('the withheld LOG HEADER is truthful on both branches (dc-20260924-004)
     expect(header).toContain('These lines are the only record of them.');
   });
 
-  it('reports addressing, not delivery, on both branches', () => {
-    for (const needsPrincipal of [true, false]) {
-      const header = formatWithheldLogHeader({ ...base, needsPrincipal });
+  it('distinguishes ALREADY TOLD from nothing-to-tell', () => {
+    // Three outcomes, not two. A duplicate-suppressed escalation is not self-repair, and
+    // saying "self-repair only" there would be the same false-claim class one branch over.
+    const header = formatWithheldLogHeader({ ...base, outcome: 'unchanged' });
+
+    expect(header).toContain('already told about this exact set');
+    expect(header).not.toContain('Self-repair only');
+    expect(header).not.toContain('escalation below');
+  });
+
+  it('reports addressing, not delivery, on every branch', () => {
+    for (const outcome of ['escalating', 'self_repair_only', 'unchanged'] as const) {
+      const header = formatWithheldLogHeader({ ...base, outcome });
       expect(header).toContain('4 finding(s) this pass addressed to the operator');
       expect(header).not.toMatch(/were delivered|delivered normally|escalated to/i);
+    }
+  });
+});
+
+describe('the header consumes the PLANNER\'s decision, not its own (dc-20260924-004)', () => {
+  // eli traced that `needsPrincipal` was computed in main AND recomputed inside the planner,
+  // while the comment claimed it was "computed once and handed to both, so they cannot
+  // disagree". Two decisions and a comment asserting one. THE FIX FOR "PROSE OUTRAN EXECUTION"
+  // WAS ITSELF PROSE THAT OUTRAN EXECUTION, in the fifth round of a review about that exact
+  // thing. The remedy is structural, not editorial: the header takes the planner's `outcome`
+  // and has no access to the predicate, so there is no second decision to drift.
+
+  const healed = {
+    alarmClass: 'inboundRecovery' as const,
+    subject: 'isla',
+    identity: 'k1',
+    detail: 'replay_consumed: worked',
+  };
+  const miss = {
+    alarmClass: 'inbound' as const,
+    subject: 'isla',
+    identity: 'm1',
+    detail: 'no reply after 40m',
+  };
+  const header = (outcome: ReturnType<typeof planWithheldEscalation>['outcome']) =>
+    formatWithheldLogHeader({
+      destinationAgent: 'isla',
+      withheldCount: 1,
+      operatorAddressedCount: 0,
+      reason: 'r',
+      outcome,
+    });
+
+  it('promises no escalation when the planner suppressed a self-repair-only set', () => {
+    const plan = planWithheldEscalation({
+      incidents: [healed],
+      destinationAgent: 'isla',
+      operatorAddressedCount: 0,
+    });
+
+    expect(plan.alert).toBeNull();
+    expect(plan.outcome).toBe('self_repair_only');
+    expect(header(plan.outcome)).not.toContain('escalation below');
+  });
+
+  it('promises the escalation exactly when the planner produced one', () => {
+    const plan = planWithheldEscalation({
+      incidents: [miss],
+      destinationAgent: 'isla',
+      operatorAddressedCount: 0,
+    });
+
+    expect(plan.alert).not.toBeNull();
+    expect(plan.outcome).toBe('escalating');
+    expect(header(plan.outcome)).toContain('escalation below');
+  });
+
+  it('reports ALREADY TOLD, not self-repair, when the planner suppressed a duplicate', () => {
+    const plan = planWithheldEscalation({
+      incidents: [miss],
+      destinationAgent: 'isla',
+      operatorAddressedCount: 0,
+      lastFingerprint: withheldEscalationFingerprint([miss]),
+    });
+
+    expect(plan.alert).toBeNull();
+    expect(plan.outcome).toBe('unchanged');
+    expect(header(plan.outcome)).toContain('already told about this exact set');
+  });
+
+  it('never reports escalating without an alert, across every input shape', () => {
+    // The invariant the prose used to assert. Now it is a test, over the three real shapes,
+    // and it is the only claim of single-sourcing this file makes.
+    for (const incidents of [[healed], [miss], [healed, miss], []]) {
+      const plan = planWithheldEscalation({
+        incidents,
+        destinationAgent: 'isla',
+        operatorAddressedCount: 0,
+      });
+      expect(plan.outcome === 'escalating').toBe(plan.alert !== null);
     }
   });
 });
