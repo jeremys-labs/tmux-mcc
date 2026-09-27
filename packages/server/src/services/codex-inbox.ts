@@ -100,6 +100,7 @@ export function formatInboxEntryForCodex(entry: CodexBridgeInboxEntry): string {
       'npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux --',
       `--agent ${entry.agentKey}`,
       `--chat-id ${entry.channelId}`,
+      '--outbound-class interactive_reply',
       '--text-file /absolute/path/to/reply.txt',
     ].join(' ');
   const attrs = [

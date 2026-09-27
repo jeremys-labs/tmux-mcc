@@ -18,6 +18,8 @@ type Args = {
   label?: string;
   awaitingReply?: boolean;
   expectAttachments?: number;
+  outboundClass?: 'interactive_reply' | 'scheduled_digest' | 'alert' | 'system_monitor';
+  overrideReason?: string;
   socketPath: string;
 };
 
@@ -70,6 +72,14 @@ function parseArgs(argv: string[]): Args {
       args.awaitingReply = true;
     } else if (item === '--expect-attachments' || item === '--expect-file-count') {
       args.expectAttachments = Number(next);
+      index += 1;
+    } else if (item === '--outbound-class') {
+      if (next === 'interactive_reply' || next === 'scheduled_digest' || next === 'alert' || next === 'system_monitor') {
+        args.outboundClass = next;
+      }
+      index += 1;
+    } else if (item === '--override-reason') {
+      args.overrideReason = next;
       index += 1;
     } else if (item === '--socket-path') {
       args.socketPath = next ?? args.socketPath;
@@ -131,8 +141,8 @@ if (args.textStdin) {
   args.text = fs.readFileSync(0, 'utf8');
 }
 
-if (!args.agent || !args.chatId || (!args.text && args.files.length === 0)) {
-  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> [--text <message> | --text-file <abs-path> | --text-stdin] [--file <abs-path> ...] [--reply-to <message_id>]');
+if (!args.agent || !args.chatId || !args.outboundClass || (!args.text && args.files.length === 0)) {
+  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> --outbound-class <interactive_reply|scheduled_digest|alert|system_monitor> [--text <message> | --text-file <abs-path> | --text-stdin] [--file <abs-path> ...] [--reply-to <message_id>] [--override-reason <reason>]');
   process.exit(1);
 }
 
@@ -161,6 +171,7 @@ for (const filePath of args.files) {
 const payloadObject = {
   agentKey: args.agent,
   chat_id: args.chatId,
+  outboundClass: args.outboundClass,
   ...(args.text ? { text: args.text } : {}),
   ...(args.files.length > 0 ? { files: args.files } : {}),
   ...(args.replyTo ? { reply_to: args.replyTo } : {}),
@@ -168,6 +179,7 @@ const payloadObject = {
   ...(args.jobId ?? process.env.SCHEDULED_JOB_ID ? { job_id: args.jobId ?? process.env.SCHEDULED_JOB_ID } : {}),
   ...(args.label ?? process.env.SCHEDULED_JOB_LABEL ? { label: args.label ?? process.env.SCHEDULED_JOB_LABEL } : {}),
   ...(args.awaitingReply || process.env.SCHEDULED_AWAITING_REPLY === '1' ? { awaiting_reply: true } : {}),
+  ...(args.overrideReason ? { override: { reason: args.overrideReason } } : {}),
 };
 const payload = JSON.stringify(payloadObject);
 

@@ -338,6 +338,7 @@ async function sendDiscordMessage(input: {
   const payload = JSON.stringify({
     agentKey: input.agent,
     chat_id: input.chatId,
+    outboundClass: 'system_monitor',
     text: input.text,
   });
   return new Promise<string>((resolve, reject) => {

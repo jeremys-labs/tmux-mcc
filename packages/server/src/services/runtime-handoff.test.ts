@@ -72,7 +72,7 @@ describe('runtime handoff', () => {
       'runtime-event {"type":"token_usage","session":"feae905f-52f7-405b-a634-a9821e5ba014"}',
       '<channel source="discord" chat_id="1491979880747765810" message_id="old-msg" user="kingclueless_" ts="2026-07-15T20:00:00.000Z">Can you check this?</channel>',
       '',
-      'Reply via `npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux -- --agent isla --chat-id 1491979880747765810 --text-file /absolute/path/to/reply.txt` (or `--text` for short shell-safe replies). chat_id="1491979880747765810". Reply on Discord, not only the local session.',
+      'Reply via `npm run discord:reply --workspace=@mcc-tmux/server --prefix /Volumes/Repo-Drive/src/mcc-tmux -- --agent isla --chat-id 1491979880747765810 --outbound-class interactive_reply --text-file /absolute/path/to/reply.txt` (or `--text` for short shell-safe replies). chat_id="1491979880747765810". Reply on Discord, not only the local session.',
       'runtime-event {"type":"compaction","status":"forced"}',
     ].join('\n'));
 
