@@ -629,17 +629,30 @@ export interface WithheldIncident {
  * "the planner erased the class before choosing the action." A first-line action is only
  * worth the rule if it is TRUE for the set it is summarising.
  */
-const WITHHELD_REMEDY: Record<AlertClass, 'restart' | 'jobs'> = {
+const WITHHELD_REMEDY: Record<AlertClass, 'restart' | 'jobs' | 'none'> = {
   delivery: 'restart',
   inbound: 'restart',
-  inboundRecovery: 'restart',
+  // A SUCCESSFUL REPAIR IS NOT A FAILURE, and this entry was 'restart' until eli probed it.
+  // `inboundRecovery` is the notice that the monitor FIXED an inbound miss itself; telling
+  // Jeremy to restart an agent that just self-healed is a false instruction in the first line
+  // of the one message that is supposed to be nothing but a true instruction. It still has to
+  // be SENT -- invisible self-repair is the 2026-09-13 defect -- so 'none' means "say it,
+  // claim no action", not "suppress it".
+  inboundRecovery: 'none',
   scheduler: 'jobs',
 };
 
 /** At most this many incident lines in the principal message; the rest are counted. */
 const WITHHELD_DETAIL_LINES = 6;
-/** Per-line cap, so one pathological detail cannot turn this into the 09-23 dump. */
-const WITHHELD_DETAIL_CHARS = 160;
+/**
+ * Cap on the WHOLE incident line, not on `detail` alone.
+ *
+ * It capped only `detail` until eli probed it, and `identity` is not bounded either: a
+ * scheduler identity is a sorted job-id set, and hank's staleRecurring finding already carries
+ * five UUIDs. I had a two-UUID identity in front of me in my own dry-run and did not follow
+ * the growth path. Truncating one field of a line built from two is not bounding the line.
+ */
+const WITHHELD_LINE_CHARS = 200;
 
 export function withheldFirstLineAction(input: {
   destinationAgent: string;
@@ -648,13 +661,31 @@ export function withheldFirstLineAction(input: {
   const remedies = new Set(input.incidents.map((incident) => WITHHELD_REMEDY[incident.alarmClass]));
   const count = input.incidents.length;
   const tail = `${count} monitor finding(s) about ${input.destinationAgent} cannot be delivered to it.`;
-  if (remedies.has('restart') && remedies.has('jobs')) {
+  const restart = remedies.has('restart');
+  const jobs = remedies.has('jobs');
+  if (restart && jobs) {
     return `Restart ${input.destinationAgent} and check its scheduled jobs — ${tail}`;
   }
-  if (remedies.has('jobs')) {
-    return `Check ${input.destinationAgent}'s scheduled jobs — ${tail}`;
-  }
-  return `Restart ${input.destinationAgent} — ${tail}`;
+  if (jobs) return `Check ${input.destinationAgent}'s scheduled jobs — ${tail}`;
+  if (restart) return `Restart ${input.destinationAgent} — ${tail}`;
+  // Only self-repair notices. `planWithheldEscalation` SUPPRESSES this set rather than sending
+  // it (acceptance item 3 is "states the required action in its first line OR IS SUPPRESSED",
+  // and a successful self-heal has no action for Jeremy). This branch exists so the function is
+  // still truthful when called directly, and so a future caller cannot get "Restart" here.
+  return `No action needed — ${input.destinationAgent} self-healed ${count} finding(s) it could not report to itself.`;
+}
+
+/**
+ * Does this withheld set need a human at all?
+ *
+ * False when every incident is a SUCCESSFUL self-repair. Those stay in the monitor log -- the
+ * 2026-09-13 defect was invisible self-healing, and the log is where the team sees it -- but
+ * they do not page the principal, because there is nothing for him to do. Eli's blocker: my
+ * table classified success as a restart failure, so a lone recovery notice opened with
+ * "Restart isla" after the replay had already worked.
+ */
+export function withheldNeedsPrincipal(incidents: WithheldIncident[]): boolean {
+  return incidents.some((incident) => WITHHELD_REMEDY[incident.alarmClass] !== 'none');
 }
 
 /**
@@ -673,35 +704,41 @@ export function formatWithheldEscalation(input: {
   destinationAgent: string;
   incidents: WithheldIncident[];
   /**
-   * How many findings actually went out in the same pass. REQUIRED, and not defaulted.
+   * How many findings in this pass are ADDRESSED TO THE OPERATOR rather than withheld.
+   * REQUIRED, and not defaulted.
    *
-   * The first version ended with a flat "Every other finding this pass was delivered
-   * normally." The first live dry-run printed it in a pass where the scheduler alert had been
-   * suppressed as a duplicate and NOTHING else was delivered -- an unfalsifiable reassurance
-   * that happened to be false the first time it ran. Same class as a `|| echo "<good news>"`
-   * fallback: a sentence that soothes whether or not the thing it describes is true. Now it
-   * states a number, and says nothing at all when the number is zero.
+   * Two corrections live in this one field. It began as a flat "Every other finding this pass
+   * was delivered normally", and the first live dry-run printed that in a pass where the
+   * scheduler alert had been duplicate-suppressed and nothing else went anywhere -- an
+   * unfalsifiable reassurance, false on its first real run, the `|| echo "<good news>"` shape
+   * in prose. It then became `deliveredCount`, which eli rejected for a subtler reason: the
+   * number is computed from alerts QUEUED IN MEMORY, before any transport runs, so under
+   * `--dry-run` nothing is sent and the word "delivered" was still a claim of completed work.
+   *
+   * ADDRESSING is a fact at assembly time; DELIVERY is not. The wording now reports only what
+   * the count can actually support, which is also the thing Jeremy needs from it: which
+   * findings are his and which are not.
    */
-  deliveredCount: number;
+  operatorAddressedCount: number;
 }): string {
   const shown = input.incidents.slice(0, WITHHELD_DETAIL_LINES);
   const hidden = input.incidents.length - shown.length;
   const lines = [
     withheldFirstLineAction(input),
-    `Routing them to ${input.destinationAgent} would report a broken runtime to itself, so they`
-    + ' are stated here in full and nowhere else — they are absent from the operator mailbox by'
-    + ' construction.',
+    `Routing them to ${input.destinationAgent} would report a broken runtime to itself, so this`
+    + ' is the only message that carries them — they are absent from the operator mailbox by'
+    + ' construction. Summarised below; the full set is in the monitor log.',
     ...shown.map((incident) => {
       const id = incident.identity ? ` ${incident.identity}` : '';
-      const detail = incident.detail.length > WITHHELD_DETAIL_CHARS
-        ? `${incident.detail.slice(0, WITHHELD_DETAIL_CHARS - 1)}…`
-        : incident.detail;
-      return `- [${incident.alarmClass}]${id}: ${detail}`;
+      const line = `- [${incident.alarmClass}]${id}: ${incident.detail}`;
+      // Bound the assembled LINE. Both `identity` and `detail` grow with the finding, so
+      // capping either one alone leaves the other free to carry the message away.
+      return line.length > WITHHELD_LINE_CHARS ? `${line.slice(0, WITHHELD_LINE_CHARS - 1)}…` : line;
     }),
   ];
   if (hidden > 0) lines.push(`- …and ${hidden} more withheld finding(s); full set in the monitor log.`);
-  if (input.deliveredCount > 0) {
-    lines.push(`The other ${input.deliveredCount} finding(s) this pass were delivered normally.`);
+  if (input.operatorAddressedCount > 0) {
+    lines.push(`The other ${input.operatorAddressedCount} finding(s) this pass are addressed to the operator, not to you.`);
   }
   return lines.join('\n');
 }
@@ -734,11 +771,15 @@ export function withheldEscalationFingerprint(incidents: WithheldIncident[]): st
 export function planWithheldEscalation(input: {
   incidents: WithheldIncident[];
   destinationAgent: string;
-  deliveredCount: number;
+  operatorAddressedCount: number;
   lastFingerprint?: string;
   repeat?: boolean;
 }): { alert: RoutedAlert | null; fingerprint: string | undefined } {
   if (input.incidents.length === 0) return { alert: null, fingerprint: undefined };
+  // Every incident is a successful self-repair: nothing for the principal to do, so nothing is
+  // sent and nothing is stamped. They remain in the monitor log, which is where the team reads
+  // self-healing. Suppression is the other arm of this row's own message rule.
+  if (!withheldNeedsPrincipal(input.incidents)) return { alert: null, fingerprint: undefined };
   const fingerprint = withheldEscalationFingerprint(input.incidents);
   if (input.lastFingerprint === fingerprint && !input.repeat) {
     return { alert: null, fingerprint };
@@ -748,7 +789,7 @@ export function planWithheldEscalation(input: {
       text: formatWithheldEscalation({
         destinationAgent: input.destinationAgent,
         incidents: input.incidents,
-        deliveredCount: input.deliveredCount,
+        operatorAddressedCount: input.operatorAddressedCount,
       }),
       subjects: [...new Set(input.incidents.map((incident) => incident.subject))].sort(),
       channel: 'principal',
@@ -1054,14 +1095,17 @@ async function main(): Promise<void> {
 
   if (withheldIncidents.length > 0) {
     const withheldSubjects = withheldIncidents.map((incident) => incident.subject);
-    // Counted ONCE and reused, so the log line and the escalation cannot disagree. Note this
-    // is what was actually SENT this pass, which a duplicate-suppressed alert is not.
-    const deliveredCount = alerts.reduce((total, entry) => total + entry.subjects.length, 0);
+    // Counted ONCE and reused, so the log line and the escalation cannot disagree. NOTE THE
+    // NAME: these are findings ADDRESSED to the operator, not findings delivered to it. The
+    // count is taken from alerts assembled in memory, before any transport runs -- under
+    // --dry-run none of them go anywhere at all. Reporting queued work as completed work was
+    // eli's blocker 3, and it had leaked into both this line and the principal's message.
+    const operatorAddressedCount = alerts.reduce((total, entry) => total + entry.subjects.length, 0);
     process.stdout.write(
       `runtime monitor WITHHELD ${withheldIncidents.length} finding(s) from destination ${agent}`
-      + ` (delivered ${deliveredCount} finding(s) in the same pass):`
+      + ` (${operatorAddressedCount} finding(s) this pass addressed to the operator):`
       + ` ${withholdReason({ destinationAgent: agent, subjects: withheldSubjects })}.`
-      + ' Escalated to the principal, which is the ONLY message that states them —'
+      + ' The principal escalation below is the ONLY message that carries them —'
       + ' they are absent from the operator mailbox by construction.\n',
     );
     for (const incident of withheldIncidents) {
@@ -1083,13 +1127,19 @@ async function main(): Promise<void> {
     const escalation = planWithheldEscalation({
       incidents: withheldIncidents,
       destinationAgent: agent,
-      deliveredCount,
+      operatorAddressedCount,
       lastFingerprint: state.lastWithheldFingerprint,
       repeat: hasFlag('--repeat'),
     });
     nextState.lastWithheldFingerprint = escalation.fingerprint;
-    if (escalation.alert) alerts.push(escalation.alert);
-    else process.stdout.write('withheld escalation already sent for this set; duplicate suppressed\n');
+    if (escalation.alert) {
+      alerts.push(escalation.alert);
+    } else if (!withheldNeedsPrincipal(withheldIncidents)) {
+      // Successful self-repairs only. Logged above, deliberately not escalated.
+      process.stdout.write('withheld set is self-repair only; no principal escalation needed\n');
+    } else {
+      process.stdout.write('withheld escalation unchanged since last pass; not repeated\n');
+    }
   } else {
     nextState.lastWithheldFingerprint = undefined;
   }
