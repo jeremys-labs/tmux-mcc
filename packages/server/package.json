@@ -33,7 +33,10 @@
     "skill:promote": "tsx src/skill-promote.ts",
     "run:claude-wrapper": "tsx src/claude-wrapper.ts",
     "run:codex-wrapper": "tsx src/codex-wrapper.ts",
-    "build": "tsc",
+    "build": "node scripts/typescript-scope.mjs --emit",
+    "typecheck": "node scripts/typescript-scope.mjs --assert-full",
+    "typecheck:source": "node scripts/typescript-scope.mjs",
+    "typecheck:tests": "node scripts/typescript-scope.mjs --assert-test-baseline",
     "start": "node dist/index.js",
     "test": "vitest run",
     "replay-inbound": "tsx src/replay-inbound.ts"

@@ -1267,7 +1267,9 @@ async function main(): Promise<void> {
           body: alert.text,
           mailDir,
         }),
-        principal: (alert) => sendDiscordMessage({ agent, chatId, text: alert.text, socketPath }),
+        principal: async (alert) => {
+          await sendDiscordMessage({ agent, chatId, text: alert.text, socketPath });
+        },
       });
     }
     writeMonitorState(statePath, nextState);
