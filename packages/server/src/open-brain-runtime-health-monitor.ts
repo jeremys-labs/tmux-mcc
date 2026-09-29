@@ -1,3 +1,6 @@
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+import { assertCheckoutCurrent } from './services/runtime-checkout-assertion.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -905,6 +908,17 @@ async function main(): Promise<void> {
   // Jeremy's DM, which is the whole point of the change.
   const operatorAgent = readArg('--operator-agent') ?? 'isla';
   const mailDir = readArg('--mail-dir') ?? process.env.AGENT_MAIL_DIR ?? '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
+  // dc-20260925-002. Assert the checkout this process is RUNNING FROM before anything can
+  // reach the principal. On 2026-09-24 17:56 the live checkout was clean, on main, and
+  // simply un-pulled, and a scheduler alert went to Jeremy's DM 41 seconds later from
+  // pre-fix source. The daily drift audit already computes off-trunk and dirty and
+  // classifies them as CONTEXT rather than findings, and runs once a day against what was
+  // a ten-minute window — it could only have caught that by luck.
+  //
+  // The checkout is derived from THIS MODULE'S OWN LOCATION, not cwd: the question is
+  // which source the running process was loaded from, and cwd is whatever the launcher
+  // happened to leave behind.
+  const checkout = assertCheckoutCurrent(dirname(fileURLToPath(import.meta.url)));
   const report = await buildRuntimeHealthReport({
     includeOpenBrainSearch: false,
     contentRoot,
@@ -1268,6 +1282,31 @@ async function main(): Promise<void> {
           mailDir,
         }),
         principal: async (alert) => {
+          // DEGRADE THE DESTINATION, NEVER FAIL THE RUN. The findings are real whatever
+          // source produced them, so suppressing them would trade a wrong-provenance alert
+          // for no alert — strictly worse. What is NOT safe is letting an unverified
+          // checkout speak to the principal in his own DM as though it were reviewed code.
+          // `cannot-determine` degrades exactly like `stale`: a stale-but-present
+          // origin/main answers every question plausibly forever, so "I could not check"
+          // must not resolve to the reassuring branch.
+          if (checkout.state !== 'current') {
+            await sendOperatorMail({
+              to: operatorAgent,
+              subject: `runtime monitor: ${alert.subjects.length} PRINCIPAL finding(s) withheld — checkout ${checkout.state}`,
+              body: [
+                `This alert was routed to the principal but the monitor could not confirm it is`,
+                `running reviewed source, so it was degraded to the operator instead.`,
+                ``,
+                `checkout: ${checkout.state} — ${'reason' in checkout ? checkout.reason : 'n/a'}`,
+                ``,
+                `The finding itself is unchanged and is reproduced in full below.`,
+                ``,
+                alert.text,
+              ].join('\n'),
+              mailDir,
+            });
+            return;
+          }
           await sendDiscordMessage({ agent, chatId, text: alert.text, socketPath });
         },
       });
