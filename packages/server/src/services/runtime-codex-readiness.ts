@@ -19,6 +19,24 @@ export interface CodexReadinessGateOptions {
    * the first time rather than being debugged from symptoms weeks later.
    */
   onNotice?: (message: string) => void;
+  /**
+   * Reads the RENDERED screen, not the byte stream. Optional: when absent the gate behaves
+   * exactly as before, so a non-tmux runtime is unaffected.
+   *
+   * 2026-10-01: codex-cli 0.157.1 draws its composer in the alternate screen buffer with
+   * cursor positioning and synchronized output. The prompt is no longer emitted as a
+   * newline-prefixed line, so `\n\u203a ` could not match — measured on real 0.157.1 bytes,
+   * where the glyph arrives as `...\u256f\u203aAsk Codex to do anything` with the newline
+   * replaced by a cursor move and the trailing space produced by positioning that stripAnsi
+   * deletes. Every codex agent lost `prompt-ready` at the same instant (eli 1015 -> 0,
+   * zara 280 -> 0, cecelia 27 -> 0) and three days of mail was never injected.
+   *
+   * The lesson is not "widen the pattern". It is that this gate was re-deriving a screen
+   * from a byte stream while a correct terminal emulator — tmux — had already rendered it
+   * one layer up. Reading what tmux computed is renderer-agnostic: the next codex restyle
+   * moves the glyph on screen, not the parser out of sync with reality.
+   */
+  readScreen?: () => string | null;
 }
 
 /**
@@ -75,6 +93,25 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
    */
   let decorationLine: string | null = null;
 
+  /** Rendered-screen reads are a subprocess; cache briefly so a delivery costs one, not many. */
+  const SCREEN_CACHE_MS = 250;
+  let screenCachedAt = 0;
+  let screenCached: string | null = null;
+
+  const renderedScreen = (): string | null => {
+    if (!options.readScreen) return null;
+    const now = Date.now();
+    if (screenCachedAt !== 0 && now - screenCachedAt < SCREEN_CACHE_MS) return screenCached;
+    screenCachedAt = now;
+    try {
+      screenCached = options.readScreen();
+    } catch {
+      // A failed screen read is an ABSENCE of an observation, never evidence of readiness.
+      screenCached = null;
+    }
+    return screenCached;
+  };
+
   const setBusy = (next: boolean, marker: string) => {
     if (busy !== next) {
       busy = next;
@@ -86,6 +123,40 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
 
   const isBusyLine = (line: string): boolean =>
     /Working\s*\(/.test(line) || /[✱✻✽]\s+\S+/.test(line);
+
+  /**
+   * On the RENDERED screen the composer is a real line, so this is a line test rather than
+   * the stream's `\n\u203a ` byte test. Leading whitespace is stripped because the composer
+   * sits inside a drawn box, and no trailing space is required: on screen the space after
+   * the glyph is a cell, not a character in a chunk.
+   */
+  const screenHasPrompt = (screen: string): boolean =>
+    screen.split('\n').some((line) => line.trimStart().startsWith('\u203a'));
+
+  const screenHasBusy = (screen: string): boolean =>
+    screen.split('\n').some((line) => isBusyLine(line));
+
+  /**
+   * Releases ONLY on positive screen evidence, never on an absence.
+   *
+   * reachedPrompt is monotonic and merely re-opens the best-effort escape hatch, so screen
+   * evidence of a prompt is enough. Clearing `busy` is the dangerous direction — it permits
+   * injection into a working TUI — so it additionally requires that NO busy line is on
+   * screen. That is strictly more evidence than the stream path ever had, which released on
+   * the prompt marker alone.
+   */
+  const reconcileFromScreen = (): void => {
+    const screen = renderedScreen();
+    if (screen === null || !screenHasPrompt(screen)) return;
+    if (!reachedPrompt) {
+      reachedPrompt = true;
+      options.onNotice?.('reached-prompt-via-screen');
+    }
+    if (busy && !screenHasBusy(screen)) {
+      setBusy(false, 'prompt-ready(screen)');
+      flush();
+    }
+  };
 
   /** Control-stripped and bounded, with a digest when truncated, so a diagnostic cannot copy
    *  arbitrary session content into a shared runtime log. */
@@ -201,11 +272,14 @@ export function createCodexReadinessGate(options: CodexReadinessGateOptions = {}
     },
 
     waitForIdle() {
+      // Consulted only when we would otherwise block — the stuck case, not the common one.
+      if (busy) reconcileFromScreen();
       if (!busy) return Promise.resolve();
       return new Promise((resolve) => waiters.push(resolve));
     },
 
     hasReachedPrompt() {
+      if (!reachedPrompt) reconcileFromScreen();
       return reachedPrompt;
     },
   };

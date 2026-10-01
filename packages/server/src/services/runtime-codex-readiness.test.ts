@@ -1,5 +1,30 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createCodexReadinessGate } from './runtime-codex-readiness.js';
+
+/** Real bytes captured from codex-cli 0.157.1 painting its composer, 2026-10-01. */
+const REAL_0_157_1_BYTES = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'codex-0.157.1-alt-screen.raw'),
+  'utf8',
+);
+
+/** A tmux-rendered pane of the same runtime, ANSI already applied by tmux. */
+const RENDERED_IDLE_SCREEN = [
+  '   Tip: Use /feedback to send logs to the maintainers when something looks off.',
+  '',
+  '\u203a Ask Codex to do anything',
+  '',
+  '  GPT-5.6-Sol medium \u00b7 /Volumes/Repo-Drive/agents/eli \u00b7 Run startup reads',
+  '  ? for shortcuts                                   1 warning \u00b7 f2 to view',
+].join('\n');
+
+const RENDERED_WORKING_SCREEN = [
+  '  Working (12s \u00b7 esc to interrupt)',
+  '',
+  '\u203a Ask Codex to do anything',
+].join('\n');
 
 describe('Codex readiness gate', () => {
   it('reports only real busy/idle transitions to the log hook', () => {
@@ -287,5 +312,93 @@ describe('codex readiness — a busy marker must CHANGE to hold the gate', () =>
     const release = transitions.find(([s]) => s === 'idle')?.[1] ?? '';
     expect(release.length).toBeLessThan(400);
     expect(release).toContain('digest');
+  });
+
+  describe('codex 0.157.1 alternate-screen rendering (2026-10-01 fleet outage)', () => {
+    it('REGRESSION ANCHOR: real 0.157.1 bytes never satisfy the stream prompt predicate', () => {
+      // This is the measured production fact, not a constructed one. 0.157.1 draws the
+      // composer with cursor positioning, so the glyph arrives as
+      // `...╯›Ask Codex to do anything` -- no newline before it, and the trailing
+      // space is a positioned cell that stripAnsi removes. Both halves of `\n› ` fail.
+      //
+      // If a future codex goes back to newline-prefixed prompts this test fails, which is
+      // the point: the world changing should break a test, not the fleet.
+      const gate = createCodexReadinessGate();
+      gate.onData(REAL_0_157_1_BYTES);
+      expect(gate.hasReachedPrompt()).toBe(false);
+    });
+
+    it('reaches the prompt from the rendered screen given those same real bytes', () => {
+      const onNotice = vi.fn();
+      const gate = createCodexReadinessGate({
+        onNotice,
+        readScreen: () => RENDERED_IDLE_SCREEN,
+      });
+
+      gate.onData(REAL_0_157_1_BYTES);
+      expect(gate.hasReachedPrompt()).toBe(true);
+      expect(onNotice).toHaveBeenCalledWith('reached-prompt-via-screen');
+    });
+
+    it('releases a gate pinned busy by the stream once the screen shows an idle prompt', async () => {
+      const onTransition = vi.fn();
+      const gate = createCodexReadinessGate({
+        onTransition,
+        readScreen: () => RENDERED_IDLE_SCREEN,
+      });
+
+      gate.onData('• Working (12s · esc to interrupt)\n');
+      await expect(gate.waitForIdle()).resolves.toBeUndefined();
+      expect(onTransition).toHaveBeenCalledWith('idle', 'prompt-ready(screen)');
+    });
+
+    it('does NOT release while the screen still shows a working marker', async () => {
+      const gate = createCodexReadinessGate({ readScreen: () => RENDERED_WORKING_SCREEN });
+      gate.onData('• Working (12s · esc to interrupt)\n');
+
+      let resolved = false;
+      void gate.waitForIdle().then(() => {
+        resolved = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      // reachedPrompt is still satisfied: a visible prompt is a prompt even while busy.
+      expect(gate.hasReachedPrompt()).toBe(true);
+    });
+
+    it('treats a failed screen read as an absence, never as readiness', async () => {
+      const gate = createCodexReadinessGate({
+        readScreen: () => {
+          throw new Error('tmux: no server running');
+        },
+      });
+      gate.onData('• Working (12s · esc to interrupt)\n');
+
+      let resolved = false;
+      void gate.waitForIdle().then(() => {
+        resolved = true;
+      });
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+      expect(gate.hasReachedPrompt()).toBe(false);
+    });
+
+    it('is unchanged when no screen reader is supplied', async () => {
+      const gate = createCodexReadinessGate();
+      gate.onData('• Working (12s · esc to interrupt)\n');
+
+      let resolved = false;
+      void gate.waitForIdle().then(() => {
+        resolved = true;
+      });
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      gate.onData('\n› ');
+      await Promise.resolve();
+      expect(gate.hasReachedPrompt()).toBe(true);
+    });
   });
 });
