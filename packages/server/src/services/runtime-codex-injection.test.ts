@@ -172,4 +172,45 @@ describe('never-ready runtime reports a fault instead of deferring silently fore
     await expect(gate.deliver('p', 'e', 'mail')).rejects.toThrow();
     expect(lines.filter((l) => l.startsWith('FAULT:'))).toHaveLength(2);
   });
+
+  it('routes the FAULT to an operator hook, not only to the log', async () => {
+    const log = vi.fn();
+    const onFault = vi.fn();
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit: async () => {},
+      retryBudget: 0,
+      canInjectWithoutConfirmation: () => false,
+      neverReadyFaultThreshold: 3,
+      log,
+      onFault,
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      await expect(gate.deliver('p', `id-${i}`, 'mail')).rejects.toThrow();
+    }
+
+    // Once per stuck episode, not once per deferral.
+    expect(onFault).toHaveBeenCalledTimes(1);
+    expect(onFault.mock.calls[0][0]).toContain('undeliverable');
+  });
+
+  it('a throwing FAULT route cannot break the delivery path', async () => {
+    const log = vi.fn();
+    const gate = createCodexInjectionGate({
+      waitForWindow: async () => 'timeout',
+      submit: async () => {},
+      retryBudget: 0,
+      canInjectWithoutConfirmation: () => false,
+      neverReadyFaultThreshold: 1,
+      log,
+      onFault: () => {
+        throw new Error('mailbox locked');
+      },
+    });
+
+    // Still the ordinary deferral, not the route's error.
+    await expect(gate.deliver('p', 'id-1', 'mail')).rejects.toThrow(CodexInjectionDeferredError);
+    expect(log.mock.calls.flat().join('\n')).toContain('FAULT route failed');
+  });
 });

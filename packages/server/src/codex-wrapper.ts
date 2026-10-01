@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import process from 'process';
 import fs from 'fs';
 import path from 'path';
@@ -42,9 +43,39 @@ const runtimeEvents = createRuntimeEventEmitter({
   runtime: 'codex',
   logPath: runtimeLogPath,
 });
+const operatorAgent = process.env.RUNTIME_OPERATOR_AGENT ?? 'isla';
+
+/**
+ * tmux has already parsed codex's cursor positioning into a screen. Reading that is strictly
+ * better than re-deriving it from the byte stream, and it needs no new dependency —
+ * `runtime-terminal-screen.ts` would, and `@xterm/headless` is not installed.
+ *
+ * Absent TMUX_PANE this is undefined and the gate keeps its stream-only behaviour.
+ */
+const tmuxPane = process.env.TMUX_PANE;
+const readRenderedScreen = tmuxPane
+  ? (): string | null => {
+      try {
+        return execFileSync('tmux', ['capture-pane', '-p', '-t', tmuxPane], {
+          encoding: 'utf8',
+          timeout: 2000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+      } catch {
+        return null;
+      }
+    }
+  : undefined;
+
 const readiness = createCodexReadinessGate({
   onTransition: (state, marker) => appendRuntimeLog(`codex readiness gate -> ${state} (${marker})`),
+  // Previously unwired, so `oversized-fragment-dropped` had no consumer either.
+  onNotice: (message) => appendRuntimeLog(`codex readiness notice: ${message}`),
+  readScreen: readRenderedScreen,
 });
+if (!tmuxPane) {
+  appendRuntimeLog('codex readiness WARNING: TMUX_PANE unset — screen fallback unavailable, stream-only readiness');
+}
 const codexSubmitOptions = {
   chunkSize: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_SIZE ?? '160'),
   chunkDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '8'),
@@ -105,6 +136,33 @@ const injectionGate = createCodexInjectionGate({
   retryBudget: unackedRetryBudget,
   canInjectWithoutConfirmation: () => readiness.hasReachedPrompt(),
   log: appendRuntimeLog,
+  onFault: (message) => {
+    // Mail SENDING is unaffected by this fault; only injection INTO this runtime is broken.
+    if (operatorAgent === agentKey) return;
+    try {
+      const sent = mailStore.send({
+        fromAgent: agentKey,
+        toAgent: operatorAgent,
+        type: 'alert',
+        priority: 'high',
+        subject: `Codex runtime undeliverable: ${agentKey}`,
+        bodyMd: [
+          message,
+          '',
+          `Agent: ${agentKey}`,
+          'Runtime: codex',
+          `Runtime log: ${runtimeLogPath}`,
+          '',
+          'Inbound mail is queued and unacked, so nothing is lost; it delivers once this',
+          'runtime reaches a prompt again. This alert is sent once per stuck episode.',
+        ].join('\n'),
+        requiresResponse: true,
+      });
+      appendRuntimeLog(`codex FAULT routed to ${operatorAgent} as ${sent.id}`);
+    } catch (error) {
+      appendRuntimeLog(`codex FAULT route FAILED to ${operatorAgent}: ${String(error)}`);
+    }
+  },
 });
 
 const deliverJournaled = async (prompt: string, id: string, label: string, source: InjectionSource): Promise<void> => {
