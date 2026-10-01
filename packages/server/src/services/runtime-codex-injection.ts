@@ -33,6 +33,17 @@ export interface CodexInjectionGateOptions {
    * never is not a signal. Default 25 — several minutes of retries, not a hair trigger.
    */
   neverReadyFaultThreshold?: number;
+  /**
+   * Routes the FAULT somewhere a human reads. A runtime log is not such a place.
+   *
+   * 2026-10-01: this FAULT fired correctly 8 times across 5 restarts while every codex agent
+   * sat undeliverable for three days, and was read zero times. The detector was never the
+   * missing piece — the ROUTE was. A control whose only consumer is a log file is
+   * indistinguishable from no control at all.
+   *
+   * Must never throw into the delivery path: reporting a fault may not create one.
+   */
+  onFault?: (message: string) => void;
 }
 
 export interface CodexInjectionGate {
@@ -67,11 +78,16 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
           // semantics are deliberately unchanged — this is a fault report, not a new
           // failure mode, so a bad threshold cannot drop a message.
           if (neverReadyStreak === neverReadyFaultThreshold) {
-            log(
+            const fault =
               `FAULT: codex has not reached a prompt after ${neverReadyStreak} consecutive ` +
-                `deferrals; this runtime is not merely busy, it is undeliverable. ` +
-                `Nothing will be injected until it reaches a prompt.`,
-            );
+              `deferrals; this runtime is not merely busy, it is undeliverable. ` +
+              `Nothing will be injected until it reaches a prompt.`;
+            log(fault);
+            try {
+              options.onFault?.(fault);
+            } catch (error) {
+              log(`FAULT route failed: ${String(error)}`);
+            }
           }
           throw new CodexInjectionDeferredError(label, id, priorDeferrals + 1);
         }
