@@ -20,6 +20,18 @@ export interface AgentMailSearchOptions {
 }
 
 /**
+ * This is a keyword-search surface, not an FTS5 query-language surface. Convert ordinary
+ * user text into quoted tokens so punctuation such as the hyphen in `agent-mail` cannot be
+ * interpreted as an operator or column name. Multiple tokens retain FTS5's useful AND
+ * semantics without exposing its syntax accidentally.
+ */
+function buildLiteralMatchQuery(query: string): string | null {
+  const tokens = query.match(/[\p{L}\p{N}_]+/gu);
+  if (!tokens?.length) return null;
+  return tokens.map((token) => `"${token}"`).join(' AND ');
+}
+
+/**
  * Read-only keyword search over agent-mail history. Opens the store in
  * readonly mode and builds a throwaway in-memory FTS5 index per call, so it
  * never mutates the live mailbox database or its schema.
@@ -27,6 +39,8 @@ export interface AgentMailSearchOptions {
 export function searchAgentMail(query: string, options: AgentMailSearchOptions = {}): AgentMailSearchResult[] {
   const trimmedQuery = query.trim();
   if (!trimmedQuery) return [];
+  const matchQuery = buildLiteralMatchQuery(trimmedQuery);
+  if (!matchQuery) return [];
 
   const dbPath = options.dbPath ?? DEFAULT_AGENT_MAIL_DB;
   const limit = options.limit ?? 20;
@@ -72,7 +86,7 @@ export function searchAgentMail(query: string, options: AgentMailSearchOptions =
           ORDER BY rank
           LIMIT @limit
         `)
-        .all({ query: trimmedQuery, agent: options.agent ?? '', limit }) as Array<{
+        .all({ query: matchQuery, agent: options.agent ?? '', limit }) as Array<{
           id: string; correlation_id: string; from_agent: string; to_agent: string;
           type: string; created_at: string; subject: string; snippet: string;
         }>;

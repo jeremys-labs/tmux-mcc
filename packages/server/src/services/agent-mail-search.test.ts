@@ -100,6 +100,15 @@ describe('searchAgentMail', () => {
     expect(results.map((r) => r.id)).toEqual(['msg_bridge']);
   });
 
+  it('treats punctuation as literal keyword separators rather than FTS5 syntax', () => {
+    expect(searchAgentMail('bridge re-delivers', { dbPath }).map((r) => r.id)).toEqual(['msg_bridge']);
+    expect(searchAgentMail('"unterminated', { dbPath })).toEqual([]);
+  });
+
+  it('requires every keyword without requiring an exact phrase', () => {
+    expect(searchAgentMail('messages bridge', { dbPath }).map((r) => r.id)).toEqual(['msg_bridge']);
+  });
+
   it('returns an empty array for a blank query without touching the database', () => {
     expect(searchAgentMail('   ', { dbPath: '/nonexistent/path.db' })).toEqual([]);
   });
