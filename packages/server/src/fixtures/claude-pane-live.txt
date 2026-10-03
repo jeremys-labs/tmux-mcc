@@ -1,0 +1,24 @@
+⏺ The builders are shared; the wrapper is the runtime-specific seam. Let me look
+  at how claude-wrapper wires them:
+
+  Ran 2 shell commands
+
+⏺ Claude's composer differs from codex, so the closed loop needs its own screen
+  predicate. I'm a Claude runtime in tmux — I can capture a real Claude pane
+  safely, read-only:
+
+  Locating claude panes safely
+  ⎿  $ SP=/private/tmp/claude-501/-Volumes-Repo-Drive-agents-marcus/dd2d02b9-106
+     6-4b03-8e73-3be86aee4db2/scratchpad
+     tmux capture-pane -p -t %0 > "$SP/claude-pane-marcus.txt" 2>/dev/null
+     wc -lc "$SP/claude-pane-marcus.txt"
+     echo "=== last 20 lines (composer region) ==="
+     tail -20 "$SP/claude-pane-marcus.tx…
+
+· Thinking… (running PreToolUse hooks… 2/3 · 10m 18s · ↓ 22.9k tokens)
+                                         ✔ Update installed · Restart to apply
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+main=0 outbox=0 total=907474────────────────────────────────────────────────────
+  Opus 5 in marcus [████████░░░░░░░░░░░░] 42%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
