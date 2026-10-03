@@ -85,13 +85,19 @@ const codexSubmitOptions = {
   submitDelayMs: process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS
     ? Number(process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS)
     : undefined,
-  confirmSubmitted: readRenderedScreen
-    ? () => codexPromptLeftComposer(readRenderedScreen())
-    : undefined,
   submitConfirmAttempts: Number(process.env.CODEX_WRAPPER_SUBMIT_CONFIRM_ATTEMPTS ?? '3'),
   submitConfirmDelayMs: Number(process.env.CODEX_WRAPPER_SUBMIT_CONFIRM_DELAY_MS ?? '1500'),
   onSubmitRetry: (attempt: number) => appendRuntimeLog(`codex submit not confirmed; re-sending Enter (retry ${attempt})`),
 };
+
+function submitCodexPrompt(prompt: string): Promise<SubmitOutcome> {
+  return submitRuntimePrompt(term, prompt, {
+    ...codexSubmitOptions,
+    confirmSubmitted: readRenderedScreen
+      ? () => codexPromptLeftComposer(readRenderedScreen(), prompt)
+      : undefined,
+  });
+}
 
 function logSubmitOutcome(outcome: SubmitOutcome, label: string): void {
   appendRuntimeLog(`codex submit outcome for ${label}: ${outcome}`);
@@ -169,7 +175,7 @@ const stdinGate = createStdinGate((data) => term.write(data));
 const injectionGate = createCodexInjectionGate({
   waitForWindow: waitForCodexInjectionWindow,
   submit: async (prompt) => {
-    const outcome = await stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions));
+    const outcome = await stdinGate.run(() => submitCodexPrompt(prompt));
     logSubmitOutcome(outcome, 'inbound');
   },
   retryBudget: unackedRetryBudget,
@@ -275,7 +281,7 @@ const pollers = startRuntimeInboxPollers({
         return false;
       }
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
-      logSubmitOutcome(await stdinGate.run(() => submitRuntimePrompt(term, prompt, codexSubmitOptions)), 'handoff');
+      logSubmitOutcome(await stdinGate.run(() => submitCodexPrompt(prompt)), 'handoff');
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'handoff',
