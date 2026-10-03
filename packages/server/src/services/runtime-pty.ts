@@ -7,7 +7,17 @@ export interface SubmitRuntimePromptOptions {
   submitDelayMs?: number;
   chunkSize?: number;
   chunkDelayMs?: number;
+  /**
+   * Reads the TUI after `\r`: true = the prompt left the composer, false = it is still
+   * sitting there unsubmitted, null = cannot tell. When omitted, no confirmation runs.
+   */
+  confirmSubmitted?: () => boolean | null;
+  submitConfirmAttempts?: number;
+  submitConfirmDelayMs?: number;
+  onSubmitRetry?: (attempt: number) => void;
 }
+
+export type SubmitOutcome = 'unchecked' | 'confirmed' | 'unknown' | 'unconfirmed';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -22,7 +32,7 @@ export async function submitRuntimePrompt(
   term: RuntimeWritablePty,
   prompt: string,
   options: SubmitRuntimePromptOptions = {},
-): Promise<void> {
+): Promise<SubmitOutcome> {
   // A prompt is pasted into a live TUI, not handed to an API. Writing it in one go and
   // waiting a flat 80ms before `\r` works for short prompts and silently truncates long
   // ones: the Enter lands while the terminal is still ingesting, so the tail is dropped
@@ -69,4 +79,23 @@ export async function submitRuntimePrompt(
   }
   await delay(submitDelayMs);
   term.write('\r');
+
+  // 2026-10-03: a 10.6k-char Discord message to Eli (codex) was logged `submitted` and
+  // `acknowledged`, then sat in the composer as `[Pasted Content ...]` for nine minutes
+  // until someone pressed Enter by hand. Codex's paste-burst handling swallowed the `\r`.
+  // Writing `\r` is not evidence of a submit; reading the screen is. A re-sent Enter
+  // only submits what is already in the composer, so retrying cannot duplicate a prompt.
+  const { confirmSubmitted } = options;
+  if (!confirmSubmitted) return 'unchecked';
+  const attempts = options.submitConfirmAttempts ?? 3;
+  const confirmDelayMs = options.submitConfirmDelayMs ?? 1_500;
+  for (let attempt = 1; ; attempt += 1) {
+    await delay(confirmDelayMs);
+    const submitted = confirmSubmitted();
+    if (submitted === true) return 'confirmed';
+    if (submitted === null) return 'unknown';
+    if (attempt > attempts) return 'unconfirmed';
+    options.onSubmitRetry?.(attempt);
+    term.write('\r');
+  }
 }

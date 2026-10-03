@@ -119,3 +119,47 @@ describe('runtime pty — a large prompt must not outrun the terminal', () => {
     }
   });
 });
+
+// 2026-10-03: Eli's prompt was logged `submitted` while it sat unsubmitted in the codex
+// composer. The `\r` is not the receipt; the screen is.
+describe('runtime pty — confirm the submit actually landed', () => {
+  it('re-sends Enter until the composer reports the prompt submitted', async () => {
+    const writes: string[] = [];
+    const answers = [false, false, true];
+    const retries: number[] = [];
+    const outcome = await submitRuntimePrompt({ write: (data) => writes.push(data) }, 'hi', {
+      clearDelayMs: 0, submitDelayMs: 0, submitConfirmDelayMs: 0,
+      confirmSubmitted: () => answers.shift() ?? true,
+      onSubmitRetry: (attempt) => retries.push(attempt),
+    });
+    expect(outcome).toBe('confirmed');
+    expect(writes).toEqual(['\x15', 'hi', '\r', '\r', '\r']);
+    expect(retries).toEqual([1, 2]);
+  });
+
+  it('gives up as unconfirmed after the retry budget, never re-writing the prompt', async () => {
+    const writes: string[] = [];
+    const outcome = await submitRuntimePrompt({ write: (data) => writes.push(data) }, 'hi', {
+      clearDelayMs: 0, submitDelayMs: 0, submitConfirmDelayMs: 0, submitConfirmAttempts: 2,
+      confirmSubmitted: () => false,
+    });
+    expect(outcome).toBe('unconfirmed');
+    expect(writes.filter((w) => w === 'hi')).toHaveLength(1);
+    expect(writes.filter((w) => w === '\r')).toHaveLength(3);
+  });
+
+  it('does not retry when the screen cannot be read', async () => {
+    const writes: string[] = [];
+    const outcome = await submitRuntimePrompt({ write: (data) => writes.push(data) }, 'hi', {
+      clearDelayMs: 0, submitDelayMs: 0, submitConfirmDelayMs: 0,
+      confirmSubmitted: () => null,
+    });
+    expect(outcome).toBe('unknown');
+    expect(writes).toEqual(['\x15', 'hi', '\r']);
+  });
+
+  it('skips confirmation entirely when no reader is supplied', async () => {
+    const outcome = await submitRuntimePrompt({ write: () => {} }, 'hi', { clearDelayMs: 0, submitDelayMs: 0 });
+    expect(outcome).toBe('unchecked');
+  });
+});
