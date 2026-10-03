@@ -80,7 +80,11 @@ if (!tmuxPane) {
 const codexSubmitOptions = {
   chunkSize: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_SIZE ?? '160'),
   chunkDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '8'),
-  submitDelayMs: Number(process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS ?? '120'),
+  // No hardcoded value here: an explicit 120 overrode runtime-pty's length-scaled delay
+  // (the 2026-09-13 truncation fix), so codex was the one runtime that never got it.
+  submitDelayMs: process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS
+    ? Number(process.env.CODEX_WRAPPER_PROMPT_SUBMIT_DELAY_MS)
+    : undefined,
   confirmSubmitted: readRenderedScreen
     ? () => codexPromptLeftComposer(readRenderedScreen())
     : undefined,
