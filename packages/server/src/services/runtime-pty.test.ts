@@ -163,3 +163,62 @@ describe('runtime pty — confirm the submit actually landed', () => {
     expect(outcome).toBe('unchecked');
   });
 });
+
+// 2026-10-04: the 512-boundary damage has two shapes -- the middle of the prompt is
+// sometimes wrapped as a paste and sometimes dropped outright. Slowing the chunks is
+// predicted to help under BOTH explanations, so a clean run cannot say which one was at
+// fault. onBeforeSubmit exists to read the TUI at the only instant where they differ:
+// before the Enter. After submission the composer is empty either way.
+describe('runtime pty pre-submit probe', () => {
+  it('fires once, after the whole prompt is written and before the Enter', async () => {
+    const writes: string[] = [];
+    const seen: string[][] = [];
+
+    await submitRuntimePrompt(
+      { write: (data) => writes.push(data) },
+      'abcdef',
+      {
+        clearDelayMs: 0,
+        submitDelayMs: 0,
+        chunkSize: 2,
+        chunkDelayMs: 0,
+        onBeforeSubmit: () => seen.push([...writes]),
+      },
+    );
+
+    expect(seen).toHaveLength(1);
+    // The probe must see every chunk and no Enter -- that is what makes the screen it
+    // reads the composer holding the complete prompt.
+    expect(seen[0]).toEqual(['\x15', 'ab', 'cd', 'ef']);
+    expect(writes).toEqual(['\x15', 'ab', 'cd', 'ef', '\r']);
+  });
+
+  it('still submits when the probe throws', async () => {
+    const writes: string[] = [];
+
+    await submitRuntimePrompt(
+      { write: (data) => writes.push(data) },
+      'hello',
+      {
+        clearDelayMs: 0,
+        submitDelayMs: 0,
+        onBeforeSubmit: () => {
+          throw new Error('tmux capture failed');
+        },
+      },
+    );
+
+    // A measurement must never cost a delivery.
+    expect(writes).toEqual(['\x15', 'hello', '\r']);
+  });
+
+  it('submits normally when no probe is supplied', async () => {
+    const writes: string[] = [];
+    await submitRuntimePrompt(
+      { write: (data) => writes.push(data) },
+      'hello',
+      { clearDelayMs: 0, submitDelayMs: 0 },
+    );
+    expect(writes).toEqual(['\x15', 'hello', '\r']);
+  });
+});

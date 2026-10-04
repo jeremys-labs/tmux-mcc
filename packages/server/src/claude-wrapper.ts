@@ -1,4 +1,5 @@
 import process from 'process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import * as pty from 'node-pty';
@@ -112,6 +113,61 @@ void runtimeEvents.emit('onRuntimeHealth', {
   metadata: { status: 'started' },
 });
 
+const tmuxPane = process.env.TMUX_PANE;
+const readRenderedScreen = tmuxPane
+  ? (): string | null => {
+      try {
+        return execFileSync('tmux', ['capture-pane', '-p', '-t', tmuxPane], {
+          encoding: 'utf8',
+          timeout: 2000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+      } catch {
+        return null;
+      }
+    }
+  : undefined;
+
+function logRuntime(message: string): void {
+  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${message}\n`);
+}
+
+// 2026-10-04: the injector's default 512-char chunks at 10ms arrive as a paste burst, and
+// Claude Code damages everything after the first chunk. Measured across nine claude agents'
+// transcripts: the first tag lands at offset 514 (the 512 boundary) with ~1050-char seams
+// (1024 chars of content plus the length of the inserted tag itself). Two shapes, one
+// boundary -- the middle is sometimes wrapped as a paste and sometimes dropped outright.
+// Codex is unaffected because it passes chunkSize 160 explicitly.
+//
+// Only the chunk DELAY moves here. chunkSize stays at the default so the result is
+// attributable to one variable, and chunkSize 0 is deliberately not an option: a single
+// large write is the maximum-overflow case on a PTY whose write() has no backpressure
+// signal at all.
+// Claude Code's placeholder for a collapsed paste. The same pattern exists in the pending
+// claude-composer module on marcus/claude-composer-closed-loop; unify on one definition when
+// that lands rather than leaving two copies to drift.
+const PASTE_PLACEHOLDER = /\[Pasted (Content|text)/i;
+
+const claudeSubmitOptions = {
+  chunkDelayMs: Number(process.env.CLAUDE_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '60'),
+};
+
+function submitClaudePrompt(prompt: string): Promise<unknown> {
+  return submitRuntimePrompt(term, prompt, {
+    ...claudeSubmitOptions,
+    // The discriminator. Both candidate mechanisms predict that slowing the chunks helps,
+    // so a clean run alone cannot say which was at fault. A paste placeholder is visible
+    // here and nowhere later, because after the Enter the composer is empty either way.
+    onBeforeSubmit: readRenderedScreen
+      ? () => {
+          const screen = readRenderedScreen();
+          const placeholder = screen === null ? 'unknown' : String(PASTE_PLACEHOLDER.test(screen));
+          logRuntime(`claude pre-submit probe: promptChars=${prompt.length} pastePlaceholder=${placeholder}`);
+        }
+      : undefined,
+  });
+}
+
 const pollers = startRuntimeInboxPollers({
   agentKey,
   contentRoot,
@@ -124,7 +180,7 @@ const pollers = startRuntimeInboxPollers({
     submitHandoff: async (prompt) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
       await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
-      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'handoff',
@@ -135,7 +191,7 @@ const pollers = startRuntimeInboxPollers({
   blueBubbles: {
     submitPrompt: async (prompt, entry) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
-      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'bluebubbles',
@@ -156,7 +212,7 @@ const pollers = startRuntimeInboxPollers({
         await injectModelSwitch(term, switchResult.model);
       }
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting discord ${entry.id}: ${prompt}\n`);
-      await submitRuntimePrompt(term, prompt);
+      await submitClaudePrompt(prompt);
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'discord',
@@ -168,7 +224,7 @@ const pollers = startRuntimeInboxPollers({
     mailStore: store,
     submitPrompt: async (prompt, message) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
-      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'agent-mail',
@@ -180,7 +236,7 @@ const pollers = startRuntimeInboxPollers({
     eventInbox,
     submitPrompt: async (prompt, event) => {
       fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
-      await stdinGate.run(() => submitRuntimePrompt(term, prompt));
+      await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
         source: 'event-inbox',
