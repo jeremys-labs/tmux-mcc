@@ -15,12 +15,6 @@ export interface SubmitRuntimePromptOptions {
   submitConfirmAttempts?: number;
   submitConfirmDelayMs?: number;
   onSubmitRetry?: (attempt: number) => void;
-  /**
-   * Called once after the whole prompt is written and before `\r`. Used to read the TUI at
-   * the one moment that distinguishes a paste from literal typing: a paste placeholder is
-   * on screen here, literal text is not. Must not throw.
-   */
-  onBeforeSubmit?: () => void;
 }
 
 export type SubmitOutcome = 'unchecked' | 'confirmed' | 'unknown' | 'unconfirmed';
@@ -84,15 +78,6 @@ export async function submitRuntimePrompt(
     term.write(prompt);
   }
   await delay(submitDelayMs);
-  // Read the screen BEFORE the Enter: after submission the composer is empty either way,
-  // so this is the only instant at which "wrapped as a paste" and "typed literally" are
-  // distinguishable. Both explanations of the 512-boundary damage predict that slowing the
-  // chunks helps, so without this the fix cannot say which one it fixed.
-  try {
-    options.onBeforeSubmit?.();
-  } catch {
-    // A probe must never cost a submit.
-  }
   term.write('\r');
 
   // 2026-10-03: a 10.6k-char Discord message to Eli (codex) was logged `submitted` and

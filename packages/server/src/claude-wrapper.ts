@@ -143,11 +143,6 @@ function logRuntime(message: string): void {
 // attributable to one variable, and chunkSize 0 is deliberately not an option: a single
 // large write is the maximum-overflow case on a PTY whose write() has no backpressure
 // signal at all.
-// Claude Code's placeholder for a collapsed paste. The same pattern exists in the pending
-// claude-composer module on marcus/claude-composer-closed-loop; unify on one definition when
-// that lands rather than leaving two copies to drift.
-const PASTE_PLACEHOLDER = /\[Pasted (Content|text)/i;
-
 const claudeSubmitOptions = {
   chunkDelayMs: Number(process.env.CLAUDE_WRAPPER_PROMPT_CHUNK_DELAY_MS ?? '60'),
 };
@@ -155,25 +150,6 @@ const claudeSubmitOptions = {
 function submitClaudePrompt(prompt: string): Promise<unknown> {
   return submitRuntimePrompt(term, prompt, {
     ...claudeSubmitOptions,
-    // The discriminator. Both candidate mechanisms predict that slowing the chunks helps,
-    // so a clean run alone cannot say which was at fault. A paste placeholder is visible
-    // here and nowhere later, because after the Enter the composer is empty either way.
-    onBeforeSubmit: readRenderedScreen
-      ? () => {
-          // Time the capture. This probe runs AFTER submitDelayMs and immediately BEFORE the
-          // Enter, so a slow synchronous capture silently widens the gap between the last
-          // chunk and `\r` -- the same lever the 2026-09-13 truncation fix moved. Left
-          // unmeasured, a clean run could be the chunk delay or could be this probe, and we
-          // would credit the chunk delay. Logging the cost is what keeps the result readable.
-          const started = Date.now();
-          const screen = readRenderedScreen();
-          const probeMs = Date.now() - started;
-          const placeholder = screen === null ? 'unknown' : String(PASTE_PLACEHOLDER.test(screen));
-          logRuntime(
-            `claude pre-submit probe: promptChars=${prompt.length} pastePlaceholder=${placeholder} probeMs=${probeMs}`,
-          );
-        }
-      : undefined,
   });
 }
 
