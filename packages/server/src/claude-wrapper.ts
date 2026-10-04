@@ -160,9 +160,18 @@ function submitClaudePrompt(prompt: string): Promise<unknown> {
     // here and nowhere later, because after the Enter the composer is empty either way.
     onBeforeSubmit: readRenderedScreen
       ? () => {
+          // Time the capture. This probe runs AFTER submitDelayMs and immediately BEFORE the
+          // Enter, so a slow synchronous capture silently widens the gap between the last
+          // chunk and `\r` -- the same lever the 2026-09-13 truncation fix moved. Left
+          // unmeasured, a clean run could be the chunk delay or could be this probe, and we
+          // would credit the chunk delay. Logging the cost is what keeps the result readable.
+          const started = Date.now();
           const screen = readRenderedScreen();
+          const probeMs = Date.now() - started;
           const placeholder = screen === null ? 'unknown' : String(PASTE_PLACEHOLDER.test(screen));
-          logRuntime(`claude pre-submit probe: promptChars=${prompt.length} pastePlaceholder=${placeholder}`);
+          logRuntime(
+            `claude pre-submit probe: promptChars=${prompt.length} pastePlaceholder=${placeholder} probeMs=${probeMs}`,
+          );
         }
       : undefined,
   });
