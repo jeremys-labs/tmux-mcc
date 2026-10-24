@@ -53,7 +53,13 @@ export interface SchedulerHealth {
   validJobTypes: string[];
   jobCount: number;
   invalidTypeJobs: Array<{ id: string; label: string; type: string }>;
-  staleOneShotJobs: Array<{ id: string; label: string; fireAt: string; staleMinutes: number }>;
+  staleOneShotJobs: Array<{
+    id: string; label: string; fireAt: string; staleMinutes: number;
+    /** See classifyOneShot. `unknown` is the checker's limit, never a verdict. */
+    classification: 'never_fired' | 'fired_not_removed' | 'unknown';
+    firedAt?: string;
+    lastCompletionAt?: string;
+  }>;
   staleRecurringJobs: Array<{ id: string; label: string; agent?: string; cron: string; lastLogAt?: string; staleHours?: number; reason: string }>;
   unevaluableScheduleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }>;
   checks: {
@@ -463,6 +469,85 @@ function latestCompletionMtimeForJob(logsDir: string, jobId: string): string | u
   }
 }
 
+/**
+ * Job ids that have EVER fired, from the scheduler's own `.fired-keys` ledger, or `null`
+ * when it cannot be read.
+ *
+ * `null` is not an empty set. An unreadable ledger means every one-shot would classify as
+ * "never fired" -- the most severe state -- so the distinction has to survive to the caller.
+ */
+function firedJobIds(schedulerRoot: string): Set<string> | null {
+  const parsed = readJsonFile<Array<{ key?: unknown }>>(path.join(schedulerRoot, '.fired-keys'));
+  if (!Array.isArray(parsed)) return null;
+  const ids = new Set<string>();
+  for (const entry of parsed) {
+    const key = typeof entry?.key === 'string' ? entry.key : '';
+    // Keys are `<jobId>:<schedule>`; the schedule half is not an id and must not be matched.
+    const id = key.includes(':') ? key.slice(0, key.indexOf(':')) : key;
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function firedAtForJob(schedulerRoot: string, jobId: string): string | undefined {
+  const parsed = readJsonFile<Array<{ key?: unknown; firedAt?: unknown }>>(
+    path.join(schedulerRoot, '.fired-keys'));
+  if (!Array.isArray(parsed)) return undefined;
+  let latest: string | undefined;
+  for (const entry of parsed) {
+    const key = typeof entry?.key === 'string' ? entry.key : '';
+    const id = key.includes(':') ? key.slice(0, key.indexOf(':')) : key;
+    if (id !== jobId) continue;
+    const firedAt = typeof entry?.firedAt === 'string' ? entry.firedAt : undefined;
+    if (firedAt && (!latest || firedAt > latest)) latest = firedAt;
+  }
+  return latest;
+}
+
+/**
+ * THREE STATES, because a one-shot still sitting in jobs.json past its fireAt means one of
+ * three different things and the old check reported them identically (dc-20261009-004).
+ *
+ *   never_fired       the job did NOT run. Most severe -- work that was supposed to happen
+ *                     did not, and the action is to run or re-date it.
+ *   fired_not_removed it RAN and the record was not removed. The action is the opposite:
+ *                     remove the record. Nothing is owed.
+ *   unknown           the firing ledger could not be read. The checker's limit, reported as
+ *                     itself; it must NEVER fold into ok.
+ *
+ * MEASURED on the live scheduler 2026-10-24: of 14 enabled once-jobs exactly ONE was stale
+ * -- `eli-dc-20261018-001-restart`, fired 5.6 days ago with a completion artifact, i.e.
+ * fired_not_removed -- and the binary check called it "past fireAt by >5min", which reads as
+ * IT DID NOT RUN. Precisely backwards, and it sends someone to re-run a job that already ran.
+ *
+ * WHY `.fired-keys` IS A RECLASSIFIER AND NOT A GATE: suppressing a finding because the job
+ * appears in `.fired-keys` would have hidden c7a7e039, which fired, TIMED OUT (exit 143), had
+ * its failure notification fail, and left its record behind. Firing is not success; it only
+ * tells you which of the two findings this is.
+ *
+ * NOTE state `never_fired` has ZERO live instances today, so the fixtures are the only
+ * instrument that can exercise the most severe arm. A check validated against only the
+ * current environment is a constant.
+ */
+function classifyOneShot(input: {
+  jobId: string;
+  fired: Set<string> | null;
+  lastCompletionAt?: string;
+}): 'never_fired' | 'fired_not_removed' | 'unknown' {
+  if (input.fired === null) return 'unknown';
+  if (!input.fired.has(input.jobId)) return 'never_fired';
+  return 'fired_not_removed';
+}
+
+function oneShotDetail(
+  entries: Array<{ id: string; label: string; fireAt: string; staleMinutes: number; firedAt?: string }>,
+): string {
+  return entries
+    .map((j) => `${j.id} (${j.label}, fireAt ${j.fireAt}, ${Math.round(j.staleMinutes / 1440)}d late`
+      + `${j.firedAt ? `, fired ${j.firedAt}` : ''})`)
+    .join('; ');
+}
+
 function isOpenPrDigestJob(job: SchedulerJob): boolean {
   const haystack = `${job.id ?? ''} ${job.label ?? ''} ${job.command ?? ''} ${job.prompt ?? ''}`.toLowerCase();
   return haystack.includes('open-pr-digest');
@@ -567,16 +652,29 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       type: job.type ?? 'missing',
     }));
 
+  // Read ONCE for the whole pass, not per job: firedAtForJob re-reads the ledger and
+  // `.fired-keys` is 33k entries on the live scheduler.
+  const firedIds = firedJobIds(schedulerRoot);
   const staleOneShotJobs = jobs
     .filter((job) => job.type === 'once' && job.fireAt)
     .map((job) => ({ job, staleMinutes: minutesBetween(now, job.fireAt ?? '') }))
     .filter(({ staleMinutes }) => staleMinutes > 5)
-    .map(({ job, staleMinutes }) => ({
-      id: job.id ?? 'unknown',
-      label: job.label ?? 'unlabeled',
-      fireAt: job.fireAt ?? '',
-      staleMinutes,
-    }));
+    .map(({ job, staleMinutes }) => {
+      const id = job.id ?? 'unknown';
+      const lastCompletionAt = latestCompletionMtimeForJob(logsDir, id);
+      return {
+        id,
+        label: job.label ?? 'unlabeled',
+        fireAt: job.fireAt ?? '',
+        staleMinutes,
+        classification: classifyOneShot({ jobId: id, fired: firedIds, lastCompletionAt }),
+        firedAt: firedIds?.has(id) ? firedAtForJob(schedulerRoot, id) : undefined,
+        lastCompletionAt,
+      };
+    });
+  const neverFired = staleOneShotJobs.filter((j) => j.classification === 'never_fired');
+  const firedNotRemoved = staleOneShotJobs.filter((j) => j.classification === 'fired_not_removed');
+  const unclassifiedOneShots = staleOneShotJobs.filter((j) => j.classification === 'unknown');
 
   // DUE-NESS, not an estimated period. A recurring job is stale when a SCHEDULED
   // OCCURRENCE has passed beyond the grace with no completion after it.
@@ -675,16 +773,29 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         : invalidTypeJobs.length === 0
         ? check('ok', `all ${jobs.length} enabled jobs use valid types`)
         : check('error', `${invalidTypeJobs.length} job(s) use invalid type`),
+      // Itemized because the bare count was unactionable AND misleading: it read
+      // "3 one-shot job(s)" for weeks, so nobody could clear them, and when isla
+      // enumerated independently she got 4 (she had not filtered `enabled`, picking up a
+      // deliberately-disabled verifier) and reasonably concluded the count was broken.
+      // An opaque correct answer invites someone to prove it wrong.
+      //
+      // TRI-STATE (dc-20261009-004). The severities are ordered by WHAT A HUMAN MUST DO:
+      // never_fired means work did not happen (error); fired_not_removed means it happened
+      // and a record is stale (warn -- real, but nothing is owed); unknown means the ledger
+      // was unreadable and is reported as itself. Reporting the most severe state present,
+      // never an aggregate, so one missed one-shot cannot be averaged away by nine stale
+      // records.
       staleOneShots: staleOneShotJobs.length === 0
-        ? check('ok', 'no stale fired one-shot jobs')
-        // Itemized because the bare count was unactionable AND misleading: it read
-        // "3 one-shot job(s)" for weeks, so nobody could clear them, and when isla
-        // enumerated independently she got 4 (she had not filtered `enabled`, picking up a
-        // deliberately-disabled verifier) and reasonably concluded the count was broken.
-        // An opaque correct answer invites someone to prove it wrong.
-        : check('error', `${staleOneShotJobs.length} one-shot job(s) are past fireAt by >5min: ${staleOneShotJobs
-            .map((j) => `${j.id} (${j.label}, fireAt ${j.fireAt}, ${Math.round(j.staleMinutes / 1440)}d late)`)
-            .join('; ')}`),
+        ? check('ok', 'no stale one-shot jobs')
+        : neverFired.length > 0
+        ? check('error', `${neverFired.length} one-shot job(s) NEVER FIRED and are past fireAt: ${oneShotDetail(neverFired)}`
+            + (firedNotRemoved.length > 0 ? `; plus ${firedNotRemoved.length} fired-but-not-removed` : '')
+            + (unclassifiedOneShots.length > 0 ? `; plus ${unclassifiedOneShots.length} unclassifiable` : ''))
+        : unclassifiedOneShots.length > 0
+        ? check('unknown', `${unclassifiedOneShots.length} one-shot job(s) past fireAt could not be classified `
+            + `(scheduler .fired-keys unreadable): ${oneShotDetail(unclassifiedOneShots)}`)
+        : check('warn', `${firedNotRemoved.length} one-shot job(s) FIRED but the record was not removed `
+            + `(the job ran; the action is to remove the record, not to re-run it): ${oneShotDetail(firedNotRemoved)}`),
       scheduleEvaluable: unevaluableScheduleJobs.length === 0
         ? check('ok', `all ${jobs.filter((j) => j.type === 'recurring' && j.cron).length} recurring schedules evaluable`)
         // `unknown`, never `warn`: this is the checker's limit, not a fault in the jobs.
