@@ -20,7 +20,7 @@ import {
   reconcileInboundReplies,
   type SupervisorAgentStatus,
 } from './services/inbound-reply-reconcile.js';
-import { recoverInboundMiss } from './services/inbound-miss-recovery.js';
+import { cannotActOn, recoverInboundMiss } from './services/inbound-miss-recovery.js';
 
 const DEFAULT_CHAT_ID = '1491979880747765810';
 const DEFAULT_AGENT = 'eli';
@@ -594,12 +594,54 @@ export function alertFrom<T>(
   return { text: format(deliverable), subjects: deliverable.map(subjectOf) };
 }
 
-/** A repair must reach the same channel a failure would -- see the call site. */
+/**
+ * A repair must reach the same channel a failure would -- see the call site.
+ *
+ * dc-20261011-006: this said "runtime monitor self-healed N inbound miss(es)" UNCONDITIONALLY.
+ * On 2026-10-12 it said exactly that about eli while his runtime was blocked on a Codex usage
+ * limit, and the follow-up pass ten minutes later confirmed the replay had produced no reply.
+ * Nothing had failed -- the message was replayed, the wake was attempted, every step returned
+ * ok -- and the sentence was still false, because SELF-HEALED IS A CLAIM ABOUT THE OUTCOME
+ * AND ALL WE HAD WERE THE ACTIONS. The actions are observable in the same pass; the outcome
+ * is not observable until the agent replies, which is a later pass's evidence.
+ *
+ * So the header now reports what was DONE and qualifies anything we cannot stand behind.
+ * "Healed" is reserved for entries where the supervisor did not say the runtime was unable
+ * to act, and a mixed batch gets both counts rather than the flattering one.
+ */
 export function formatInboundRecoveryNotice(
-  entries: Array<{ key: string; agent: string; action: string; reason: string }>,
+  entries: Array<{
+    key: string;
+    agent: string;
+    action: string;
+    reason: string;
+    /** Why the runtime could not act, from cannotActOn(); absent means no such evidence. */
+    cannotAct?: string | null;
+    /** The supervisor's own reason string for that state, when it gave one. */
+    cannotActDetail?: string;
+  }>,
 ): string {
-  const lines = entries.map((entry) => `- ${entry.agent} (${entry.action}): ${entry.reason}`);
-  return [`runtime monitor self-healed ${entries.length} inbound miss(es):`, ...lines].join('\n');
+  const stuck = entries.filter((entry) => entry.cannotAct);
+  const lines = entries.map((entry) => {
+    if (!entry.cannotAct) return `- ${entry.agent} (${entry.action}): ${entry.reason}`;
+    // The STATE first, then what we did, because the state is the part that decides whether
+    // a human has to act -- and burying it after a success-shaped clause is how the original
+    // notice read as good news.
+    const why = entry.cannotActDetail ? `: ${entry.cannotActDetail}` : '';
+    return `- ${entry.agent} runtime ${entry.cannotAct.toUpperCase()}${why}`
+      + ` -- replay will NOT be answered until that clears (${entry.action}: ${entry.reason})`;
+  });
+
+  let header: string;
+  if (stuck.length === 0) {
+    header = `runtime monitor self-healed ${entries.length} inbound miss(es):`;
+  } else if (stuck.length === entries.length) {
+    header = `runtime monitor replayed ${entries.length} inbound miss(es) but the runtime cannot act -- NOT healed:`;
+  } else {
+    header = `runtime monitor acted on ${entries.length} inbound miss(es):`
+      + ` ${entries.length - stuck.length} self-healed, ${stuck.length} replayed into a runtime that cannot act:`;
+  }
+  return [header, ...lines].join('\n');
 }
 
 /**
@@ -1025,7 +1067,10 @@ async function main(): Promise<void> {
   });
   const inboundAlertMisses = [] as typeof inboundResult.misses;
   const recoveryAttempts = { ...(state.inboundRecoveryAttempts ?? {}) };
-  const recoveredThisPass: Array<{ key: string; agent: string; action: string; reason: string }> = [];
+  const recoveredThisPass: Array<{
+    key: string; agent: string; action: string; reason: string;
+    cannotAct?: string | null; cannotActDetail?: string;
+  }> = [];
   const outboundNow = readOutboundSent(contentRoot);
   for (const [key, attempt] of Object.entries(recoveryAttempts)) {
     if (outboundNow.some((sent) =>
@@ -1065,7 +1110,11 @@ async function main(): Promise<void> {
       supervisorStatuses,
       dependencies: { now: new Date(inboundResult.checkedAtIso) },
     });
-    process.stdout.write(`inbound recovery ${recovery.ok ? 'succeeded' : 'failed'} for ${miss.key}: ${recovery.reason}\n`);
+    const stuckNow = cannotActOn(recovery.liveness);
+    // Same correction applied to the log line, because it is the artifact anyone debugging
+    // this reads first and it made the same unqualified claim.
+    process.stdout.write(`inbound recovery ${recovery.ok ? (stuckNow ? `acted but runtime ${stuckNow}` : 'succeeded') : 'failed'}`
+      + ` for ${miss.key}: ${recovery.reason}\n`);
     if (recovery.ok) {
       recoveryAttempts[miss.key] = {
         attemptedAt: inboundResult.checkedAtIso,
@@ -1073,7 +1122,15 @@ async function main(): Promise<void> {
         agent: miss.agent,
         chatId: miss.chatId,
       };
-      recoveredThisPass.push({ key: miss.key, agent: miss.agent, action: recovery.action, reason: recovery.reason });
+      const cannotAct = cannotActOn(recovery.liveness);
+      recoveredThisPass.push({
+        key: miss.key,
+        agent: miss.agent,
+        action: recovery.action,
+        reason: recovery.reason,
+        cannotAct,
+        cannotActDetail: recovery.liveness?.progressDetail,
+      });
     } else {
       inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
     }

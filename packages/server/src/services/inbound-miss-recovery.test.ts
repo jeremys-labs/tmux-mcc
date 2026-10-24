@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { recoverInboundMiss } from './inbound-miss-recovery.js';
+import { cannotActOn, recoverInboundMiss } from './inbound-miss-recovery.js';
 import type { ReplyMiss } from './inbound-reply-reconcile.js';
 
 const roots: string[] = [];
@@ -94,5 +94,74 @@ describe('recoverInboundMiss', () => {
       dependencies: { wake: () => ({ attempted: true, ok: false, reason: 'tmux target missing' }) },
     });
     expect(result).toMatchObject({ ok: false, action: 'wake_queued' });
+  });
+});
+
+describe('cannotActOn (dc-20261011-006)', () => {
+  // The vocabulary is NOT invented here: inbound-reply-reconcile.ts branches on exactly
+  // these progress values ('hung' :304, 'blocked' :311, 'idle' :318).
+  it('names blocked, hung and a dead process as unable to act', () => {
+    expect(cannotActOn({ processStatus: 'running', progressStatus: 'blocked' })).toBe('blocked');
+    expect(cannotActOn({ processStatus: 'running', progressStatus: 'hung' })).toBe('hung');
+    expect(cannotActOn({ processStatus: 'dead', progressStatus: 'unknown' })).toBe('process dead');
+  });
+
+  it('a healthy or merely idle runtime is NOT reported as unable to act', () => {
+    // An idle runtime is the ordinary success case: it will pick the replay up. Treating
+    // idle as stuck would turn every genuine recovery into a warning and retire the signal.
+    expect(cannotActOn({ processStatus: 'running', progressStatus: 'idle' })).toBeNull();
+    expect(cannotActOn({ processStatus: 'running', progressStatus: 'processing' })).toBeNull();
+  });
+
+  it('no supervisor row returns null -- absence of evidence, not evidence of health', () => {
+    // null means we could not observe the runtime. It renders as the ordinary notice, which
+    // is the pre-existing behaviour and is deliberately NOT a new warning: inventing a
+    // "possibly stuck" state for every agent the supervisor has not listed is how a guard
+    // becomes noise and gets ignored. The limit is stated rather than hidden.
+    expect(cannotActOn(null)).toBeNull();
+  });
+});
+
+describe('recoverInboundMiss carries liveness (dc-20261011-006)', () => {
+  it('attaches the supervisor progress status and its detail to the result', () => {
+    const contentRoot = root();
+    writeJsonl(path.join(contentRoot, 'bridge', 'inbox', 'marcus.jsonl'), [
+      { id: 'in-1', agentKey: 'marcus', channelId: 'chat-1', bindingName: 'marcus', text: 'hello' },
+    ]);
+    writeJsonl(path.join(contentRoot, 'bridge', 'inbound-expected.jsonl'), [
+      { queued_at: '2026-08-26T13:00:00.000Z', agent: 'marcus', chat_id: 'chat-1', message_id: 'in-1', binding: 'marcus', inbox_path: 'x' },
+    ]);
+    writeJson(path.join(contentRoot, 'bridge', 'runtime-state', 'marcus.json'), { lineCount: 1 });
+    const result = recoverInboundMiss({
+      miss: miss('consumed_blocked'),
+      contentRoot,
+      supervisorStatuses: [{
+        agent: 'marcus',
+        process: { status: 'running' },
+        progress: { status: 'blocked', detail: 'codex usage limit reached' },
+      }],
+      dependencies: { wake: () => ({ attempted: true, ok: true, target: 'agents:marcus' }) },
+    });
+    // The point of the row: this field existed inside livenessFor() all along and the
+    // result shape dropped it, so the notice could not qualify its own claim.
+    expect(result.liveness).toMatchObject({
+      processStatus: 'running',
+      progressStatus: 'blocked',
+      progressDetail: 'codex usage limit reached',
+    });
+    expect(cannotActOn(result.liveness)).toBe('blocked');
+  });
+
+  it('a result from a path that never read the inbox still reports liveness', () => {
+    // Every return carries it, which is why the field is required and not optional: an
+    // early return that omitted it would silently restore the unqualified claim.
+    const result = recoverInboundMiss({
+      miss: miss('consumed_blocked'),
+      contentRoot: root(),
+      supervisorStatuses: [{ agent: 'marcus', process: { status: 'running' }, progress: { status: 'blocked' } }],
+      dependencies: { wake: () => ({ attempted: true, ok: true }) },
+    });
+    expect(result.ok).toBe(false);          // no inbox file in this root
+    expect(result.liveness).toMatchObject({ progressStatus: 'blocked' });
   });
 });
