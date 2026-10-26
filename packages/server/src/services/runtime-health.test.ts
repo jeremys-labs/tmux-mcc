@@ -905,12 +905,27 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
   // With no baseline discrimination to regress from, "the finding count went down" is
   // satisfiable by any change that makes the check quieter, including a wrong one. These
   // are the only two assertions that can distinguish a repair from a lobotomy.
-  function scheduler(jobs: unknown[], artifacts: Array<{ name: string; ageMs: number }>, now: Date) {
+  function scheduler(
+    jobs: unknown[],
+    artifacts: Array<{ name: string; ageMs: number }>,
+    now: Date,
+    // dc-20261009-004. `undefined` writes an EMPTY ledger, not NO ledger: an absent
+    // `.fired-keys` is the `unknown` arm and every pre-existing test would silently move
+    // into it, so the default has to be the readable-but-empty case. `null` writes a
+    // deliberately unreadable ledger for the `unknown` test.
+    firedKeys?: Array<{ key: string; firedAt: string }> | null,
+  ) {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
     const logsDir = path.join(schedulerRoot, 'logs');
     writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
     writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs });
+    if (firedKeys === null) {
+      fs.mkdirSync(schedulerRoot, { recursive: true });
+      fs.writeFileSync(path.join(schedulerRoot, '.fired-keys'), '{not json');
+    } else {
+      writeJson(path.join(schedulerRoot, '.fired-keys'), firedKeys ?? []);
+    }
     fs.mkdirSync(logsDir, { recursive: true });
     for (const a of artifacts) {
       const f = path.join(logsDir, a.name);
@@ -1023,6 +1038,148 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
     return scheduler([{ ...daily, id: 'bad-created', created: 'not-a-date' }], [], NOW).then((r) => {
       expect(r.scheduler.unevaluableScheduleJobs.map((j) => j.id)).toContain('bad-created');
       expect(r.scheduler.staleRecurringJobs.map((j) => j.id)).not.toContain('bad-created');
+    });
+  });
+
+  // ---- dc-20261009-004: staleOneShots tri-state -------------------------------------
+  //
+  // A one-shot still in jobs.json past its fireAt means one of FOUR different things and
+  // the old check reported them identically, as `error: N one-shot job(s) are past fireAt`.
+  // That sentence reads as IT DID NOT RUN. Measured on the live scheduler 2026-10-24: of 14
+  // enabled once-jobs exactly one was stale, and it had FIRED with a completion artifact --
+  // so the only live finding was a stale RECORD and the check sent a reader to re-run a job
+  // that had already run. Opposite actions, one message.
+  //
+  // `.fired-keys` RECLASSIFIES, IT DOES NOT GATE. Suppressing a finding because the job
+  // appears there would have hidden c7a7e039 (fired, timed out exit 143, failure
+  // notification failed, record left behind) -- firing is not success, it only says WHICH
+  // of the findings this is. That is the regression below.
+  const ONCE_FIRE_AT = new Date(NOW.getTime() - 3 * 24 * 3600_000).toISOString();
+  const ONCE_FIRED_AT = new Date(NOW.getTime() - 3 * 24 * 3600_000 + 1000).toISOString();
+  const onceJob = (id: string) => ({ id, label: `checkpoint ${id}`, type: 'once', fireAt: ONCE_FIRE_AT });
+
+  it('STATE never_fired: past fireAt with no firing record is an ERROR, the most severe', () => {
+    // The job did not run. Work that was supposed to happen did not, and the action is to
+    // run or re-date it. NOTE this state has ZERO live instances today, so this fixture is
+    // the only instrument that can exercise the most severe arm -- a check validated only
+    // against the current environment is a constant.
+    return scheduler([onceJob('never-fired')], [], NOW, []).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'never-fired');
+      expect(e?.classification).toBe('never_fired');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('error');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('NEVER FIRED');
+    });
+  });
+
+  it('STATE fired_not_removed: fired with the run over is a WARN, and says the job RAN', () => {
+    // The opposite action from never_fired: remove the record, do not re-run the job. The
+    // detail has to say so, because "past fireAt by >5min" is what sent people the wrong way.
+    return scheduler([onceJob('ran-ok')],
+      [{ name: 'ran-ok-1.run-result.json', ageMs: 2 * 24 * 3600_000 }], NOW,
+      [{ key: 'ran-ok:2026-8-21-18-0', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'ran-ok');
+      expect(e?.classification).toBe('fired_not_removed');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('warn');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('FIRED but the record was not removed');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('not to re-run it');
+    });
+  });
+
+  it('STATE fired_run_in_progress: INSIDE its watchdog window is NOT a finding', () => {
+    // Removal is scheduler-firing.ts:1218, AFTER persistRunResult at :1205 and inside the
+    // awaited executeJob, so a once-job is still in jobs.json while running. Inside the
+    // window that is correct behaviour and must stay silent.
+    const firedJustNow = new Date(NOW.getTime() - 60_000).toISOString();
+    return scheduler([onceJob('in-window')], [], NOW,
+      [{ key: 'in-window:k', firedAt: firedJustNow }]).then((r) => {
+      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).not.toContain('in-window');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('ok');
+    });
+  });
+
+  it('the window is the JOB\'S OWN timeoutSeconds, not a fixed number', () => {
+    // A long-running job (val's carries timeoutSeconds 2700) is legitimately still going ten
+    // minutes in, where the 300s default would already have called it dead. The bound has to
+    // come from the job or it is wrong for every job that sets one.
+    const fired10mAgo = new Date(NOW.getTime() - 10 * 60_000).toISOString();
+    return scheduler([{ ...onceJob('long-job'), timeoutSeconds: 2700 }], [], NOW,
+      [{ key: 'long-job:k', firedAt: fired10mAgo }]).then((r) => {
+      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).not.toContain('long-job');
+    });
+  });
+
+  it('STATE fired_no_result: PAST the window with no result is an ERROR, not silence', () => {
+    // ISLA'S MUST-CHANGE ON PR #37, AND MY OWN FIXTURE HAD PINNED THE HOLE AS CORRECT.
+    // My first version returned in_progress for ANY elapsed time and the caller filtered
+    // in_progress out, so a run that died without writing `.run-result.json` -- daemon crash,
+    // restart, SIGKILL, none of which reach persistRunResult -- reported as in progress
+    // FOREVER, i.e. SILENT. A true positive suppressed into `ok`: the c7a7e039 shape one step
+    // earlier in the run, reintroduced by the fix for c7a7e039. This fixture previously
+    // asserted `ok` for a job that fired 72h earlier against a 300s watchdog.
+    //
+    // It must NOT be fired_not_removed either: that message says "the job ran; do not re-run
+    // it", which is actively wrong for a run that died -- the work may not have happened.
+    return scheduler([onceJob('died-mid-run')], [], NOW,
+      [{ key: 'died-mid-run:k', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'died-mid-run');
+      expect(e?.classification).toBe('fired_no_result');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('error');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('NO completion record');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('check whether the work happened');
+      // and it must NOT carry the stale-record instruction
+      expect(r.scheduler.checks.staleOneShots.detail).not.toContain('not to re-run it');
+    });
+  });
+
+  it('a `.log` is NOT completion evidence -- it is written during the run', () => {
+    // latestCompletionMtimeForJob accepts `<id>-*.log`, which would mark a RUNNING job
+    // complete. One-shots read `.run-result.json` only. That helper is shared with
+    // staleRecurring, where legacy .log files are deliberately still read, so it is narrowed
+    // here rather than there.
+    return scheduler([onceJob('log-only')],
+      [{ name: 'log-only-1.log', ageMs: 2 * 24 * 3600_000 }], NOW,
+      [{ key: 'log-only:k', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'log-only');
+      expect(e?.classification).toBe('fired_no_result');
+    });
+  });
+
+  it('STATE unknown: an unreadable firing ledger is `unknown`, never folded into ok', () => {
+    // null is NOT an empty set. With an unreadable ledger every one-shot would classify as
+    // never_fired -- the MOST SEVERE state -- so the distinction has to survive to the
+    // caller. The checker is reporting its own limit, which is not a fault in the job.
+    return scheduler([onceJob('cannot-tell')], [], NOW, null).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'cannot-tell');
+      expect(e?.classification).toBe('unknown');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('unknown');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('could not be classified');
+    });
+  });
+
+  it('REGRESSION c7a7e039: fired-then-timed-out is STILL a finding, not suppressed', () => {
+    // THE FOUNDING CASE and the reason `.fired-keys` must reclassify rather than gate.
+    // c7a7e039 fired, hit its watchdog (exit 143), its failure notification itself failed,
+    // and its record was left in jobs.json. A gate that says "it is in .fired-keys, so not a
+    // finding" suppresses exactly this. It must come back as a REAL finding naming the job.
+    return scheduler([{ ...onceJob('c7a7e039'), label: 'timed out, notification failed' }],
+      [{ name: 'c7a7e039-1.run-result.json', ageMs: 2 * 24 * 3600_000 }], NOW,
+      [{ key: 'c7a7e039:2026-8-21-18-0', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).toContain('c7a7e039');
+      expect(r.scheduler.checks.staleOneShots.status).not.toBe('ok');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('c7a7e039');
+    });
+  });
+
+  it('reports the MOST SEVERE state present, never an aggregate', () => {
+    // One missed one-shot must not be averaged away by stale records sitting beside it. The
+    // severities are ordered by what a human must DO, so the headline takes the worst and
+    // the others are counted alongside it.
+    return scheduler([onceJob('never-fired'), onceJob('ran-ok')],
+      [{ name: 'ran-ok-1.run-result.json', ageMs: 2 * 24 * 3600_000 }], NOW,
+      [{ key: 'ran-ok:2026-8-21-18-0', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      expect(r.scheduler.checks.staleOneShots.status).toBe('error');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('NEVER FIRED');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('plus 1 fired-but-not-removed');
     });
   });
 
