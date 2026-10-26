@@ -1144,6 +1144,30 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
     });
   });
 
+  it('fired with NO firedAt is `unknown`, NOT the do-not-re-run arm', () => {
+    // ISLA'S FOLLOW-UP NIT ON PR #37. This returned fired_not_removed, whose instruction is
+    // "the job ran; do not re-run it" -- asserted with no evidence the run FINISHED. Being in
+    // the fired set says it STARTED. Without a firedAt there is nothing to bound against and
+    // no result confirming completion, so the honest answer is `unknown`.
+    //
+    // Third instance of one shape in this function: the died-run case and this one both fell
+    // into the only arm that tells a human to STOP. Every fallthrough into fired_not_removed
+    // is a claim, and absence must never be the thing that makes it.
+    //
+    // Unreachable against today's live ledger (35,001 entries, zero missing firedAt --
+    // verified) and reachable the moment a firedAt arrives as a number or a null. A check
+    // validated only against the current environment is a constant, which is why this is a
+    // fixture rather than a note.
+    return scheduler([onceJob('no-firedat')], [], NOW,
+      [{ key: 'no-firedat:k' } as unknown as { key: string; firedAt: string }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'no-firedat');
+      expect(e?.classification).toBe('unknown');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('unknown');
+      // and it must NOT carry the stale-record instruction
+      expect(r.scheduler.checks.staleOneShots.detail).not.toContain('not to re-run it');
+    });
+  });
+
   it('STATE unknown: an unreadable firing ledger is `unknown`, never folded into ok', () => {
     // null is NOT an empty set. With an unreadable ledger every one-shot would classify as
     // never_fired -- the MOST SEVERE state -- so the distinction has to survive to the

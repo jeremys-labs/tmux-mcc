@@ -480,9 +480,23 @@ function latestCompletionMtimeForJob(logsDir: string, jobId: string): string | u
  * `null` is not an empty set. An unreadable ledger means every one-shot would classify as
  * "never fired" -- the most severe state -- so the distinction has to survive to the caller.
  */
-function firedJobIds(schedulerRoot: string): Set<string> | null {
-  const parsed = readJsonFile<Array<{ key?: unknown }>>(path.join(schedulerRoot, '.fired-keys'));
-  if (!Array.isArray(parsed)) return null;
+/**
+ * The firing ledger, parsed ONCE. Both readers below take it.
+ *
+ * They used to read the file independently -- firedJobIds once per pass and firedAtForJob
+ * once per stale job -- which is 6.3MB and 35,001 entries re-parsed per job, and worse, two
+ * independent reads of a file that is APPENDED ON EVERY FIRE. That window is what made
+ * "in the fired set but carrying no firedAt" reachable at all, which is the state isla's
+ * follow-up nit is about. One parse removes the window rather than handling it.
+ */
+function readFiredLedger(schedulerRoot: string): Array<{ key?: unknown; firedAt?: unknown }> | null {
+  const parsed = readJsonFile<Array<{ key?: unknown; firedAt?: unknown }>>(
+    path.join(schedulerRoot, '.fired-keys'));
+  return Array.isArray(parsed) ? parsed : null;
+}
+
+function firedJobIds(parsed: Array<{ key?: unknown }> | null): Set<string> | null {
+  if (parsed === null) return null;
   const ids = new Set<string>();
   for (const entry of parsed) {
     const key = typeof entry?.key === 'string' ? entry.key : '';
@@ -493,10 +507,11 @@ function firedJobIds(schedulerRoot: string): Set<string> | null {
   return ids;
 }
 
-function firedAtForJob(schedulerRoot: string, jobId: string): string | undefined {
-  const parsed = readJsonFile<Array<{ key?: unknown; firedAt?: unknown }>>(
-    path.join(schedulerRoot, '.fired-keys'));
-  if (!Array.isArray(parsed)) return undefined;
+function firedAtForJob(
+  parsed: Array<{ key?: unknown; firedAt?: unknown }> | null,
+  jobId: string,
+): string | undefined {
+  if (parsed === null) return undefined;
   let latest: string | undefined;
   for (const entry of parsed) {
     const key = typeof entry?.key === 'string' ? entry.key : '';
@@ -577,7 +592,19 @@ function classifyOneShot(input: {
   if (input.lastRunResultAt && input.firedAt && input.lastRunResultAt >= input.firedAt) {
     return 'fired_not_removed';
   }
-  if (!input.firedAt) return 'fired_not_removed';   // fired, no timestamp to bound against
+  // ISLA'S FOLLOW-UP NIT ON PR #37. This returned `fired_not_removed`, whose instruction is
+  // "the job ran; do not re-run it" -- asserted with NO EVIDENCE THE RUN FINISHED. Being in
+  // the fired set says it STARTED; without a firedAt there is nothing to bound against and
+  // no result to confirm completion, so the honest answer is `unknown`.
+  //
+  // THIRD INSTANCE OF ONE SHAPE IN THIS FUNCTION: the died-run case and this one both fell
+  // into the "don't re-run" arm on absent evidence. `fired_not_removed` is the only state
+  // here that tells a human to STOP, so every fallthrough into it is a claim, and absence
+  // must never be the thing that makes it.
+  //
+  // Unreachable against today's ledger -- 35,001 entries, zero missing firedAt, verified --
+  // and reachable the moment a firedAt arrives as a number, a null, or after a rotation.
+  if (!input.firedAt) return 'unknown';
   const firedMs = Date.parse(input.firedAt);
   if (Number.isNaN(firedMs)) return 'unknown';      // unparseable: say so, never guess
   const bound = firedMs
@@ -726,7 +753,8 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
 
   // Read ONCE for the whole pass, not per job: firedAtForJob re-reads the ledger and
   // `.fired-keys` is 33k entries on the live scheduler.
-  const firedIds = firedJobIds(schedulerRoot);
+  const firedLedger = readFiredLedger(schedulerRoot);
+  const firedIds = firedJobIds(firedLedger);
   const staleOneShotJobs = jobs
     .filter((job) => job.type === 'once' && job.fireAt)
     .map((job) => ({ job, staleMinutes: minutesBetween(now, job.fireAt ?? '') }))
@@ -735,7 +763,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       const id = job.id ?? 'unknown';
       // `.run-result.json` ONLY -- a `.log` is written during a run, not at its end.
       const lastRunResultAt = latestRunResultMtimeForJob(logsDir, id);
-      const firedAt = firedIds?.has(id) ? firedAtForJob(schedulerRoot, id) : undefined;
+      const firedAt = firedIds?.has(id) ? firedAtForJob(firedLedger, id) : undefined;
       return {
         id,
         label: job.label ?? 'unlabeled',
