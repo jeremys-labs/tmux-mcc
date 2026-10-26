@@ -56,7 +56,7 @@ export interface SchedulerHealth {
   staleOneShotJobs: Array<{
     id: string; label: string; fireAt: string; staleMinutes: number;
     /** See classifyOneShot. `unknown` is the checker's limit, never a verdict. */
-    classification: 'never_fired' | 'fired_not_removed' | 'unknown';
+    classification: 'never_fired' | 'fired_not_removed' | 'fired_run_in_progress' | 'unknown';
     firedAt?: string;
     lastCompletionAt?: string;
   }>;
@@ -532,10 +532,25 @@ function firedAtForJob(schedulerRoot: string, jobId: string): string | undefined
 function classifyOneShot(input: {
   jobId: string;
   fired: Set<string> | null;
+  firedAt?: string;
   lastCompletionAt?: string;
-}): 'never_fired' | 'fired_not_removed' | 'unknown' {
+}): 'never_fired' | 'fired_not_removed' | 'fired_run_in_progress' | 'unknown' {
   if (input.fired === null) return 'unknown';
   if (!input.fired.has(input.jobId)) return 'never_fired';
+  // FIRED, BUT IS THE RUN OVER? Removal happens at scheduler-firing.ts:1218, AFTER
+  // persistRunResult at :1205 and inside the awaited executeJob -- so a once-job whose run
+  // outlives the 5-minute staleness grace is STILL IN jobs.json while running correctly.
+  //
+  // I had dropped this state on the assumption removal was at fire time. It is not, and the
+  // row (dc-20261009-004) named it for a reason: without it a job that is working right now
+  // is reported as a stale record, which is a false warn in the one direction that trains
+  // people to ignore the check. Checked at the fire path, not assumed.
+  //
+  // Completion evidence is `.run-result.json` (persistRunResult writes it on success,
+  // failure AND timeout). No completion at or after firedAt => the run has not finished.
+  if (input.firedAt && !(input.lastCompletionAt && input.lastCompletionAt >= input.firedAt)) {
+    return 'fired_run_in_progress';
+  }
   return 'fired_not_removed';
 }
 
@@ -662,16 +677,21 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
     .map(({ job, staleMinutes }) => {
       const id = job.id ?? 'unknown';
       const lastCompletionAt = latestCompletionMtimeForJob(logsDir, id);
+      const firedAt = firedIds?.has(id) ? firedAtForJob(schedulerRoot, id) : undefined;
       return {
         id,
         label: job.label ?? 'unlabeled',
         fireAt: job.fireAt ?? '',
         staleMinutes,
-        classification: classifyOneShot({ jobId: id, fired: firedIds, lastCompletionAt }),
-        firedAt: firedIds?.has(id) ? firedAtForJob(schedulerRoot, id) : undefined,
+        classification: classifyOneShot({ jobId: id, fired: firedIds, firedAt, lastCompletionAt }),
+        firedAt,
         lastCompletionAt,
       };
-    });
+    })
+    // A job whose run is still going is NOT a finding -- nothing is wrong and nothing is
+    // owed. Filtered here rather than given a severity, because any severity at all puts a
+    // correctly-running job in an alert.
+    .filter((entry) => entry.classification !== 'fired_run_in_progress');
   const neverFired = staleOneShotJobs.filter((j) => j.classification === 'never_fired');
   const firedNotRemoved = staleOneShotJobs.filter((j) => j.classification === 'fired_not_removed');
   const unclassifiedOneShots = staleOneShotJobs.filter((j) => j.classification === 'unknown');
