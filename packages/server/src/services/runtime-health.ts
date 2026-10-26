@@ -897,27 +897,10 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
       // records.
       staleOneShots: staleOneShotJobs.length === 0
         ? check('ok', 'no stale one-shot jobs')
-        : neverFired.length > 0 || firedNoResult.length > 0
-        // Both are ERROR and they are NAMED SEPARATELY, because the human action differs:
-        // never_fired means the work did not happen; fired_no_result means it MAY not have,
-        // and the first step is to find out. Collapsing them would give one of the two a
-        // sentence that is wrong about it.
-        ? check('error',
-            [neverFired.length > 0
-              ? `${neverFired.length} one-shot job(s) NEVER FIRED and are past fireAt: ${oneShotDetail(neverFired)}`
-              : '',
-             firedNoResult.length > 0
-              ? `${firedNoResult.length} one-shot job(s) FIRED but have NO completion record past their `
-                + `watchdog window -- the run died (crash, restart, or SIGKILL never reaches the result `
-                + `write); check whether the work happened, then run or re-date: ${oneShotDetail(firedNoResult)}`
-              : ''].filter(Boolean).join('; ')
-            + (firedNotRemoved.length > 0 ? `; plus ${firedNotRemoved.length} fired-but-not-removed` : '')
-            + (unclassifiedOneShots.length > 0 ? `; plus ${unclassifiedOneShots.length} unclassifiable` : ''))
-        : unclassifiedOneShots.length > 0
-        ? check('unknown', `${unclassifiedOneShots.length} one-shot job(s) past fireAt could not be classified `
-            + `(firing ledger unreadable or incomplete): ${oneShotDetail(unclassifiedOneShots)}`)
-        : check('warn', `${firedNotRemoved.length} one-shot job(s) FIRED but the record was not removed `
-            + `(the job ran; the action is to remove the record, not to re-run it): ${oneShotDetail(firedNotRemoved)}`),
+        : renderStaleOneShots({
+            all: staleOneShotJobs, neverFired, firedNoResult, firedNotRemoved,
+            unclassified: unclassifiedOneShots,
+          }),
       scheduleEvaluable: unevaluableScheduleJobs.length === 0
         ? check('ok', `all ${jobs.filter((j) => j.type === 'recurring' && j.cron).length} recurring schedules evaluable`)
         // `unknown`, never `warn`: this is the checker's limit, not a fault in the jobs.
@@ -1127,6 +1110,82 @@ function buildAgentHealth(
     preSessionContext: preSessionContextCheck(agent, contentRoot),
     migrationReadiness: check('unknown', 'pending'),
   };
+}
+
+/** Derived, not redeclared: a new classification is added to SchedulerHealth and flows here. */
+type StaleOneShotJob = SchedulerHealth['staleOneShotJobs'][number];
+
+// EXHAUSTIVENESS OVER THE CLASSIFICATION UNION. This replaced a ternary chain whose LAST arm
+// was a CATCH-ALL `check('warn', ...)`. The filter feeding the partition is a DENYLIST
+// (`!== 'fired_run_in_progress'`), so a classification nobody partitioned on passed straight
+// through, matched none of the four buckets, and fell to that arm -- rendering
+// "0 one-shot job(s) FIRED but the record was not removed ... : " with an EMPTY detail list:
+// a zero count, no job named, and the instruction "remove the record, not re-run it" about a
+// job that may never have run at all.
+//
+// Three dated instances of ONE shape in three days, all mine, all a state reaching an arm that
+// makes a claim on ABSENT evidence: PR #36 (the withheld path still said "self-healed"), PR #37
+// (a died run read as fired_not_removed, i.e. "don't re-run"), PR #38 (absent firedAt, same).
+// Each was caught by a reviewer; none by the code. So this is mechanical, not a rule: adding a
+// member to the union is a COMPILE ERROR at the `never` assignment below, and if one arrives at
+// runtime anyway the answer is `unknown` WITH THE JOBS NAMED -- never fired_not_removed's
+// wording, because guarding the type while the runtime path can still say "don't re-run" fixes
+// half the bug.
+export function renderStaleOneShots(p: {
+  all: StaleOneShotJob[];
+  neverFired: StaleOneShotJob[];
+  firedNoResult: StaleOneShotJob[];
+  firedNotRemoved: StaleOneShotJob[];
+  unclassified: StaleOneShotJob[];
+}): HealthCheck {
+  // Severity order preserved exactly as before: the two ERROR states stay named separately
+  // because the human action differs, then unknown, then warn.
+  if (p.neverFired.length > 0 || p.firedNoResult.length > 0) {
+    return check('error',
+      [p.neverFired.length > 0
+        ? `${p.neverFired.length} one-shot job(s) NEVER FIRED and are past fireAt: ${oneShotDetail(p.neverFired)}`
+        : '',
+       p.firedNoResult.length > 0
+        ? `${p.firedNoResult.length} one-shot job(s) FIRED but have NO completion record past their `
+          + `watchdog window -- the run died (crash, restart, or SIGKILL never reaches the result `
+          + `write); check whether the work happened, then run or re-date: ${oneShotDetail(p.firedNoResult)}`
+        : ''].filter(Boolean).join('; ')
+      + (p.firedNotRemoved.length > 0 ? `; plus ${p.firedNotRemoved.length} fired-but-not-removed` : '')
+      + (p.unclassified.length > 0 ? `; plus ${p.unclassified.length} unclassifiable` : ''));
+  }
+  if (p.unclassified.length > 0) {
+    return check('unknown', `${p.unclassified.length} one-shot job(s) past fireAt could not be classified `
+      + `(firing ledger unreadable or incomplete): ${oneShotDetail(p.unclassified)}`);
+  }
+  // EXPLICIT ARM, no longer the fallthrough: it fires only when this bucket is non-empty.
+  if (p.firedNotRemoved.length > 0) {
+    return check('warn', `${p.firedNotRemoved.length} one-shot job(s) FIRED but the record was not removed `
+      + `(the job ran; the action is to remove the record, not to re-run it): ${oneShotDetail(p.firedNotRemoved)}`);
+  }
+
+  // Non-empty `all` with every arm above declining: the remaining jobs carry a classification
+  // no arm handles.
+  const unhandled = p.all.filter((j) => {
+    const c = j.classification;
+    switch (c) {
+      case 'never_fired':
+      case 'fired_no_result':
+      case 'fired_not_removed':
+      case 'unknown':
+        return false;                 // handled by an arm above
+      case 'fired_run_in_progress':
+        return false;                 // deliberately silent: nothing is wrong, nothing is owed
+      default: {
+        const _exhaustive: never = c; // add a union member and tsc fails HERE, naming it
+        void _exhaustive;
+        return true;
+      }
+    }
+  });
+  const reported = unhandled.length ? unhandled : p.all;
+  return check('unknown',
+    `${reported.length} one-shot job(s) past fireAt carry a classification this check does not `
+    + `handle -- report this, do not act on it: ${oneShotDetail(reported)}`);
 }
 
 export async function buildRuntimeHealthReport(options: RuntimeHealthOptions = {}): Promise<RuntimeHealthReport> {

@@ -7,6 +7,7 @@ import {
   diskSpaceHealthFromKilobytes,
   formatRuntimeHealthSummary,
   loadSchedulerValidJobTypes,
+  renderStaleOneShots,
 } from './runtime-health.js';
 
 const tempRoots: string[] = [];
@@ -1166,6 +1167,45 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
       // and it must NOT carry the stale-record instruction
       expect(r.scheduler.checks.staleOneShots.detail).not.toContain('not to re-run it');
     });
+  });
+
+  it('EXHAUSTIVENESS: no arm matching renders unknown and NAMES the jobs, not a 0-count warn', () => {
+    // THE FOUNDING DEFECT, and it is the reason this function exists. The chain this replaced
+    // ended in a CATCH-ALL `check('warn', ...)`. The filter feeding the partition is a DENYLIST
+    // (`!== 'fired_run_in_progress'`), so a classification nobody partitioned on passed through,
+    // matched none of the four buckets, and fell to that arm. Output:
+    //   "0 one-shot job(s) FIRED but the record was not removed ... : "
+    // A zero count, an EMPTY job list, and an instruction to remove a record -- about a job that
+    // may never have run. Red against the pre-change chain by construction: every bucket here is
+    // empty, which is exactly the input that produced the 0-count warn.
+    const job = {
+      id: 'sixth-state', label: 'a state no arm handles', fireAt: ONCE_FIRED_AT,
+      staleMinutes: 4320,
+      classification: 'fired_but_reaped' as unknown as 'unknown',
+    };
+    const out = renderStaleOneShots({
+      all: [job], neverFired: [], firedNoResult: [], firedNotRemoved: [], unclassified: [],
+    });
+    expect(out.status).toBe('unknown');                       // never 'warn'
+    expect(out.detail).toContain('sixth-state');              // the job is NAMED
+    expect(out.detail).toContain('does not handle');
+    expect(out.detail).not.toContain('not to re-run it');     // never borrows the warn wording
+    expect(out.detail).not.toMatch(/^0 /);                    // never a 0-count claim
+  });
+
+  it('EXHAUSTIVENESS: the warn arm is explicit, so it fires only on a non-empty bucket', () => {
+    // The other half of removing a catch-all: the warn arm must still fire for its OWN state,
+    // or the guard would have traded a false warn for a missing one.
+    const job = {
+      id: 'really-stale', label: 'fired, run over, record left', fireAt: ONCE_FIRED_AT,
+      staleMinutes: 4320, classification: 'fired_not_removed' as const,
+    };
+    const out = renderStaleOneShots({
+      all: [job], neverFired: [], firedNoResult: [], firedNotRemoved: [job], unclassified: [],
+    });
+    expect(out.status).toBe('warn');
+    expect(out.detail).toContain('really-stale');
+    expect(out.detail).toContain('not to re-run it');
   });
 
   it('STATE unknown: an unreadable firing ledger is `unknown`, never folded into ok', () => {
