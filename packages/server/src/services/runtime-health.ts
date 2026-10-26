@@ -915,7 +915,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
             + (unclassifiedOneShots.length > 0 ? `; plus ${unclassifiedOneShots.length} unclassifiable` : ''))
         : unclassifiedOneShots.length > 0
         ? check('unknown', `${unclassifiedOneShots.length} one-shot job(s) past fireAt could not be classified `
-            + `(scheduler .fired-keys unreadable): ${oneShotDetail(unclassifiedOneShots)}`)
+            + `(firing ledger unreadable or incomplete): ${oneShotDetail(unclassifiedOneShots)}`)
         : check('warn', `${firedNotRemoved.length} one-shot job(s) FIRED but the record was not removed `
             + `(the job ran; the action is to remove the record, not to re-run it): ${oneShotDetail(firedNotRemoved)}`),
       scheduleEvaluable: unevaluableScheduleJobs.length === 0
