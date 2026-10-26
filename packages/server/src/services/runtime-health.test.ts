@@ -1085,19 +1085,62 @@ describe('staleRecurring measures MISSED OCCURRENCES, not an estimated period (d
     });
   });
 
-  it('STATE fired_run_in_progress: a run that has not finished is NOT a finding at all', () => {
-    // Removal is scheduler-firing.ts:1218, AFTER persistRunResult at :1205, inside the
-    // awaited executeJob -- so a once-job whose run outlives the 5-minute grace is still in
-    // jobs.json WHILE RUNNING CORRECTLY. I had dropped this state on the assumption removal
-    // was at fire time; it is not. Without it, a job working right now is reported as a
-    // stale record, which is a false warn in the direction that trains people to ignore the
-    // check. The completion artifact here PREDATES the firing, i.e. it is from an earlier
-    // run and does not evidence this one.
-    return scheduler([onceJob('still-running')],
-      [{ name: 'still-running-old.run-result.json', ageMs: 4 * 24 * 3600_000 }], NOW,
-      [{ key: 'still-running:2026-8-21-18-0', firedAt: ONCE_FIRED_AT }]).then((r) => {
-      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).not.toContain('still-running');
+  it('STATE fired_run_in_progress: INSIDE its watchdog window is NOT a finding', () => {
+    // Removal is scheduler-firing.ts:1218, AFTER persistRunResult at :1205 and inside the
+    // awaited executeJob, so a once-job is still in jobs.json while running. Inside the
+    // window that is correct behaviour and must stay silent.
+    const firedJustNow = new Date(NOW.getTime() - 60_000).toISOString();
+    return scheduler([onceJob('in-window')], [], NOW,
+      [{ key: 'in-window:k', firedAt: firedJustNow }]).then((r) => {
+      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).not.toContain('in-window');
       expect(r.scheduler.checks.staleOneShots.status).toBe('ok');
+    });
+  });
+
+  it('the window is the JOB\'S OWN timeoutSeconds, not a fixed number', () => {
+    // A long-running job (val's carries timeoutSeconds 2700) is legitimately still going ten
+    // minutes in, where the 300s default would already have called it dead. The bound has to
+    // come from the job or it is wrong for every job that sets one.
+    const fired10mAgo = new Date(NOW.getTime() - 10 * 60_000).toISOString();
+    return scheduler([{ ...onceJob('long-job'), timeoutSeconds: 2700 }], [], NOW,
+      [{ key: 'long-job:k', firedAt: fired10mAgo }]).then((r) => {
+      expect(r.scheduler.staleOneShotJobs.map((j) => j.id)).not.toContain('long-job');
+    });
+  });
+
+  it('STATE fired_no_result: PAST the window with no result is an ERROR, not silence', () => {
+    // ISLA'S MUST-CHANGE ON PR #37, AND MY OWN FIXTURE HAD PINNED THE HOLE AS CORRECT.
+    // My first version returned in_progress for ANY elapsed time and the caller filtered
+    // in_progress out, so a run that died without writing `.run-result.json` -- daemon crash,
+    // restart, SIGKILL, none of which reach persistRunResult -- reported as in progress
+    // FOREVER, i.e. SILENT. A true positive suppressed into `ok`: the c7a7e039 shape one step
+    // earlier in the run, reintroduced by the fix for c7a7e039. This fixture previously
+    // asserted `ok` for a job that fired 72h earlier against a 300s watchdog.
+    //
+    // It must NOT be fired_not_removed either: that message says "the job ran; do not re-run
+    // it", which is actively wrong for a run that died -- the work may not have happened.
+    return scheduler([onceJob('died-mid-run')], [], NOW,
+      [{ key: 'died-mid-run:k', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'died-mid-run');
+      expect(e?.classification).toBe('fired_no_result');
+      expect(r.scheduler.checks.staleOneShots.status).toBe('error');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('NO completion record');
+      expect(r.scheduler.checks.staleOneShots.detail).toContain('check whether the work happened');
+      // and it must NOT carry the stale-record instruction
+      expect(r.scheduler.checks.staleOneShots.detail).not.toContain('not to re-run it');
+    });
+  });
+
+  it('a `.log` is NOT completion evidence -- it is written during the run', () => {
+    // latestCompletionMtimeForJob accepts `<id>-*.log`, which would mark a RUNNING job
+    // complete. One-shots read `.run-result.json` only. That helper is shared with
+    // staleRecurring, where legacy .log files are deliberately still read, so it is narrowed
+    // here rather than there.
+    return scheduler([onceJob('log-only')],
+      [{ name: 'log-only-1.log', ageMs: 2 * 24 * 3600_000 }], NOW,
+      [{ key: 'log-only:k', firedAt: ONCE_FIRED_AT }]).then((r) => {
+      const e = r.scheduler.staleOneShotJobs.find((j) => j.id === 'log-only');
+      expect(e?.classification).toBe('fired_no_result');
     });
   });
 
