@@ -348,6 +348,70 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     expect(text).toContain('dana');
     expect(text).toContain('simone');
   });
+
+  // dc-20261011-006. On 2026-10-12T02:39:50Z this notice said "self-healed 1 inbound
+  // miss(es): eli (replay_consumed)" while eli's runtime was blocked on a Codex usage limit,
+  // and the 02:49:58Z pass confirmed the replay produced no reply. Nothing had failed. The
+  // sentence was false because SELF-HEALED IS A CLAIM ABOUT THE OUTCOME and the pass only
+  // ever observes the actions -- the outcome is a later pass's evidence.
+  const stuck = (agent: string, cannotAct: string, detail?: string) => ({
+    ...recovered(agent),
+    cannotAct,
+    cannotActDetail: detail,
+  });
+
+  it('a blocked runtime is NOT reported as self-healed, and the reason is named', () => {
+    const text = formatInboundRecoveryNotice([
+      stuck('eli', 'blocked', 'codex usage limit reached'),
+    ]);
+    // The claim that was false is the one being asserted against. Substring, deliberately:
+    // "NOT healed" contains neither "self-healed" nor "self-heal", so this cannot pass by
+    // the phrase merely moving somewhere else in the sentence.
+    expect(text).not.toContain('self-healed');
+    expect(text).toContain('BLOCKED');
+    expect(text).toContain('codex usage limit reached');
+    expect(text).toContain('eli');
+    // and it still says what was actually done, which is real information
+    expect(text).toContain('replay_consumed');
+  });
+
+  it('the blocked state leads the entry line, before the success-shaped clause', () => {
+    // Ordering is the finding, not decoration: the original read as good news because the
+    // thing a human must act on came after a clause that sounded like completion.
+    const line = formatInboundRecoveryNotice([stuck('eli', 'blocked', 'usage limit')])
+      .split('\n')
+      .find((l) => l.startsWith('- '))!;
+    expect(line.indexOf('BLOCKED')).toBeLessThan(line.indexOf('replay_consumed'));
+  });
+
+  it('hung and a dead process are reported the same way, not just blocked', () => {
+    // The false claim is identical in all three states: the message is sitting in an inbox
+    // nothing is reading. Covering only `blocked` would leave the same sentence untrue one
+    // state over.
+    for (const state of ['hung', 'process dead']) {
+      const text = formatInboundRecoveryNotice([stuck('eli', state)]);
+      expect(text, state).not.toContain('self-healed');
+      expect(text, state).toContain(state.toUpperCase());
+    }
+  });
+
+  it('a mixed batch reports BOTH counts, not the flattering one', () => {
+    const text = formatInboundRecoveryNotice([
+      recovered('dana'),
+      stuck('eli', 'blocked', 'usage limit'),
+    ]);
+    expect(text).toContain('1 self-healed');
+    expect(text).toContain('1 replayed into a runtime that cannot act');
+    expect(text).toContain('dana');
+    expect(text).toContain('BLOCKED');
+  });
+
+  it('a healthy recovery is unchanged -- absent evidence of trouble still reports recovery', () => {
+    // The guard must not be "say nothing unless we are sure", which would retire a working
+    // signal. No cannotAct evidence means the ordinary notice.
+    const text = formatInboundRecoveryNotice([recovered('dana')]);
+    expect(text).toContain('self-healed 1 inbound miss(es)');
+  });
 });
 
 
