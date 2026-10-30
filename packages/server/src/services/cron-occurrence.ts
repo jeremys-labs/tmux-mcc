@@ -59,7 +59,11 @@ function expand(field: string, min: number, max: number): Set<number> {
     if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
       throw new CronParseError(`bad field ${field}`);
     }
-    for (let v = lo; v <= hi; v += step) out.add(v);
+    // The executing scheduler implements `*/n` as value % n === 0. For fields whose
+    // domain starts at 1 (day-of-month and month), beginning at `lo` would instead make
+    // `*/2` mean 1,3,5... and invent occurrences the scheduler never fires.
+    const first = rangePart === '*' ? Math.ceil(lo / step) * step : lo;
+    for (let v = first; v <= hi; v += step) out.add(v);
   }
   return out;
 }
