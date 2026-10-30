@@ -17,6 +17,12 @@ const agent = process.env.OPEN_PR_DIGEST_AGENT ?? 'marcus';
 const jobId = process.env.SCHEDULED_JOB_ID ?? process.env.OPEN_PR_DIGEST_JOB_ID ?? 'open-pr-digest-daily';
 const label = process.env.SCHEDULED_JOB_LABEL ?? process.env.OPEN_PR_DIGEST_LABEL ?? 'Daily open-PR digest';
 const dryRun = process.argv.includes('--dry-run') || process.env.OPEN_PR_DIGEST_DRY_RUN === '1';
+const findingsPath = process.env.OPEN_PR_DIGEST_FINDINGS_PATH
+  ?? path.join(os.homedir(), '.tmux-mcc', 'bridge', 'pr-digest', 'open-pr-digest-findings.json');
+const notifiedPath = process.env.OPEN_PR_DIGEST_NOTIFIED_PATH
+  ?? path.join(os.homedir(), '.tmux-mcc', 'bridge', 'pr-digest', 'open-pr-digest-notified.json');
+const mailBin = process.env.OPEN_PR_DIGEST_MAIL_BIN ?? 'agent-mail';
+const operator = process.env.OPEN_PR_DIGEST_OPERATOR ?? 'isla';
 
 function run(command, args) {
   return spawnSync(command, args, {
@@ -90,6 +96,81 @@ try {
   // Best-effort temp cleanup.
 }
 
+// ---------------------------------------------------------------------------
+// dc-20261021-001 acceptance (5): THE FINDING REACHES THE AUTHOR, NOT ONLY THE READER.
+// The digest goes to Jeremy's DM, so without this leg an unreviewed PR is visible only to the
+// one person who does not review it. Routing lives HERE rather than in the sweep so the sweep
+// stays read-only and safe to run by hand at any time.
+//
+// TRANSITION-ONLY, AND STATE ADVANCES ONLY ON DELIVERY -- the exact shape Zara made me fix on
+// dc-20261015-002, where alert() returned false and the new state was written anyway, losing
+// the transition permanently. A daily re-ping is also how a signal earns the right to be
+// ignored: the author needs to LEARN of it once, and Jeremy's digest already carries the
+// standing list every morning.
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function sendMail(to, subject, bodyFile) {
+  return run(mailBin, [
+    'send', '--from', agent, '--to', to, '--type', 'note',
+    '--subject', subject, '--body-file', bodyFile,
+  ]).status === 0;
+}
+
+const routing = { attempted: 0, delivered: 0, failed: [], unresolvedAuthors: [], notifiedNow: [] };
+const findings = readJson(findingsPath, null);
+if (findings && Array.isArray(findings.undispositioned)) {
+  const open = new Set(findings.undispositioned.map((f) => `${f.repo}#${f.number}`));
+  // Bounded relative to its subject: an entry whose PR is no longer undispositioned drops out,
+  // so the state cannot grow without limit and cannot name a PR that is gone. Same fix as the
+  // surface-check-journal intersection (dc-20261012-007).
+  const notified = Object.fromEntries(
+    Object.entries(readJson(notifiedPath, {})).filter(([k]) => open.has(k)),
+  );
+  for (const f of findings.undispositioned) {
+    const key = `${f.repo}#${f.number}`;
+    if (notified[key]) continue;
+    const recipients = [operator];
+    if (f.authorAgent && f.authorAgent !== operator) recipients.unshift(f.authorAgent);
+    if (!f.authorAgent) routing.unresolvedAuthors.push(key);
+    const body = path.join(os.tmpdir(), `pr-unreviewed-${f.repo}-${f.number}.md`);
+    fs.writeFileSync(body, [
+      `**${f.repo} #${f.number} has had no review verdict for ${f.hoursOpen}h.**`,
+      '',
+      `Branch \`${f.headRefName ?? '<none>'}\`, review state \`${f.reviewState}\`.`,
+      f.authorAgent
+        ? `Routed to you as the branch-prefix author, and to ${operator}.`
+        : `AUTHOR COULD NOT BE RESOLVED (${f.authorUnresolvedReason}), so this reached ${operator} only.`,
+      '',
+      'Nothing merges on an unread or un-dispositioned review. Either get a verdict on the exact',
+      'head, or close the PR if it is abandoned.',
+      '',
+      '_Automated: open-PR digest, dc-20261021-001. Once per PR, not daily._',
+    ].join('\n'));
+    let allOk = true;
+    for (const to of recipients) {
+      routing.attempted += 1;
+      if (sendMail(to, `No review verdict after ${f.hoursOpen}h: ${f.repo} #${f.number}`, body)) routing.delivered += 1;
+      else { allOk = false; routing.failed.push(`${key} -> ${to}`); }
+    }
+    try { fs.unlinkSync(body); } catch { /* best-effort */ }
+    // ONLY on a fully delivered notification. A PARTIAL send is not a transition and must be
+    // re-attempted next run rather than recorded as told.
+    if (allOk) { notified[key] = new Date().toISOString(); routing.notifiedNow.push(key); }
+  }
+  try {
+    fs.mkdirSync(path.dirname(notifiedPath), { recursive: true });
+    fs.writeFileSync(notifiedPath, `${JSON.stringify(notified, null, 2)}\n`);
+  } catch (error) {
+    routing.failed.push(`state write: ${String(error.message ?? error).split('\n')[0]}`);
+  }
+}
+
 const sweepExitCode = digest.status ?? 1;
 const deliveryOk = delivery.ok === true;
 const status =
@@ -112,6 +193,7 @@ writeStatus({
   stderr: digest.stderr?.trim() || undefined,
   deliveryError: deliveryError || undefined,
   dryRun,
+  routing,
 });
 
 if (dryRun) {
