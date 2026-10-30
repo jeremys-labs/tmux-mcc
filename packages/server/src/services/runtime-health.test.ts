@@ -88,6 +88,68 @@ describe('runtime health', () => {
     expect(report.summary.status).toBe('error');
   });
 
+  it('surfaces a recent off-process notification-runner failure and ignores archival failures', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    const logsDir = path.join(schedulerRoot, 'logs');
+    const now = new Date('2026-10-30T12:00:00.000Z');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+    writeJson(path.join(logsDir, 'live-job-2026-10-30T10-00-00.notification-failure.json'), {
+      severity: 'critical',
+      jobId: 'live-job',
+      agent: 'lena',
+      // The producer writes the scheduled fire time here, not the failure moment. The
+      // monitor must use mtime, which this fixture controls independently below.
+      timestamp: '2026-10-30T09:55:00.000Z',
+      reason: 'notification runner exited with code 1',
+    });
+    writeJson(path.join(logsDir, 'archival-job-2026-10-01T10-00-00.notification-failure.json'), {
+      severity: 'critical', jobId: 'archival-job', reason: 'old failure',
+    });
+    fs.utimesSync(
+      path.join(logsDir, 'live-job-2026-10-30T10-00-00.notification-failure.json'),
+      now.getTime() / 1000 - 60,
+      now.getTime() / 1000 - 60,
+    );
+    fs.utimesSync(
+      path.join(logsDir, 'archival-job-2026-10-01T10-00-00.notification-failure.json'),
+      now.getTime() / 1000 - 40 * 60 * 60,
+      now.getTime() / 1000 - 40 * 60 * 60,
+    );
+
+    const report = await buildRuntimeHealthReport({
+      agents: [], schedulerRoot, agentMailDbPath: path.join(root, 'missing.db'), now,
+      includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.notificationDeliveryFailures).toEqual([expect.objectContaining({
+      jobId: 'live-job', agent: 'lena', reason: 'notification runner exited with code 1',
+      failedAt: '2026-10-30T11:59:00.000Z',
+    })]);
+    expect(report.scheduler.checks.notificationDelivery).toEqual(expect.objectContaining({
+      status: 'error',
+      detail: expect.stringContaining('live-job: notification runner exited with code 1'),
+    }));
+    expect(formatRuntimeHealthSummary(report)).toContain('- notification delivery: error');
+  });
+
+  it('reports notification delivery as unknown when its artifact directory is unreadable', async () => {
+    const root = tempDir();
+    const schedulerRoot = path.join(root, 'scheduler');
+    writeJson(path.join(schedulerRoot, 'job-types.json'), { validTypes: ['once', 'recurring'] });
+    writeJson(path.join(schedulerRoot, 'jobs.json'), { jobs: [] });
+
+    const report = await buildRuntimeHealthReport({
+      agents: [], schedulerRoot, agentMailDbPath: path.join(root, 'missing.db'),
+      now: new Date('2026-10-30T12:00:00.000Z'),
+      includeOpenBrainSearch: false, includeOpenBrainMetadata: false,
+    });
+
+    expect(report.scheduler.checks.notificationDelivery.status).toBe('unknown');
+    expect(report.scheduler.checks.notificationDelivery.detail).toContain('log directory unreadable');
+  });
+
   it('renders the Discord-postable summary from JSON report data', async () => {
     const root = tempDir();
     const schedulerRoot = path.join(root, 'scheduler');
