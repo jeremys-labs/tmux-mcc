@@ -38,10 +38,12 @@ function report(): RuntimeHealthReport {
       invalidTypeJobs: [],
       staleOneShotJobs: [],
       staleRecurringJobs: [],
+      notificationDeliveryFailures: [],
       checks: {
         jobTypes: { status: 'ok', detail: 'ok' },
         staleOneShots: { status: 'ok', detail: 'ok' },
         staleRecurring: { status: 'ok', detail: 'ok' },
+        notificationDelivery: { status: 'ok', detail: 'ok' },
       },
     },
     agentMail: {
@@ -382,6 +384,40 @@ describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
     expect(split.withheld).toHaveLength(0);
     expect(split.deliverable).toHaveLength(1);
     expect(formatSchedulerAlert(split.deliverable)).toContain('45000ms');
+  });
+
+  it('routes notification-runner exit 1 to the human operator and keys dedupe by artifact membership', () => {
+    const r = schedulerReport({
+      notificationDelivery: { status: 'error', detail: '1 notification-delivery failure in the last 36h' },
+    });
+    r.scheduler.notificationDeliveryFailures = [{
+      id: 'job-a-2026-10-30.notification-failure.json',
+      jobId: 'job-a',
+      agent: 'lena',
+      reason: 'notification runner exited with code 1',
+      failedAt: '2026-10-30T10:00:00.000Z',
+    }];
+
+    const findings = findSchedulerFailures(r);
+    const split = planAlertDispatch({
+      items: findings,
+      destinationAgent: 'isla',
+      subjectOf: (finding) => finding.subject,
+      fingerprintOf: schedulerFailureFingerprint,
+    });
+
+    expect(split.withheld).toEqual([]);
+    expect(split.deliverable).toEqual([expect.objectContaining({
+      check: 'notificationDelivery', status: 'error', subject: SCHEDULER_FLEET_SUBJECT,
+    })]);
+    expect(formatSchedulerAlert(split.deliverable)).toContain('notificationDelivery');
+
+    r.scheduler.notificationDeliveryFailures.push({
+      id: 'job-b-2026-10-30.notification-failure.json', jobId: 'job-b',
+      reason: 'notification runner exited with code 1', failedAt: '2026-10-30T11:00:00.000Z',
+    });
+    expect(schedulerFailureFingerprint(findings))
+      .not.toBe(schedulerFailureFingerprint(findSchedulerFailures(r)));
   });
 
   it('keeps `unknown` distinct from `error` instead of folding it into ok', () => {

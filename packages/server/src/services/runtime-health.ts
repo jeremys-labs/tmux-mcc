@@ -21,6 +21,12 @@ const DISK_WARN_FREE_BYTES = 10 * 1024 * 1024 * 1024;
 const DISK_ERROR_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 const DISK_WARN_FREE_PERCENT = 5;
 const DISK_ERROR_FREE_PERCENT = 1;
+// Notification failures are archival files, so an all-time scan would keep scheduler
+// health permanently red after one old incident. Thirty-six hours covers a missed daily
+// run plus the next morning's operator pass while still allowing a recovered transport to
+// become healthy again. File mtime is the failure moment; the payload timestamp is the
+// scheduled fire time and can precede the failed delivery attempt by minutes.
+const NOTIFICATION_FAILURE_LOOKBACK_MS = 36 * 60 * 60 * 1000;
 
 export type HealthStatus = 'ok' | 'warn' | 'error' | 'unknown';
 
@@ -63,15 +69,56 @@ export interface SchedulerHealth {
   }>;
   staleRecurringJobs: Array<{ id: string; label: string; agent?: string; cron: string; lastLogAt?: string; staleHours?: number; reason: string }>;
   unevaluableScheduleJobs: Array<{ id: string; label: string; agent?: string; cron: string; reason: string }>;
+  notificationDeliveryFailures: Array<{
+    id: string;
+    jobId: string;
+    agent?: string;
+    reason: string;
+    failedAt: string;
+  }>;
   checks: {
     jobTypes: HealthCheck;
     staleOneShots: HealthCheck;
     staleRecurring: HealthCheck;
     scheduleEvaluable: HealthCheck;
+    notificationDelivery: HealthCheck;
     schedulerHeartbeat: HealthCheck;
     schedulerTickPhase: HealthCheck;
     openPrDigest: HealthCheck;
   };
+}
+
+function recentNotificationDeliveryFailures(logsDir: string, now: Date): {
+  failures: SchedulerHealth['notificationDeliveryFailures'];
+  scanError?: string;
+} {
+  let names: string[];
+  try {
+    names = fs.readdirSync(logsDir).filter((name) => name.endsWith('.notification-failure.json'));
+  } catch (error) {
+    return { failures: [], scanError: `notification log directory unreadable: ${String(error)}` };
+  }
+
+  const failures = names.flatMap((name) => {
+    const filePath = path.join(logsDir, name);
+    let mtime: Date;
+    try {
+      mtime = fs.statSync(filePath).mtime;
+    } catch {
+      return [];
+    }
+    const ageMs = now.getTime() - mtime.getTime();
+    if (ageMs < 0 || ageMs > NOTIFICATION_FAILURE_LOOKBACK_MS) return [];
+    const payload = readJsonFile<{ jobId?: string; agent?: string | null; reason?: string }>(filePath);
+    return [{
+      id: name,
+      jobId: payload?.jobId ?? name.replace(/-\d{4}-\d{2}-\d{2}T.*\.notification-failure\.json$/, ''),
+      ...(payload?.agent ? { agent: payload.agent } : {}),
+      reason: payload?.reason ?? 'notification failure artifact is unreadable',
+      failedAt: mtime.toISOString(),
+    }];
+  }).sort((a, b) => a.failedAt.localeCompare(b.failedAt));
+  return { failures };
 }
 
 export interface AgentMailHealth {
@@ -740,6 +787,8 @@ function schedulerHeartbeatCheck(schedulerRoot: string, now: Date): HealthCheck 
 function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStatusPath: string): SchedulerHealth {
   const jobsFile = path.join(schedulerRoot, 'jobs.json');
   const logsDir = path.join(schedulerRoot, 'logs');
+  const notificationDeliveryScan = recentNotificationDeliveryFailures(logsDir, now);
+  const notificationDeliveryFailures = notificationDeliveryScan.failures;
   const jobs = loadSchedulerJobs(schedulerRoot).filter((job) => job.enabled !== false);
   const validJobTypes = loadSchedulerValidJobTypes(schedulerRoot);
   const validTypes = new Set(validJobTypes);
@@ -877,6 +926,7 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
     staleOneShotJobs,
     staleRecurringJobs,
     unevaluableScheduleJobs,
+    notificationDeliveryFailures,
     checks: {
       jobTypes: validJobTypes.length === 0
         ? check('error', 'scheduler job-types contract is missing or empty')
@@ -905,6 +955,11 @@ function buildSchedulerHealth(schedulerRoot: string, now: Date, openPrDigestStat
         ? check('ok', `all ${jobs.filter((j) => j.type === 'recurring' && j.cron).length} recurring schedules evaluable`)
         // `unknown`, never `warn`: this is the checker's limit, not a fault in the jobs.
         : check('unknown', `${unevaluableScheduleJobs.length} recurring schedule(s) could not be evaluated`),
+      notificationDelivery: notificationDeliveryScan.scanError
+        ? check('unknown', notificationDeliveryScan.scanError)
+        : notificationDeliveryFailures.length === 0
+        ? check('ok', 'no notification-delivery failure artifact in the last 36h')
+        : check('error', `${notificationDeliveryFailures.length} notification-delivery failure(s) in the last 36h; newest ${notificationDeliveryFailures.at(-1)?.jobId}: ${notificationDeliveryFailures.at(-1)?.reason}`),
       staleRecurring: staleRecurringJobs.length === 0
         ? check('ok', 'no recurring job has missed a scheduled occurrence')
         : check('warn', `${staleRecurringJobs.length} recurring job(s) have missed a scheduled occurrence`),
@@ -1318,6 +1373,7 @@ export function formatRuntimeHealthSummary(report: RuntimeHealthReport): string 
   lines.push(`- valid types: ${report.scheduler.validJobTypes.join(', ')}`);
   lines.push(`- type check: ${report.scheduler.checks.jobTypes.status} - ${report.scheduler.checks.jobTypes.detail}`);
   lines.push(`- stale one-shots: ${report.scheduler.checks.staleOneShots.status} - ${report.scheduler.checks.staleOneShots.detail}`);
+  lines.push(`- notification delivery: ${report.scheduler.checks.notificationDelivery.status} - ${report.scheduler.checks.notificationDelivery.detail}`);
   lines.push(`- recurring logs: ${report.scheduler.checks.staleRecurring.status} - ${report.scheduler.checks.staleRecurring.detail}`);
   lines.push(`- heartbeat: ${report.scheduler.checks.schedulerHeartbeat.status} - ${report.scheduler.checks.schedulerHeartbeat.detail}`);
   lines.push(`- tick phase: ${report.scheduler.checks.schedulerTickPhase.status} - ${report.scheduler.checks.schedulerTickPhase.detail}`);

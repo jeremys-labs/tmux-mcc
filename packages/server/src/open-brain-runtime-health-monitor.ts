@@ -205,6 +205,9 @@ function setValuedIdentity(check: string, report: RuntimeHealthReport): string {
   if (check === 'jobTypes') {
     return report.scheduler.invalidTypeJobs.map((j) => j.id).sort().join(',');
   }
+  if (check === 'notificationDelivery') {
+    return report.scheduler.notificationDeliveryFailures.map((failure) => failure.id).sort().join(',');
+  }
   return '';
 }
 
