@@ -52,6 +52,19 @@ interface MonitorState {
     action: 'wake_queued' | 'replay_consumed' | 'none';
     agent: string;
     chatId: string;
+    /**
+     * Set when the replay ran but the runtime could not act on it.
+     *
+     * Two facts that used to be fused into one field: "we already replayed this, do not replay
+     * again" and "stop alerting about it". A cannot-act attempt is the first WITHOUT the second
+     * -- it is recorded so the next pass does not re-attempt and get refused
+     * (`already_replayed`, which rendered as a FAILED recovery for a replay that went through),
+     * and it is exempt from the grace so it keeps alerting until the state clears.
+     *
+     * Optional because a pre-existing state file written before this change has no such entry,
+     * and absent must mean "an ordinary attempt", which is the pre-existing behaviour.
+     */
+    cannotAct?: string | null;
   }>;
 }
 
@@ -658,6 +671,42 @@ const CANNOT_ACT_BY_FAILURE_CLASS: Record<ReplyMissClass, string | null> = {
  * different remedies: a recovery the runtime cannot answer is reported as an inbound FAILURE
  * (remedy `restart`), not as a self-repair notice (remedy `none`, i.e. suppressed).
  */
+/**
+ * WHAT TO DO ABOUT A MISS THAT WAS ALREADY ATTEMPTED, as one pure decision.
+ *
+ * Extracted for the same reason as `classifyRecoveryOutcome`, and on the same review: isla's
+ * note that writing the attempt in the cannot-act branch "leaves 84/84 green, because the loop
+ * is still untested". A branch nobody can reach from a test is a branch where defects live --
+ * all four of her first-pass blockers were in this loop.
+ *
+ * The four answers are genuinely different actions, and collapsing any two is a defect I have
+ * already shipped once in this file:
+ *   attempt           -- nothing has been tried yet.
+ *   suppress          -- a replay is in flight and inside its grace; give it time to be answered.
+ *   alertCannotAct    -- replayed, and the runtime could not act. NEVER suppressed: a runtime
+ *                        that cannot act is not going to answer, so waiting quietly IS the
+ *                        suppression blocker 1 is about.
+ *   alertExhausted    -- replayed, grace elapsed, still no reply. The forced recovery did not work.
+ */
+export type PriorAttemptPlan = 'attempt' | 'suppress' | 'alertCannotAct' | 'alertExhausted';
+
+export function planPriorAttempt(input: {
+  priorAttempt?: { attemptedAt: string; cannotAct?: string | null } | undefined;
+  checkedAt: string;
+  graceMinutes: number;
+}): PriorAttemptPlan {
+  if (!input.priorAttempt) return 'attempt';
+  // Checked BEFORE the grace, deliberately. Order is the fix: a cannot-act attempt inside its
+  // grace would otherwise suppress, which is the silence this row exists to remove.
+  if (input.priorAttempt.cannotAct) return 'alertCannotAct';
+  if (recoveryAttemptStillInGrace({
+    attemptedAt: input.priorAttempt.attemptedAt,
+    checkedAt: input.checkedAt,
+    graceMinutes: input.graceMinutes,
+  })) return 'suppress';
+  return 'alertExhausted';
+}
+
 export type RecoveryOutcome = 'failed' | 'already-answered' | 'cannot-act' | 'recovered';
 
 export function classifyRecoveryOutcome(input: {
@@ -1172,18 +1221,25 @@ async function main(): Promise<void> {
   // for the same stuck inbox row.
   for (const miss of inboundResult.misses.filter((candidate) => candidate.failureClass !== 'queued_not_consumed')) {
     const priorAttempt = recoveryAttempts[miss.key];
-    if (priorAttempt) {
-      if (recoveryAttemptStillInGrace({
-        attemptedAt: priorAttempt.attemptedAt,
-        checkedAt: inboundResult.checkedAtIso,
-        graceMinutes: miss.graceMinutes,
-      })) {
-        process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
-        continue;
-      }
+    const plan = planPriorAttempt({
+      priorAttempt, checkedAt: inboundResult.checkedAtIso, graceMinutes: miss.graceMinutes,
+    });
+    if (plan === 'alertCannotAct') {
       inboundAlertMisses.push({
         ...miss,
-        detail: `${miss.detail}; forced recovery ${priorAttempt.action} at ${priorAttempt.attemptedAt} did not produce a reply`,
+        detail: `${miss.detail}; replayed at ${priorAttempt?.attemptedAt} and the runtime was`
+          + ` ${priorAttempt?.cannotAct} -- still not answered`,
+      });
+      continue;
+    }
+    if (plan === 'suppress') {
+      process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
+      continue;
+    }
+    if (plan === 'alertExhausted') {
+      inboundAlertMisses.push({
+        ...miss,
+        detail: `${miss.detail}; forced recovery ${priorAttempt?.action} at ${priorAttempt?.attemptedAt} did not produce a reply`,
       });
       continue;
     }
@@ -1229,6 +1285,25 @@ async function main(): Promise<void> {
       // existing WITHHELD_REMEDY.inbound rather than needing a new policy. And it is
       // DELIBERATELY NOT written to `recoveryAttempts`: recording an attempt suppresses the
       // miss alert for graceMinutes, which would re-hide the very finding this routes.
+      // THE ATTEMPT IS RECORDED, AND MY PREVIOUS COMMENT SAYING IT MUST NOT BE WAS WRONG
+      // (isla's step-3 review of b482da6).
+      //
+      // I left it unrecorded so the grace could not suppress the alert. The consequence I did
+      // not trace: the NEXT pass re-attempts the replay, the replay is refused
+      // (`already_replayed`), and that refusal renders as "forced recovery failed: replay
+      // refused" -- reporting a FAILURE for a replay that went through. And when the runtime
+      // unblocks, a fresh `restart` alert goes out for work that was already done.
+      //
+      // So the attempt IS recorded, marked `cannotAct`, and the GRACE is what gets taught not
+      // to suppress it -- which is the right separation: "we already replayed this" and
+      // "stop alerting about it" are two different facts and I had them fused into one field.
+      recoveryAttempts[miss.key] = {
+        attemptedAt: inboundResult.checkedAtIso,
+        action: recovery.action,
+        agent: miss.agent,
+        chatId: miss.chatId,
+        cannotAct,
+      };
       inboundAlertMisses.push({
         ...miss,
         detail: `${miss.detail}; recovery ${recovery.action} ran but the runtime is ${cannotAct}`

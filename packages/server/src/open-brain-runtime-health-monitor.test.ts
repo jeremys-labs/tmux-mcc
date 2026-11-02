@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   alertFrom,
   classifyRecoveryOutcome,
+  planPriorAttempt,
   RECOVERY_OUTCOME_ROUTE,
   deliveryFailureFingerprint,
   findDeliveryFailures,
@@ -449,6 +450,42 @@ describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 b
     const names = (['consumed_runtime_dead', 'consumed_hung', 'consumed_blocked'] as const)
       .map((c) => at(c, true, 'replay_consumed').cannotAct);
     expect(names).toEqual(['process dead', 'hung', 'blocked']);
+  });
+
+  it('A CANNOT-ACT ATTEMPT IS NEVER GRACE-SUPPRESSED, AND IS RECORDED SO IT IS NOT REPLAYED TWICE', () => {
+    // isla's second-pass finding on b482da6, and the correction is to my own comment. I had left
+    // the cannot-act attempt UNRECORDED so the grace could not suppress the alert, and did not
+    // trace the consequence: the next pass re-attempts the replay, the replay is refused
+    // (`already_replayed`), and that refusal rendered as "forced recovery failed" -- a FAILURE
+    // reported for a replay that went through. And on unblock, a fresh `restart` alert for work
+    // already done.
+    //
+    // "We already replayed this" and "stop alerting about it" are two different facts and I had
+    // them fused into one field. The attempt is recorded; the GRACE is what learns to ignore it.
+    const inGrace = { attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' };
+    expect(planPriorAttempt({ priorAttempt: inGrace, checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 }))
+      .toBe('alertCannotAct');
+    // the control: the SAME timing without cannotAct is correctly suppressed
+    expect(planPriorAttempt({
+      priorAttempt: { attemptedAt: '2026-10-30T11:59:00Z' },
+      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
+    })).toBe('suppress');
+  });
+
+  it('the other three prior-attempt plans are distinct', () => {
+    expect(planPriorAttempt({ priorAttempt: undefined, checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 }))
+      .toBe('attempt');
+    // grace elapsed, no reply: the forced recovery did not work, and that is its own finding
+    expect(planPriorAttempt({
+      priorAttempt: { attemptedAt: '2026-10-30T10:00:00Z' },
+      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
+    })).toBe('alertExhausted');
+    // and a cannot-act attempt whose grace ALSO elapsed is still the cannot-act finding, not
+    // "did not produce a reply" -- the cause is known and the instruction is different
+    expect(planPriorAttempt({
+      priorAttempt: { attemptedAt: '2026-10-30T10:00:00Z', cannotAct: 'hung' },
+      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
+    })).toBe('alertCannotAct');
   });
 
   it('A CANNOT-ACT RECOVERY ROUTES TO THE ALERT SIDE, NOT THE SUPPRESSED SIDE (blocker 1)', () => {
