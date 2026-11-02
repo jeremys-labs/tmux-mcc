@@ -793,6 +793,109 @@ export const RECOVERY_OUTCOME_ROUTE: Record<RecoveryOutcome, 'inboundAlert' | 'r
   recovered: 'recoveryNotice',
 };
 
+/**
+ * THE WHOLE RECOVERY DECISION, INCLUDING THE STATE WRITE AND THE ALERT TEXT, as one pure value.
+ *
+ * isla's fourth pass. I had extracted the two classifications and still left THREE
+ * `recoveryAttempts[...] = ...` writes and all the detail strings inline, so "the loop only
+ * applies it" was false and deleting a write left 88/88 green. And the text itself carried a
+ * defect my tests could not see, because they asserted the PLAN and never the STRING: the
+ * healthy-then-blocked alert read `priorAttempt?.cannotAct`, which is undefined in exactly that
+ * case, so it rendered "the runtime was undefined".
+ *
+ * PINNING A DECISION AND NOT ITS RENDERING IS HALF A CONTROL. The text is a claim a human acts
+ * on, so it belongs in the tested value.
+ *
+ * Called at most twice per miss per pass: once with no `recovery` (which may answer `attempt`),
+ * and then once with the result. The loop's entire job is to apply what comes back.
+ */
+export interface RecoveryDecision {
+  route: 'attempt' | 'suppress' | 'inboundAlert' | 'recoveryNotice';
+  /** The entry to store, or null to leave the existing one alone. */
+  nextAttempt: RecoveryAttemptRecord | null;
+  /** The alert detail, for `inboundAlert` only. */
+  detail: string | null;
+  /** For `recoveryNotice` only: the reply had already landed. */
+  alreadyAnswered: boolean;
+}
+
+export function decideRecovery(input: {
+  failureClass: ReplyMissClass;
+  missDetail: string;
+  missAgent: string;
+  missChatId: string;
+  priorAttempt?: RecoveryAttemptRecord | undefined;
+  recovery?: { ok: boolean; action: 'wake_queued' | 'replay_consumed' | 'none'; reason: string } | null;
+  checkedAt: string;
+  graceMinutes: number;
+}): RecoveryDecision {
+  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  const base = { nextAttempt: null, detail: null, alreadyAnswered: false } as const;
+
+  if (input.priorAttempt) {
+    const { plan, nextAttempt } = planPriorAttempt({
+      priorAttempt: input.priorAttempt,
+      currentCannotAct: cannotAct,
+      checkedAt: input.checkedAt,
+      graceMinutes: input.graceMinutes,
+    });
+    if (plan === 'suppress') return { ...base, route: 'suppress', nextAttempt };
+    if (plan === 'alertCannotAct') {
+      return {
+        ...base,
+        route: 'inboundAlert',
+        // THE CURRENT VALUE, NOT THE STORED ONE. `priorAttempt.cannotAct` is undefined when the
+        // attempt was made against a healthy runtime that has since gone blocked -- the case a
+        // surviving mutation made me add a test for, and the case whose TEXT then said
+        // "the runtime was undefined" because the test only checked the plan.
+        detail: `${input.missDetail}; replayed at ${input.priorAttempt.attemptedAt} and the runtime`
+          + ` is ${cannotAct} -- still not answered`,
+      };
+    }
+    return {
+      ...base,
+      route: 'inboundAlert',
+      detail: `${input.missDetail}; forced recovery ${input.priorAttempt.action}`
+        + ` at ${input.priorAttempt.attemptedAt} did not produce a reply`,
+    };
+  }
+
+  if (!input.recovery) return { ...base, route: 'attempt' };
+
+  const record = (markCannotAct: string | null): RecoveryAttemptRecord => ({
+    attemptedAt: input.checkedAt,
+    action: input.recovery!.action,
+    agent: input.missAgent,
+    chatId: input.missChatId,
+    cannotAct: markCannotAct,
+  });
+  const { outcome } = classifyRecoveryOutcome({
+    failureClass: input.failureClass, ok: input.recovery.ok, action: input.recovery.action,
+  });
+  if (outcome === 'failed') {
+    return {
+      ...base,
+      route: 'inboundAlert',
+      detail: `${input.missDetail}; forced recovery failed: ${input.recovery.reason}`,
+    };
+  }
+  if (outcome === 'cannot-act') {
+    return {
+      route: 'inboundAlert',
+      nextAttempt: record(cannotAct),
+      detail: `${input.missDetail}; recovery ${input.recovery.action} ran but the runtime is`
+        + ` ${cannotAct} -- it will not be answered until that clears`,
+      alreadyAnswered: false,
+    };
+  }
+  return {
+    route: 'recoveryNotice',
+    nextAttempt: record(null),
+    detail: null,
+    alreadyAnswered: outcome === 'already-answered',
+  };
+}
+
 export interface RecoveryNoticeEntry {
   key: string;
   agent: string;
@@ -1267,34 +1370,40 @@ async function main(): Promise<void> {
   // reply recovery prevents two independent actions and two competing alerts
   // for the same stuck inbox row.
   for (const miss of inboundResult.misses.filter((candidate) => candidate.failureClass !== 'queued_not_consumed')) {
-    const priorAttempt = recoveryAttempts[miss.key];
-    const { plan, nextAttempt } = planPriorAttempt({
-      priorAttempt,
-      currentCannotAct: CANNOT_ACT_BY_FAILURE_CLASS[miss.failureClass] ?? null,
-      checkedAt: inboundResult.checkedAtIso,
-      graceMinutes: miss.graceMinutes,
-    });
-    // The loop APPLIES the decision and does not make one. The write is in the tested value.
-    if (nextAttempt) recoveryAttempts[miss.key] = nextAttempt;
-    if (plan === 'alertCannotAct') {
-      inboundAlertMisses.push({
-        ...miss,
-        detail: `${miss.detail}; replayed at ${priorAttempt?.attemptedAt} and the runtime was`
-          + ` ${priorAttempt?.cannotAct} -- still not answered`,
+    // THE LOOP APPLIES DECISIONS AND MAKES NONE. Every route, every state write and every
+    // alert string comes back from `decideRecovery`, because this function has no test in the
+    // package and anything it decides for itself is unpinnable by construction -- which is
+    // where all four of the first-pass blockers lived.
+    const decide = (recovery?: { ok: boolean; action: 'wake_queued' | 'replay_consumed' | 'none'; reason: string }) =>
+      decideRecovery({
+        failureClass: miss.failureClass,
+        missDetail: miss.detail,
+        missAgent: miss.agent,
+        missChatId: miss.chatId,
+        priorAttempt: recoveryAttempts[miss.key],
+        recovery,
+        checkedAt: inboundResult.checkedAtIso,
+        graceMinutes: miss.graceMinutes,
       });
-      continue;
-    }
-    if (plan === 'suppress') {
-      process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
-      continue;
-    }
-    if (plan === 'alertExhausted') {
-      inboundAlertMisses.push({
-        ...miss,
-        detail: `${miss.detail}; forced recovery ${priorAttempt?.action} at ${priorAttempt?.attemptedAt} did not produce a reply`,
-      });
-      continue;
-    }
+
+    const apply = (d: RecoveryDecision, recovery?: { action: string; reason: string }) => {
+      if (d.nextAttempt) recoveryAttempts[miss.key] = d.nextAttempt;
+      if (d.route === 'inboundAlert') inboundAlertMisses.push({ ...miss, detail: d.detail ?? miss.detail });
+      else if (d.route === 'suppress') {
+        process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
+      } else if (d.route === 'recoveryNotice' && recovery) {
+        recoveredThisPass.push({
+          key: miss.key,
+          agent: miss.agent,
+          action: recovery.action,
+          reason: recovery.reason,
+          alreadyAnswered: d.alreadyAnswered,
+        });
+      }
+    };
+
+    const first = decide();
+    if (first.route !== 'attempt') { apply(first); continue; }
 
     if (dryRun) {
       inboundAlertMisses.push(miss);
@@ -1306,74 +1415,10 @@ async function main(): Promise<void> {
       supervisorStatuses,
       dependencies: { now: new Date(inboundResult.checkedAtIso) },
     });
-    // ONE CLASSIFIER, AND IT IS THE MISS'S OWN. `cannotActOn()` was a SECOND classifier over
-    // the same question and it disagreed with reconcile: reconcile tests dead -> hung ->
-    // blocked (inbound-reply-reconcile.ts:299/306/313) and cannotActOn tested blocked -> hung
-    // -> dead, so a runtime that was both reported differently depending on which one you
-    // asked. Two classifiers over one question is what produced that, and one source cannot
-    // diverge from itself.
-    //
-    // It also keyed on `process.status`, which is the EXTERNAL supervisor's field
-    // (agent-supervisor-client.ts:8, /v1/agents) whose value set is NOT ENUMERABLE FROM THIS
-    // REPO -- an argument against the classifier existing, not for refining it. `failureClass`
-    // is computed in this repo from a declared union.
-    const { outcome, cannotAct } = classifyRecoveryOutcome({
-      failureClass: miss.failureClass, ok: recovery.ok, action: recovery.action,
-    });
-    const alreadyAnswered = outcome === 'already-answered';
-    process.stdout.write(`inbound recovery ${outcome}`
-      + `${cannotAct ? ` (runtime ${cannotAct})` : ''} for ${miss.key}: ${recovery.reason}\n`);
-    if (RECOVERY_OUTCOME_ROUTE[outcome] === 'inboundAlert' && outcome === 'failed') {
-      inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
-    } else if (RECOVERY_OUTCOME_ROUTE[outcome] === 'inboundAlert') {
-      // A RECOVERY THAT CANNOT BE ANSWERED IS NOT A RECOVERY (isla blocker 1).
-      //
-      // This used to go to `recoveredThisPass`, whose alarm class is `inboundRecovery`, whose
-      // WITHHELD_REMEDY is 'none' -- i.e. SUPPRESSED FROM THE PRINCIPAL as self-repair. On
-      // 2026-10-12 eli was both the subject AND the default destination, so the only surviving
-      // record would have said nothing here needs a human, about a runtime that was blocked.
-      //
-      // Routed as an inbound FAILURE instead, so it inherits remedy 'restart' from the
-      // existing WITHHELD_REMEDY.inbound rather than needing a new policy.
-      // THE ATTEMPT IS RECORDED, AND MY PREVIOUS COMMENT SAYING IT MUST NOT BE WAS WRONG
-      // (isla's step-3 review of b482da6).
-      //
-      // I left it unrecorded so the grace could not suppress the alert. The consequence I did
-      // not trace: the NEXT pass re-attempts the replay, the replay is refused
-      // (`already_replayed`), and that refusal renders as "forced recovery failed: replay
-      // refused" -- reporting a FAILURE for a replay that went through. And when the runtime
-      // unblocks, a fresh `restart` alert goes out for work that was already done.
-      //
-      // So the attempt IS recorded, marked `cannotAct`, and the GRACE is what gets taught not
-      // to suppress it -- which is the right separation: "we already replayed this" and
-      // "stop alerting about it" are two different facts and I had them fused into one field.
-      recoveryAttempts[miss.key] = {
-        attemptedAt: inboundResult.checkedAtIso,
-        action: recovery.action,
-        agent: miss.agent,
-        chatId: miss.chatId,
-        cannotAct,
-      };
-      inboundAlertMisses.push({
-        ...miss,
-        detail: `${miss.detail}; recovery ${recovery.action} ran but the runtime is ${cannotAct}`
-          + ` -- it will not be answered until that clears`,
-      });
-    } else {
-      recoveryAttempts[miss.key] = {
-        attemptedAt: inboundResult.checkedAtIso,
-        action: recovery.action,
-        agent: miss.agent,
-        chatId: miss.chatId,
-      };
-      recoveredThisPass.push({
-        key: miss.key,
-        agent: miss.agent,
-        action: recovery.action,
-        reason: recovery.reason,
-        alreadyAnswered,
-      });
-    }
+    const second = decide(recovery);
+    process.stdout.write(`inbound recovery ${second.route}`
+      + ` for ${miss.key}: ${recovery.reason}\n`);
+    apply(second, recovery);
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
 

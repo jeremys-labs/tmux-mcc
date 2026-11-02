@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   alertFrom,
   classifyRecoveryOutcome,
+  decideRecovery,
   planPriorAttempt,
   RECOVERY_OUTCOME_ROUTE,
   deliveryFailureFingerprint,
@@ -30,6 +31,8 @@ import {
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
 import type { ReplyMissClass } from './services/inbound-reply-reconcile.js';
+
+const ATTEMPT = { action: 'replay_consumed' as const, agent: 'eli', chatId: 'c1' };
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
 function report(): RuntimeHealthReport {
@@ -403,6 +406,99 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
   });
 });
 
+describe('decideRecovery \u2014 route, write and TEXT as one tested value (PR #36 fourth pass)', () => {
+  const MISS = { failureClass: 'consumed_blocked' as ReplyMissClass, missDetail: 'eli did not reply',
+                 missAgent: 'eli', missChatId: 'c1', checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 };
+  const OK = { ok: true, action: 'replay_consumed' as const, reason: 'queued message replayed' };
+  const d = (over: Record<string, unknown>) => decideRecovery({ ...MISS, ...over } as never);
+
+  it('NO DETAIL EVER RENDERS "undefined" \u2014 the general form of the defect', () => {
+    // isla's fourth pass: the healthy-then-blocked alert read `priorAttempt?.cannotAct`, which
+    // is undefined in exactly that case, so it told a human "the runtime was undefined".
+    //
+    // MY OWN TEST FOR THAT CASE COULD NOT SEE IT, because it asserted the PLAN and never the
+    // STRING. Pinning a decision and not its rendering is half a control, and the text is the
+    // part a human acts on. So this asserts the CLASS across every route rather than the one
+    // instance she found.
+    const cases: Array<Record<string, unknown>> = [
+      { recovery: OK },                                                              // cannot-act
+      { recovery: { ok: false, action: 'replay_consumed', reason: 'boom' } },         // failed
+      { recovery: { ...OK, action: 'none' } },                                        // answered
+      { failureClass: 'consumed_idle_no_reply', recovery: OK },                       // recovered
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' } },
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' } },          // healthy -> blocked
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, failureClass: 'consumed_idle_no_reply' },
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' },
+        failureClass: 'consumed_idle_no_reply' },                                     // cleared
+    ];
+    for (const c of cases) {
+      const r = d(c);
+      expect(r.detail ?? '', JSON.stringify(c)).not.toContain('undefined');
+      expect(JSON.stringify(r.nextAttempt ?? {}), JSON.stringify(c)).not.toContain('undefined');
+    }
+  });
+
+  it('HEALTHY -> BLOCKED names the CURRENT state in the text', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' } });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('the runtime is blocked');
+    expect(r.detail).toContain('still not answered');
+    expect(r.nextAttempt).toBeNull();
+  });
+
+  it('FIRST PASS, replay ran, runtime blocked: alert side, state written, text names the state', () => {
+    const r = d({ recovery: OK });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('recovery replay_consumed ran but the runtime is blocked');
+    expect(r.nextAttempt).toMatchObject({ cannotAct: 'blocked', agent: 'eli', chatId: 'c1',
+                                          attemptedAt: '2026-10-30T12:00:00Z' });
+  });
+
+  it('SECOND PASS, still blocked: alerts again, writes nothing new', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:00:00Z', cannotAct: 'blocked' } });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('replayed at 2026-10-30T11:00:00Z');
+    expect(r.nextAttempt).toBeNull();
+  });
+
+  it('THIRD PASS, runtime cleared: suppresses and re-stamps, so no fresh restart alert', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' },
+                  failureClass: 'consumed_idle_no_reply' });
+    expect(r.route).toBe('suppress');
+    expect(r.nextAttempt).toMatchObject({ cannotAct: null, attemptedAt: '2026-10-30T12:00:00Z' });
+  });
+
+  it('FOURTH PASS, cleared and the grace elapsed: the forced recovery did not work', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' },
+                  failureClass: 'consumed_idle_no_reply' });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('did not produce a reply');
+  });
+
+  it('a failed recovery, an already-answered miss, and a clean one each route and read correctly', () => {
+    const failed = d({ recovery: { ok: false, action: 'replay_consumed', reason: 'replay refused' } });
+    expect(failed.route).toBe('inboundAlert');
+    expect(failed.detail).toContain('forced recovery failed: replay refused');
+    expect(failed.nextAttempt).toBeNull();          // a failure must not record an attempt
+
+    const answered = d({ recovery: { ...OK, action: 'none', reason: 'an outbound reply landed before recovery' } });
+    expect(answered.route).toBe('recoveryNotice');
+    expect(answered.alreadyAnswered).toBe(true);
+
+    const clean = d({ failureClass: 'consumed_idle_no_reply', recovery: OK });
+    expect(clean.route).toBe('recoveryNotice');
+    expect(clean.alreadyAnswered).toBe(false);
+    expect(clean.nextAttempt).toMatchObject({ cannotAct: null });
+  });
+
+  it('no prior attempt and no recovery yet is `attempt`, and writes nothing', () => {
+    const r = d({});
+    expect(r.route).toBe('attempt');
+    expect(r.nextAttempt).toBeNull();
+    expect(r.detail).toBeNull();
+  });
+});
+
 describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 blockers 1-4)', () => {
   const at = (failureClass: ReplyMissClass, ok: boolean, action: string) =>
     classifyRecoveryOutcome({ failureClass, ok, action });
@@ -452,7 +548,6 @@ describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 b
     expect(names).toEqual(['process dead', 'hung', 'blocked']);
   });
 
-  const ATTEMPT = { action: 'replay_consumed' as const, agent: 'eli', chatId: 'c1' };
   const plan = (prior: Record<string, unknown> | undefined, currentCannotAct: string | null,
                 checkedAt = '2026-10-30T12:00:00Z', graceMinutes = 30) =>
     planPriorAttempt({ priorAttempt: prior as never, currentCannotAct, checkedAt, graceMinutes });
