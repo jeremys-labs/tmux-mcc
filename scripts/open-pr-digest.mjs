@@ -195,6 +195,16 @@ function spawnOk(cwd, args) {
 // ONE CLOCK (PR #42 review finding 10). This used `Date.now()` while hoursSince() used the
 // injectable NOW, so OPEN_PR_DIGEST_NOW moved the new flags and left `stale`, `ageDays` and
 // the header's flagged count on the wall clock -- two clocks in one digest.
+// One sha, one date. Returns null rather than throwing, because a PR whose head commit cannot
+// be read must fall back to a stated basis, not take the sweep down with it.
+function headCommitDate(repo, sha) {
+  try {
+    return gh(['api', `repos/${repo}/commits/${sha}`, '--jq', '.commit.committer.date']).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function daysSince(iso) {
   return Math.floor((NOW.getTime() - new Date(iso).getTime()) / DAY_MS);
 }
@@ -202,7 +212,21 @@ function daysSince(iso) {
 function sweepRepo(repo, agentKeys) {
   const raw = gh([
     'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '50',
-    '--json', 'number,title,body,createdAt,updatedAt,reviewDecision,isDraft,reviewRequests,assignees,files,headRefName,headRefOid,comments,commits',
+    // `commits` IS NOT IN THIS LIST AND MUST NOT BE (isla's step-3 review of 02a070f).
+    //
+    // MEASURED, not reasoned: `commits` at --limit 50 makes gh's GraphQL query request 505,050
+    // possible nodes against a hard limit of 500,000, so the call EXITS 1 FOR EVERY REPO. At
+    // 02a070f that meant all 8 repos landed in `failures`, `prs` was empty, and the digest
+    // Jeremy reads every morning opened with "0 open, 0 flagged" and "No open PRs across fleet
+    // repos. 🎉" -- against the 9 open / 7 flagged that origin/main reports. `comments` at the
+    // same limit is fine; `commits` is the expensive one, because it returns every commit with
+    // its authors when all this needed was ONE DATE FOR ONE SHA.
+    //
+    // MY ENTIRE 12-MUTATION BATTERY COULD NOT SEE IT, because every test stubs `gh`. That is
+    // the same defect as the blocker this PR exists to fix -- validating against a fixture I
+    // invented rather than the corpus the code will meet -- and my own rule says it: running
+    // inputs you invented is still reading.
+    '--json', 'number,title,body,createdAt,updatedAt,reviewDecision,isDraft,reviewRequests,assignees,files,headRefName,headRefOid,comments',
   ]);
   return JSON.parse(raw).map((pr) => {
     const paths = (pr.files ?? []).map((file) => file.path ?? '').join(' ');
@@ -224,14 +248,16 @@ function sweepRepo(repo, agentKeys) {
     //
     // BASIS STATED, because this is a claim about time: it is the head commit's COMMITTER date,
     // which is the closest observable proxy for "when this head came to exist" (a rebase or
-    // amend updates it). It is NOT the server's receive time, which `gh` does not expose here,
+    // amend updates it). It is NOT the server's receive time, which gh does not expose here,
     // so a rebase that replays genuinely old commits can backdate it. Falls back to
-    // `createdAt` when no commit is readable rather than treating the PR as brand new.
-    const headCommittedIso = [...(pr.commits ?? [])]
-      .map((c) => c.committedDate)
-      .filter(Boolean)
-      .sort()
-      .pop() ?? pr.createdAt;
+    // `createdAt` when it cannot be read rather than treating the PR as brand new.
+    //
+    // Fetched LAZILY and ONLY for the PRs that can be flagged, via a REST call for the single
+    // head sha. The `commits` field on `pr list` is what blew the GraphQL node limit, and it
+    // returned every commit with its authors to answer a question about one.
+    const headCommittedIso = (AGENT_REPOS.has(repo) && !pr.isDraft && headOid
+      ? headCommitDate(repo, headOid)
+      : null) ?? pr.createdAt;
     const hoursSinceHead = hoursSince(headCommittedIso);
     const hoursOpen = hoursSince(pr.createdAt);
 
@@ -326,8 +352,30 @@ function checkoutDrift(repo) {
       return { ...base, state: 'not-on-main', branch, behindCount,
                detail: `on branch ${branch}, NOT main (${behindCount} commit(s) behind origin/main)` };
     }
+    // AHEAD IS NOT AT-MAIN (codex P2 on 02a070f, accepted and reproduced with real git:
+    // branch=main, `HEAD..origin/main` = 0, `origin/main..HEAD` = 1).
+    //
+    // `behindCount` counts only what HEAD is MISSING, so it is 0 when HEAD is level with
+    // origin/main AND when it is AHEAD of it. On local `main` with unpushed commits this
+    // returned `at-main` and claimed "level with origin/main" about a deploy source RUNNING
+    // UNMERGED CODE -- the same false reading `not-on-main` was just added to prevent, for
+    // every branch name EXCEPT main itself.
+    //
+    // That is this row's own recurring class: I fixed the instance (other branch names) and
+    // missed the sibling (main, ahead) in the same function in the same commit, which is the
+    // 2026-08-03 miss both of today's PRs cite. Caught by a review, not by me.
+    const aheadCount = Number(git(dir, ['rev-list', '--count', 'origin/main..HEAD']).trim());
+    if (behindCount === 0 && aheadCount > 0) {
+      return { ...base, state: 'ahead', branch, behindCount: 0, aheadCount,
+               detail: `on ${branch} but ${aheadCount} commit(s) AHEAD of origin/main -- unmerged code is deployed here` };
+    }
+    if (behindCount > 0 && aheadCount > 0) {
+      return { ...base, state: 'diverged', branch, behindCount, aheadCount,
+               detail: `on ${branch}, DIVERGED from origin/main (${aheadCount} ahead, ${behindCount} behind)` };
+    }
     if (behindCount === 0) {
-      return { ...base, state: 'at-main', branch, behindCount: 0, detail: `on ${branch}, level with origin/main` };
+      return { ...base, state: 'at-main', branch, behindCount: 0, aheadCount: 0,
+               detail: `on ${branch}, level with origin/main` };
     }
     const [oldestMissingSha, oldestMissingIso] = lines[lines.length - 1].split(' ');
 
@@ -424,6 +472,7 @@ if (staleVerdict.length > 0) {
 const drifts = AGENT_REPOS_LIST.map(checkoutDrift);
 const driftProblems = drifts.filter(
   (d) => d.state === 'cannot-determine' || d.state === 'detached' || d.state === 'not-on-main'
+    || d.state === 'ahead' || d.state === 'diverged'
     || (d.state === 'behind' && d.overGrace),
 );
 lines.push('', '**Live deploy sources** (agent repos):');
@@ -433,6 +482,8 @@ for (const d of drifts) {
     : d.state === 'cannot-determine' ? '❓'
     : d.state === 'detached' ? '🔀'
     : d.state === 'not-on-main' ? '🌿'
+    : d.state === 'ahead' ? '⏫'
+    : d.state === 'diverged' ? '🔱'
     : d.overGrace ? '⛔' : '·';
   lines.push(`   ${icon} ${d.repo}: ${d.state} — ${d.detail}`);
 }

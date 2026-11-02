@@ -44,10 +44,20 @@ let stubSeq = 0;
  * REWRITES the stub the first env object still points at, so a later sweep silently runs the
  * newer fixture. That cost a false red in (5e): the code was correct and the fixture aliased.
  */
-function ghStub(dir: string, byRepo: Record<string, unknown[]>): string {
+function ghStub(dir: string, byRepo: Record<string, unknown[]>, headDates: Record<string, string> = {}): string {
   const p = path.join(dir, `gh-${(stubSeq += 1)}`);
+  // IT ANSWERS BOTH CALLS THE SWEEP MAKES. The head commit date moved off `pr list --json
+  // commits` to a REST lookup for the single head sha, because `commits` at --limit 50 put
+  // gh's GraphQL query over the 500,000-node limit and took the whole digest down. A stub that
+  // answered only `pr list` would have let the grace silently fall back to `createdAt`.
   fs.writeFileSync(p, `#!/usr/bin/env node
 const argv = process.argv.slice(2);
+const headDates = ${JSON.stringify(headDates)};
+if (argv[0] === 'api') {
+  const m = /\\/commits\\/([0-9a-f]+)$/.exec(argv[1] || '');
+  process.stdout.write(m && headDates[m[1]] ? headDates[m[1]] : '');
+  process.exit(0);
+}
 const i = argv.indexOf('--repo');
 const fixtures = ${JSON.stringify(byRepo)};
 process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
@@ -129,8 +139,6 @@ function pr(over: Record<string, unknown> = {}) {
     reviewRequests: [], assignees: [], files: [], headRefName: 'marcus/thing',
     headRefOid: HEAD_OID,
     comments: [],
-    // The head's own commit date is the grace basis, so it defaults to the PR's creation.
-    commits: [{ committedDate: '2026-10-25T12:00:00Z' }],
     ...over,
   };
 }
@@ -141,9 +149,13 @@ function sweep(env: Record<string, string>) {
     ? JSON.parse(fs.readFileSync(env.OPEN_PR_DIGEST_FINDINGS_PATH, 'utf8')) : null };
 }
 
-function baseEnv(root: string, prs: Record<string, unknown[]>, srcRoot: string, rosterKeys: string[] | null = ['marcus', 'eli', 'isla']) {
+const DEFAULT_HEAD_DATES: Record<string, string> = { [HEAD_OID]: '2026-10-25T12:00:00Z' };
+
+function baseEnv(root: string, prs: Record<string, unknown[]>, srcRoot: string,
+                 rosterKeys: string[] | null = ['marcus', 'eli', 'isla'],
+                 headDates: Record<string, string> = DEFAULT_HEAD_DATES) {
   return {
-    OPEN_PR_DIGEST_GH_BIN: ghStub(root, prs),
+    OPEN_PR_DIGEST_GH_BIN: ghStub(root, prs, headDates),
     OPEN_PR_DIGEST_CHECKOUT_ROOT: srcRoot,
     OPEN_PR_DIGEST_FINDINGS_PATH: path.join(root, 'findings.json'),
     OPEN_PR_DIGEST_ROSTER: roster(root, rosterKeys),
@@ -155,8 +167,18 @@ function baseEnv(root: string, prs: Record<string, unknown[]>, srcRoot: string, 
 /** A mail binary that logs every invocation, so "who was told" is observable. */
 function mailStub(root: string, log: string, failFor?: string): string {
   const p = path.join(root, `agent-mail-${(stubSeq += 1)}`);
+  // IT REFUSES WITHOUT AGENT_MAIL_DIR, EXACTLY AS THE REAL BINARY DOES. Verified against the
+  // real agent-mail: with it, exit 0 and a message id; without it, exit 1 and
+  // "AGENT_MAIL_DIR is not set. Refusing to fall back to ...". My previous stub needed no such
+  // variable, so it worked in a world the real tool refuses -- and the runner never set it, so
+  // the routing leg could not deliver from the only place it actually runs. Same shape as the
+  // `gh` stub that returned APPROVED: a stub that is easier to satisfy than its subject.
   fs.writeFileSync(p, `#!/usr/bin/env node
 const argv = process.argv.slice(2);
+if (!process.env.AGENT_MAIL_DIR) {
+  process.stderr.write('AGENT_MAIL_DIR is not set. Refusing to fall back.\\n');
+  process.exit(1);
+}
 require('fs').appendFileSync(${JSON.stringify(log)}, argv.join(' ') + '\\n');
 const failFor = ${JSON.stringify(failFor ?? null)};
 if (failFor && argv.includes(failFor)) process.exit(1);
@@ -243,10 +265,11 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
   // control: mutating away the 24h grace, the agent-repo scope, or the draft exclusion all
   // turned the SAME test red, so no one of them was individually pinned and deleting a row
   // from the table would have silently retired a property.
-  const noFire = (over: Record<string, unknown>, repo = 'jeremys-labs/tmux-mcc') => {
+  const noFire = (over: Record<string, unknown>, repo = 'jeremys-labs/tmux-mcc',
+                  headDates: Record<string, string> = DEFAULT_HEAD_DATES) => {
     const root = tempDir();
     const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
-    return sweep(baseEnv(root, { [repo]: [pr(over)] }, src));
+    return sweep(baseEnv(root, { [repo]: [pr(over)] }, src, ['marcus', 'eli', 'isla'], headDates));
   };
 
   it('(2a) a VERDICT comment naming the current head does not fire', () => {
@@ -289,7 +312,7 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
   });
 
   it('(2d) a head pushed only 2h ago is under the grace and does not fire', () => {
-    expect(noFire({ commits: [{ committedDate: '2026-10-30T10:00:00Z' }] })
+    expect(noFire({}, 'jeremys-labs/tmux-mcc', { [HEAD_OID]: '2026-10-30T10:00:00Z' })
       .findings.undispositioned).toHaveLength(0);
   });
 
@@ -297,16 +320,17 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     // isla's finding 8. Once the verdict is per-head, a grace measured from PR creation lets a
     // PR re-pushed an hour ago skip the grace on its NEW head: it is already "5 days old", so
     // the new head is flagged before anyone could have looked at it.
-    const r = noFire({
-      createdAt: '2026-10-25T12:00:00Z',                         // 120h old PR
-      commits: [{ committedDate: '2026-10-30T10:00:00Z' }],      // head pushed 2h ago
-    });
+    const r = noFire(
+      { createdAt: '2026-10-25T12:00:00Z' },                     // 120h old PR
+      'jeremys-labs/tmux-mcc',
+      { [HEAD_OID]: '2026-10-30T10:00:00Z' },                    // head pushed 2h ago
+    );
     expect(r.findings.undispositioned).toHaveLength(0);
   });
 
   it('(2e) SCOPE: an ancient unreviewed non-agent-repo PR does not fire', () => {
-    const r = noFire({ createdAt: '2026-01-01T00:00:00Z', commits: [{ committedDate: '2026-01-01T00:00:00Z' }] },
-                     'jeremys-labs/str-ops');
+    const r = noFire({ createdAt: '2026-01-01T00:00:00Z' }, 'jeremys-labs/str-ops',
+                     { [HEAD_OID]: '2026-01-01T00:00:00Z' });
     expect(r.findings.undispositioned).toHaveLength(0);
   });
 
@@ -530,8 +554,8 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     }));
     const notified = path.join(root, 'notified.json');
     fs.writeFileSync(notified, JSON.stringify({
-      'tmux-mcc#1': { marcus: 'x' },        // swept, no longer open -> drops
-      'agent-comms#9': { marcus: 'x' },     // NOT swept -> must be kept
+      'tmux-mcc#1': { head: 'aaa', recipients: { marcus: 'x' } },     // swept, not open -> drops
+      'agent-comms#9': { head: 'bbb', recipients: { marcus: 'x' } },  // NOT swept -> must be kept
     }));
     const renv = runnerEnv(root, findings, {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
@@ -559,7 +583,8 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     runRunner(renv);
     expect(mailLines(log)).toHaveLength(2);                    // both attempted
     const first = JSON.parse(fs.readFileSync(path.join(root, 'notified.json'), 'utf8'));
-    expect(Object.keys(first['tmux-mcc#36'])).toEqual(['marcus']);   // only the delivered one
+    expect(Object.keys(first['tmux-mcc#36'].recipients)).toEqual(['marcus']);  // only the delivered one
+    expect(first['tmux-mcc#36'].head).toBe(HEAD_OID);                          // and the head it was for
 
     // Second run: marcus is NOT re-mailed, isla IS re-attempted.
     runRunner(renv);
@@ -613,6 +638,143 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     sweep(open);
     runRunner({ ...renv, OPEN_PR_DIGEST_RUN_ID: 'r3' });
     expect(mailLines(log)).toHaveLength(4);
+  });
+
+  it('(11) A NEW HEAD RE-NOTIFIES EVEN WITH NO SWEEP ON THE REVIEWED STATE IN BETWEEN', () => {
+    // CODEX P2 on 02a070f, accepted, and it is a path (5e) deliberately does not walk.
+    // (5e) runs a sweep ON the reviewed state between the two notifications. Codex's case has
+    // NO such sweep: between daily runs the PR gets a verdict for H1 AND a push to H2, so at
+    // the next sweep the verdict is STALE against H2, the PR is still undispositioned, the key
+    // is never trimmed, every recipient is already recorded, `pending` is empty -- and nobody
+    // is told the new head needs re-review. The surface-check-journal founding bug again: a
+    // state entry suppressing a live report.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const log = path.join(root, 'mail.log');
+    const findings = path.join(root, 'findings.json');
+    const renv = runnerEnv(root, findings, { OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log) });
+
+    // notified at head H1, no verdict
+    const h1 = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr()] }, src);
+    h1.OPEN_PR_DIGEST_FINDINGS_PATH = findings;
+    sweep(h1);
+    runRunner(renv);
+    expect(mailLines(log)).toHaveLength(2);
+
+    // H1 gets a verdict AND a new head H2 arrives -- both between sweeps, so the reviewed
+    // state is never observed. The PR is STILL undispositioned, now because the verdict is stale.
+    const h2 = 'c'.repeat(40);
+    const next = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr({
+      headRefOid: h2,
+      comments: [verdict(HEAD_OID, 'MUST-CHANGE')],     // verdict for the OLD head
+    })] }, src, ['marcus', 'eli', 'isla'], { [h2]: '2026-10-26T12:00:00Z' });
+    next.OPEN_PR_DIGEST_FINDINGS_PATH = findings;
+    const r = sweep(next);
+    expect(r.findings.undispositioned[0].verdict).toBe('stale');
+    runRunner(renv);
+    expect(mailLines(log)).toHaveLength(4);             // told again, about the new head
+  });
+
+  it('(3g) ON MAIN BUT AHEAD IS NOT at-main: unmerged code is deployed there', () => {
+    // CODEX P2 on 02a070f, accepted and reproduced with real git before fixing. `behindCount`
+    // counts only what HEAD is MISSING, so it is 0 both when level AND when ahead -- so a local
+    // `main` with unpushed commits reported `at-main` and claimed "level with origin/main".
+    // The same false reading `not-on-main` was added to prevent, for every branch EXCEPT main.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const mcc = path.join(src, 'mcc-tmux');          // the at-main control repo
+    fs.writeFileSync(path.join(mcc, 'local'), 'x');
+    git(mcc, ['add', 'local']); git(mcc, ['commit', '-qm', 'local only']);
+    const r = sweep(baseEnv(root, {}, src));
+    const d = r.findings.drifts.find((x: any) => x.repo === 'tmux-mcc');
+    expect(d.state).toBe('ahead');
+    expect(d.state).not.toBe('at-main');
+    expect(d.aheadCount).toBe(1);
+    expect(r.findings.driftStatus).toBe('problems');
+    expect(r.stdout).toContain('AHEAD of origin/main');
+  });
+
+  it('(3h) ahead AND behind is DIVERGED, not either one alone', () => {
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-28T00:00:00Z');
+    const sup = path.join(src, 'agent-supervisor');  // already behind
+    fs.writeFileSync(path.join(sup, 'local'), 'x');
+    git(sup, ['add', 'local']); git(sup, ['commit', '-qm', 'local only']);
+    const r = sweep(baseEnv(root, {}, src));
+    const d = r.findings.drifts.find((x: any) => x.repo === 'agent-supervisor');
+    expect(d.state).toBe('diverged');
+    expect(d.aheadCount).toBe(1);
+    expect(d.behindCount).toBeGreaterThan(0);
+  });
+
+  it('(12) THE SWEEP NEVER ASKS gh FOR `commits`: a node-limit refusal takes the whole digest down', () => {
+    // isla's step-3 finding on 02a070f, and the most consequential defect in this row.
+    // MEASURED against the real gh: `commits` at --limit 50 makes the GraphQL query request
+    // 505,050 possible nodes against a hard 500,000 limit, so the call exits 1 FOR EVERY REPO.
+    // The live digest at that head opened with "0 open, 0 flagged" and "No open PRs across
+    // fleet repos. 🎉" where origin/main reported 9 open / 7 flagged.
+    //
+    // THE STUB HERE REFUSES THE WAY REAL gh REFUSES, with the real error text, because my
+    // twelve-mutation battery could not see any of this: every test stubbed `gh` with something
+    // easier to satisfy than the thing it stood for.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const strict = path.join(root, 'gh-nodelimit');
+    fs.writeFileSync(strict, `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+const j = argv.indexOf('--json');
+if (j >= 0 && String(argv[j + 1]).split(',').includes('commits')) {
+  process.stderr.write('GraphQL: This query requests up to 505,050 possible nodes which exceeds the maximum limit of 500,000.\\n');
+  process.exit(1);
+}
+if (argv[0] === 'api') { process.stdout.write('2026-10-25T12:00:00Z'); process.exit(0); }
+const i = argv.indexOf('--repo');
+const fixtures = ${JSON.stringify({ 'jeremys-labs/tmux-mcc': [pr()] })};
+process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
+`);
+    fs.chmodSync(strict, 0o755);
+    const r = sweep({ ...baseEnv(root, {}, src), OPEN_PR_DIGEST_GH_BIN: strict });
+    expect(r.findings.failedRepos).toEqual([]);          // no repo refused
+    expect(r.findings.sweptRepos).toHaveLength(8);
+    expect(r.stdout).toContain('1 open');                 // and the digest is NOT blank
+    expect(r.stdout).not.toContain('No open PRs across fleet repos');
+    expect(r.status).toBe(0);
+  });
+
+  it('(13) ROUTING SETS AGENT_MAIL_DIR, without which the real agent-mail refuses', () => {
+    // isla's step-3 finding. The scheduled job's command line sets SCHEDULED_JOB_ID,
+    // OPEN_PR_DIGEST_AGENT and OPEN_PR_DIGEST_CHAT_ID and nothing else, so every send from
+    // this runner ran with no mailbox while `status` still said ok.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr()] }, src);
+    sweep(env);
+    const log = path.join(root, 'mail.log');
+    const renv = runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log),
+    });
+    delete renv.AGENT_MAIL_DIR;                 // the job environment does not provide it
+    runRunner(renv);
+    expect(mailLines(log)).toHaveLength(2);     // the runner supplied it
+    expect(status(root).routing.delivered).toBe(2);
+  });
+
+  it('(14) A ROUTING FAILURE IS NOT status ok', () => {
+    // The control for (13), and its own finding: only the Discord delivery and the sweep exit
+    // fed `status`, so the one leg whose whole job is reaching the AUTHOR could fail every day
+    // behind a green status.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr()] }, src);
+    sweep(env);
+    const renv = runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
+      OPEN_PR_DIGEST_MAIL_BIN: '/usr/bin/false',
+    });
+    const r = runRunner(renv);
+    expect(status(root).routing.failed.length).toBeGreaterThan(0);
+    expect(status(root).status).toBe('fail');
+    expect(status(root).reason).toBe('routing_failed');
+    expect(r.status).not.toBe(0);
   });
 
   it('(5c) an unresolvable author routes to the operator and SAYS it is unresolved', () => {

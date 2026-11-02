@@ -35,6 +35,16 @@ const mailBin = process.env.OPEN_PR_DIGEST_MAIL_BIN ?? 'agent-mail';
 // mail was sent under it. The missing seam is the cause of the defect, not just of the gap in
 // the control.
 const deliverBin = process.env.OPEN_PR_DIGEST_DELIVER_BIN ?? 'npm';
+// agent-mail RESOLVES ITS MAILBOX FROM AGENT_MAIL_DIR AND THE SCHEDULED JOB DOES NOT SET IT
+// (isla's step-3 review of 02a070f). The job's command line sets SCHEDULED_JOB_ID,
+// OPEN_PR_DIGEST_AGENT and OPEN_PR_DIGEST_CHAT_ID and nothing else, so every `agent-mail send`
+// from this runner ran without a mailbox -- the routing leg could not deliver from the only
+// place it actually runs, while `status` still reported ok.
+//
+// My tests could not see it for the same reason they could not see the node limit: they stub
+// the mail binary, so the stub never needed AGENT_MAIL_DIR to work. Default is the real fleet
+// mailbox so an unset environment is the real path, and an explicit value still wins.
+const mailDir = process.env.AGENT_MAIL_DIR ?? '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
 const operator = process.env.OPEN_PR_DIGEST_OPERATOR ?? 'isla';
 
 function run(command, args, extraEnv) {
@@ -133,7 +143,7 @@ function sendMail(to, subject, bodyFile) {
   return run(mailBin, [
     'send', '--from', agent, '--to', to, '--type', 'note',
     '--subject', subject, '--body-file', bodyFile,
-  ]).status === 0;
+  ], { AGENT_MAIL_DIR: mailDir }).status === 0;
 }
 
 const routing = {
@@ -180,7 +190,21 @@ if (routable) {
     // that state must advance only on delivery, and I overcorrected: with two recipients, a
     // PERSISTENT failure to one re-mails the OTHER every single day. Each recipient's delivery
     // is its own transition.
-    const already = notified[key] && typeof notified[key] === 'object' ? { ...notified[key] } : {};
+    //
+    // AND THE STATE IS KEYED ON THE HEAD (codex P2 on 02a070f, accepted). Without the head,
+    // this sequence loses the notification entirely: a PR is notified at head H1; between
+    // daily sweeps it gets a verdict for H1 AND a new push to H2, so NO SWEEP EVER OBSERVES
+    // THE REVIEWED STATE; at the next sweep the verdict is stale against H2 so the PR is still
+    // undispositioned, the key is NOT trimmed, every recipient is already recorded, `pending`
+    // is empty -- and nobody is ever told the new head needs re-review.
+    //
+    // My (5e) test does not reach it, exactly as codex says: it runs a sweep ON the reviewed
+    // state in between. This is the surface-check-journal founding bug once more -- a state
+    // entry suppressing a live report -- arriving through the one path the control did not walk.
+    const prior = notified[key] && typeof notified[key] === 'object' ? notified[key] : null;
+    const head = f.headRefOid ?? null;
+    // A DIFFERENT HEAD IS A DIFFERENT TRANSITION, so the recipients reset rather than carry.
+    const already = prior && prior.head === head && prior.recipients ? { ...prior.recipients } : {};
     const pending = recipients.filter((to) => !already[to]);
     if (pending.length === 0) continue;
     const body = path.join(os.tmpdir(), `pr-unreviewed-${f.repo}-${f.number}.md`);
@@ -209,7 +233,7 @@ if (routable) {
       }
     }
     try { fs.unlinkSync(body); } catch { /* best-effort */ }
-    if (Object.keys(already).length > 0) notified[key] = already;
+    if (Object.keys(already).length > 0) notified[key] = { head, recipients: already };
   }
   try {
     fs.mkdirSync(path.dirname(notifiedPath), { recursive: true });
@@ -221,12 +245,18 @@ if (routable) {
 
 const sweepExitCode = digest.status ?? 1;
 const deliveryOk = delivery.ok === true;
+// A ROUTING FAILURE IS NOT 'ok' (isla's step-3 review). Mail that could not be sent left
+// `status: 'ok'` because only the Discord delivery and the sweep exit fed this, so the one
+// leg whose whole job is reaching the AUTHOR could fail silently every day.
+const routingFailed = routing.failed.length > 0;
 const status =
   !deliveryOk ? 'fail'
+  : routingFailed ? 'fail'
   : sweepExitCode === 0 ? 'ok'
   : 'fail';
 const reason =
   !deliveryOk ? 'delivery_failed'
+  : routingFailed ? 'routing_failed'
   : sweepExitCode === 0 ? 'sweep_ok'
   : 'partial_failure';
 
