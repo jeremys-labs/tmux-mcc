@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cannotActOn, recoverInboundMiss } from './inbound-miss-recovery.js';
+import { recoverInboundMiss } from './inbound-miss-recovery.js';
 import type { ReplyMiss } from './inbound-reply-reconcile.js';
 
 const roots: string[] = [];
@@ -97,30 +97,15 @@ describe('recoverInboundMiss', () => {
   });
 });
 
-describe('cannotActOn (dc-20261011-006)', () => {
-  // The vocabulary is NOT invented here: inbound-reply-reconcile.ts branches on exactly
-  // these progress values ('hung' :304, 'blocked' :311, 'idle' :318).
-  it('names blocked, hung and a dead process as unable to act', () => {
-    expect(cannotActOn({ processStatus: 'running', progressStatus: 'blocked' })).toBe('blocked');
-    expect(cannotActOn({ processStatus: 'running', progressStatus: 'hung' })).toBe('hung');
-    expect(cannotActOn({ processStatus: 'dead', progressStatus: 'unknown' })).toBe('process dead');
-  });
-
-  it('a healthy or merely idle runtime is NOT reported as unable to act', () => {
-    // An idle runtime is the ordinary success case: it will pick the replay up. Treating
-    // idle as stuck would turn every genuine recovery into a warning and retire the signal.
-    expect(cannotActOn({ processStatus: 'running', progressStatus: 'idle' })).toBeNull();
-    expect(cannotActOn({ processStatus: 'running', progressStatus: 'processing' })).toBeNull();
-  });
-
-  it('no supervisor row returns null -- absence of evidence, not evidence of health', () => {
-    // null means we could not observe the runtime. It renders as the ordinary notice, which
-    // is the pre-existing behaviour and is deliberately NOT a new warning: inventing a
-    // "possibly stuck" state for every agent the supervisor has not listed is how a guard
-    // becomes noise and gets ignored. The limit is stated rather than hidden.
-    expect(cannotActOn(null)).toBeNull();
-  });
-});
+// `cannotActOn` AND ITS THREE TESTS ARE DELETED (isla's step-3 review of PR #36, blockers 3+4).
+// It was a second classifier over a question inbound-reply-reconcile.ts already answers, with
+// the precedence REVERSED, and it branched on a `processStatus` value nothing emits. The
+// replacement is `classifyRecoveryOutcome` in open-brain-runtime-health-monitor.ts, driven off
+// `miss.failureClass`, and its tests live beside it.
+//
+// The one property worth keeping from these tests is carried there: an IDLE runtime is the
+// ordinary success case and must NOT read as unable to act, because inventing a "possibly
+// stuck" state for every unlisted agent is how a working signal becomes noise.
 
 describe('recoverInboundMiss carries liveness (dc-20261011-006)', () => {
   it('attaches the supervisor progress status and its detail to the result', () => {
@@ -149,7 +134,6 @@ describe('recoverInboundMiss carries liveness (dc-20261011-006)', () => {
       progressStatus: 'blocked',
       progressDetail: 'codex usage limit reached',
     });
-    expect(cannotActOn(result.liveness)).toBe('blocked');
   });
 
   it('a result from a path that never read the inbox still reports liveness', () => {

@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   alertFrom,
+  classifyRecoveryOutcome,
+  RECOVERY_OUTCOME_ROUTE,
   deliveryFailureFingerprint,
   findDeliveryFailures,
   formatDeliveryFailureAlert,
   formatInboundRecoveryNotice,
+  type RecoveryNoticeEntry,
   recoverDeliveryFailuresBeforeAlert,
   recoveryAttemptStillInGrace,
   withholdReason,
@@ -25,6 +28,7 @@ import {
   formatWithheldLogHeader,
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
+import type { ReplyMissClass } from './services/inbound-reply-reconcile.js';
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
 function report(): RuntimeHealthReport {
@@ -304,8 +308,19 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
   // the only thing that happened this pass, `alerts.length === 0` returned before anyone
   // outside a log reader learned a repair had occurred. This suite covers the notice that
   // now routes a recovery through the same alertFrom/planAlertDispatch path as a failure.
-  const recovered = (agent: string, key = `${agent}:miss`) => ({
+  //
+  // REWRITTEN on isla's step-3 MUST-CHANGE at 414ef3d. The `stuck()` helper and its four
+  // tests are GONE because a cannot-act recovery no longer reaches this notice at all: it is
+  // routed as an inbound FAILURE (blocker 1), so `RecoveryNoticeEntry` cannot carry a
+  // `cannotAct` field and the arm that rendered one cannot exist. Those properties are now
+  // pinned on `classifyRecoveryOutcome` below, which is where the decision actually lives.
+  const recovered = (agent: string, key = `${agent}:miss`): RecoveryNoticeEntry => ({
     key, agent, action: 'replay_consumed', reason: `queued message replayed for ${agent}`,
+    alreadyAnswered: false,
+  });
+  const answered = (agent: string, key = `${agent}:miss`): RecoveryNoticeEntry => ({
+    key, agent, action: 'none', reason: 'an outbound reply landed before recovery',
+    alreadyAnswered: true,
   });
 
   it('formats a plain-language notice naming the agent, action, and reason', () => {
@@ -313,7 +328,44 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     expect(text).toContain('dana');
     expect(text).toContain('replay_consumed');
     expect(text).toContain('queued message replayed for dana');
-    expect(text).toContain('self-healed 1 inbound miss(es)');
+    expect(text).toContain('replayed 1 inbound miss(es)');
+  });
+
+  it('THE HEADER NEVER CLAIMS AN OUTCOME: "self-healed" appears nowhere', () => {
+    // The founding defect of dc-20261011-006. On 2026-10-12T02:39:50Z this said "self-healed
+    // 1 inbound miss(es): eli (replay_consumed)" while eli's runtime was blocked on a Codex
+    // usage limit, and the 02:49:58Z pass confirmed the replay produced no reply. Nothing had
+    // failed, and the sentence was still false: SELF-HEALED IS A CLAIM ABOUT THE OUTCOME and a
+    // pass only ever observes the ACTIONS.
+    //
+    // Removing it only for the cannot-act case would have left the same overclaim standing for
+    // every other case -- the 2026-08-03 instance-versus-class miss this row already cites.
+    for (const entries of [[recovered('dana')], [answered('dana')],
+                           [recovered('dana'), answered('eli', 'eli:miss')]]) {
+      const text = formatInboundRecoveryNotice(entries);
+      expect(text, JSON.stringify(entries)).not.toContain('self-heal');
+    }
+  });
+
+  it('an ALREADY-ANSWERED miss is not reported as a replay, and not as pending', () => {
+    // isla's blocker 2 and codex's P2, the same defect: an outbound reply that landed between
+    // reconciliation and recovery was passed through with `cannotAct` populated, so the notice
+    // claimed a replay occurred, said it would not be answered, and labelled the miss "NOT
+    // healed" -- about a miss whose reply had been CONFIRMED. This PR introduced that.
+    const text = formatInboundRecoveryNotice([answered('eli')]);
+    expect(text).toContain('already answered');
+    expect(text).toContain('no replay was needed');
+    expect(text).not.toContain('NOT healed');
+    expect(text).not.toContain('will NOT be answered');
+    expect(text).not.toContain('replay_consumed');
+  });
+
+  it('a mixed batch reports BOTH counts, not the flattering one', () => {
+    const text = formatInboundRecoveryNotice([recovered('dana'), answered('eli', 'eli:miss')]);
+    expect(text).toContain('1 replayed');
+    expect(text).toContain('1 already answered');
+    expect(text).toContain('dana');
+    expect(text).toContain('eli');
   });
 
   it('a recovery notice about the destination itself is withheld, never routed to its own channel', () => {
@@ -338,82 +390,107 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     });
     const alert = alertFrom(split.deliverable, formatInboundRecoveryNotice, (entry) => entry.agent);
     expect(alert.subjects).toEqual(['dana']);
-    expect(alert.text).toContain('self-healed');
+    expect(alert.text).toContain('replayed');
     expect(alert.text).toContain('dana');
   });
 
   it('multiple recoveries in one pass are named individually, not collapsed into a count', () => {
     const text = formatInboundRecoveryNotice([recovered('dana'), recovered('simone', 'simone:miss')]);
-    expect(text).toContain('self-healed 2 inbound miss(es)');
+    expect(text).toContain('replayed 2 inbound miss(es)');
     expect(text).toContain('dana');
     expect(text).toContain('simone');
   });
-
-  // dc-20261011-006. On 2026-10-12T02:39:50Z this notice said "self-healed 1 inbound
-  // miss(es): eli (replay_consumed)" while eli's runtime was blocked on a Codex usage limit,
-  // and the 02:49:58Z pass confirmed the replay produced no reply. Nothing had failed. The
-  // sentence was false because SELF-HEALED IS A CLAIM ABOUT THE OUTCOME and the pass only
-  // ever observes the actions -- the outcome is a later pass's evidence.
-  const stuck = (agent: string, cannotAct: string, detail?: string) => ({
-    ...recovered(agent),
-    cannotAct,
-    cannotActDetail: detail,
-  });
-
-  it('a blocked runtime is NOT reported as self-healed, and the reason is named', () => {
-    const text = formatInboundRecoveryNotice([
-      stuck('eli', 'blocked', 'codex usage limit reached'),
-    ]);
-    // The claim that was false is the one being asserted against. Substring, deliberately:
-    // "NOT healed" contains neither "self-healed" nor "self-heal", so this cannot pass by
-    // the phrase merely moving somewhere else in the sentence.
-    expect(text).not.toContain('self-healed');
-    expect(text).toContain('BLOCKED');
-    expect(text).toContain('codex usage limit reached');
-    expect(text).toContain('eli');
-    // and it still says what was actually done, which is real information
-    expect(text).toContain('replay_consumed');
-  });
-
-  it('the blocked state leads the entry line, before the success-shaped clause', () => {
-    // Ordering is the finding, not decoration: the original read as good news because the
-    // thing a human must act on came after a clause that sounded like completion.
-    const line = formatInboundRecoveryNotice([stuck('eli', 'blocked', 'usage limit')])
-      .split('\n')
-      .find((l) => l.startsWith('- '))!;
-    expect(line.indexOf('BLOCKED')).toBeLessThan(line.indexOf('replay_consumed'));
-  });
-
-  it('hung and a dead process are reported the same way, not just blocked', () => {
-    // The false claim is identical in all three states: the message is sitting in an inbox
-    // nothing is reading. Covering only `blocked` would leave the same sentence untrue one
-    // state over.
-    for (const state of ['hung', 'process dead']) {
-      const text = formatInboundRecoveryNotice([stuck('eli', state)]);
-      expect(text, state).not.toContain('self-healed');
-      expect(text, state).toContain(state.toUpperCase());
-    }
-  });
-
-  it('a mixed batch reports BOTH counts, not the flattering one', () => {
-    const text = formatInboundRecoveryNotice([
-      recovered('dana'),
-      stuck('eli', 'blocked', 'usage limit'),
-    ]);
-    expect(text).toContain('1 self-healed');
-    expect(text).toContain('1 replayed into a runtime that cannot act');
-    expect(text).toContain('dana');
-    expect(text).toContain('BLOCKED');
-  });
-
-  it('a healthy recovery is unchanged -- absent evidence of trouble still reports recovery', () => {
-    // The guard must not be "say nothing unless we are sure", which would retire a working
-    // signal. No cannotAct evidence means the ordinary notice.
-    const text = formatInboundRecoveryNotice([recovered('dana')]);
-    expect(text).toContain('self-healed 1 inbound miss(es)');
-  });
 });
 
+describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 blockers 1-4)', () => {
+  const at = (failureClass: ReplyMissClass, ok: boolean, action: string) =>
+    classifyRecoveryOutcome({ failureClass, ok, action });
+
+  it('a failed recovery is `failed` whatever the runtime state', () => {
+    expect(at('consumed_blocked', false, 'replay_consumed').outcome).toBe('failed');
+    expect(at('consumed_idle_no_reply', false, 'replay_consumed').outcome).toBe('failed');
+  });
+
+  it('the three states reconcile derives from the supervisor are cannot-act', () => {
+    expect(at('consumed_runtime_dead', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'process dead' });
+    expect(at('consumed_hung', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'hung' });
+    expect(at('consumed_blocked', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'blocked' });
+  });
+
+  it('an IDLE runtime is the ordinary success case, NOT unable to act', () => {
+    // Carried over from the deleted cannotActOn suite, because it is the property that keeps
+    // this from becoming noise: an idle runtime will pick the replay up. Inventing a "possibly
+    // stuck" state for every agent the supervisor has not listed is how a guard gets ignored.
+    expect(at('consumed_idle_no_reply', true, 'replay_consumed'))
+      .toEqual({ outcome: 'recovered', cannotAct: null });
+    expect(at('consumed_unknown_no_reply', true, 'replay_consumed').outcome).toBe('recovered');
+    expect(at('unknown_consumption_no_reply', true, 'replay_consumed').outcome).toBe('recovered');
+  });
+
+  it('ALREADY-ANSWERED OUTRANKS cannot-act, which is the ordering fix itself', () => {
+    // The observed outcome beats the runtime-state evidence. Testing cannotAct first reported
+    // a CONFIRMED reply as "replayed into a runtime that cannot act, NOT healed" -- isla's
+    // blocker 2 and codex's P2. Driven on the exact combination that produced it: the reply
+    // landed AND the supervisor still says blocked.
+    expect(at('consumed_blocked', true, 'none'))
+      .toEqual({ outcome: 'already-answered', cannotAct: null });
+    expect(at('consumed_runtime_dead', true, 'none').outcome).toBe('already-answered');
+    expect(at('consumed_idle_no_reply', true, 'none').outcome).toBe('already-answered');
+  });
+
+  it('PRECEDENCE MATCHES RECONCILE: dead before hung before blocked', () => {
+    // Blocker 3. cannotActOn tested blocked -> hung -> dead while reconcile tests
+    // dead -> hung -> blocked (inbound-reply-reconcile.ts:299/306/313), so a runtime that was
+    // both got a different answer depending on which classifier you asked. There is now one
+    // source, and this asserts each class maps to reconcile's own name for it.
+    const names = (['consumed_runtime_dead', 'consumed_hung', 'consumed_blocked'] as const)
+      .map((c) => at(c, true, 'replay_consumed').cannotAct);
+    expect(names).toEqual(['process dead', 'hung', 'blocked']);
+  });
+
+  it('A CANNOT-ACT RECOVERY ROUTES TO THE ALERT SIDE, NOT THE SUPPRESSED SIDE (blocker 1)', () => {
+    // The defect in one assertion. `recoveryNotice` carries alarm class `inboundRecovery`,
+    // whose WITHHELD_REMEDY is 'none' = SUPPRESSED FROM THE PRINCIPAL as self-repair. A
+    // recovery the runtime cannot answer used to go there, so on 2026-10-12 -- eli both the
+    // subject and the default destination -- the only surviving record would have said
+    // nothing here needs a human, about a runtime blocked on a usage limit.
+    expect(RECOVERY_OUTCOME_ROUTE['cannot-act']).toBe('inboundAlert');
+    expect(RECOVERY_OUTCOME_ROUTE.failed).toBe('inboundAlert');
+    // AND THE COMPOSITION THAT ACTUALLY MATTERS, asserted through the PUBLIC behaviour rather
+    // than by reaching into the remedy map: an `inbound` finding yields a real first-line
+    // action, an `inboundRecovery` finding yields none, which is what "suppressed" means here.
+    expect(withheldFirstLineAction({
+      destinationAgent: 'eli', incidents: [{ alarmClass: 'inbound', subject: 'eli' } as never],
+    })).toContain('Restart eli');
+    expect(withheldNeedsPrincipal([{ alarmClass: 'inboundRecovery', subject: 'eli' } as never]))
+      .toBe(false);
+    expect(withheldNeedsPrincipal([{ alarmClass: 'inbound', subject: 'eli' } as never]))
+      .toBe(true);
+  });
+
+  it('a genuine recovery and an already-answered miss stay on the notice side', () => {
+    // The control. Routing these to the alert side would tell Jeremy to restart an agent that
+    // just self-repaired -- a false instruction in the first line of the one message that is
+    // supposed to be nothing but a true instruction.
+    expect(RECOVERY_OUTCOME_ROUTE.recovered).toBe('recoveryNotice');
+    expect(RECOVERY_OUTCOME_ROUTE['already-answered']).toBe('recoveryNotice');
+  });
+
+  it('EVERY member of ReplyMissClass is classified -- no silent undefined', () => {
+    // The map is `Record<ReplyMissClass, ...>` so omitting a member is a BUILD error, not a
+    // runtime undefined landing in the can-act branch. This asserts the runtime half: every
+    // class returns a defined outcome.
+    const all: ReplyMissClass[] = ['queued_not_consumed', 'consumed_runtime_dead',
+      'consumed_hung', 'consumed_blocked', 'consumed_idle_no_reply',
+      'consumed_unknown_no_reply', 'unknown_consumption_no_reply'];
+    for (const c of all) {
+      expect(at(c, true, 'replay_consumed').outcome, c).toBeTruthy();
+    }
+  });
+});
 
 describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
   // Until this class existed, `report.scheduler` had NO scheduled consumer. The 5-minute

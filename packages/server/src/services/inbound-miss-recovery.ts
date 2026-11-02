@@ -24,8 +24,14 @@ export interface InboundRecoveryResult {
   action: 'wake_queued' | 'replay_consumed' | 'none';
   reason: string;
   /**
-   * What the supervisor said about the runtime AT THE MOMENT OF RECOVERY, carried so the
+   * What the supervisor said about the runtime AS OF THIS PASS'S SNAPSHOT, carried so the
    * notice can report what was observed instead of asserting an outcome.
+   *
+   * WORDING CORRECTED on isla's review: this said "AT THE MOMENT OF RECOVERY", which claims
+   * more than the code does. `supervisorStatuses` is read once at the START of the pass and
+   * passed in, so it is a pass-start snapshot and may already be stale by the time a recovery
+   * runs. A comment asserting a tighter guarantee than the code provides is the class this
+   * row keeps producing.
    *
    * dc-20261011-006: on 2026-10-12T02:39:50Z the monitor mailed "self-healed 1 inbound
    * miss(es): eli (replay_consumed)" while eli's runtime was already blocked on a Codex
@@ -48,27 +54,26 @@ export interface AgentRecoveryLiveness {
 }
 
 /**
- * Runtime states in which a replay CANNOT produce a reply, so no notice derived from them
- * may say the miss was healed.
+ * `cannotActOn()` LIVED HERE AND IS DELETED (isla's step-3 review of PR #36, blockers 3+4).
  *
- * `blocked` is the state from the founding incident. `hung` and a dead process are included
- * because the false claim is identical in all three -- the message is sitting in an inbox
- * nothing is reading. Fixing only `blocked` would leave the same sentence untrue one state
- * over, which is the mistake I made on 2026-08-03 removing a boundary defect from the due
- * path and leaving it on the missed path, one function away in the same file.
+ * It was a SECOND classifier over a question `inbound-reply-reconcile.ts` already answers, and
+ * the two disagreed: reconcile tests dead -> hung -> blocked (:299/306/313) while this tested
+ * blocked -> hung -> dead, so a runtime that was both got a different answer depending on which
+ * one you asked. The caller now reads `miss.failureClass`, which reconcile computed from a
+ * union declared in this repo.
  *
- * Vocabulary taken from inbound-reply-reconcile.ts, which branches on exactly these values
- * ('hung' :304, 'blocked' :311, 'idle' :318) -- not invented here.
+ * It also branched on `processStatus === 'stopped'`, and NOTHING EMITS THAT VALUE. The comment
+ * it carried claimed the vocabulary was "taken from inbound-reply-reconcile.ts, not invented
+ * here", which was true of 'hung', 'blocked' and 'idle' and FALSE of 'stopped'. My own first
+ * check nearly corroborated it: grep found three non-test hits, but `claude-wrapper.ts:90` sets
+ * `metadata.status` on a runtime-health EVENT -- a different namespace from
+ * `SupervisorAgentStatus.process.status`. A literal match in the wrong field reading as
+ * agreement.
+ *
+ * `process.status` is also the EXTERNAL supervisor's field (agent-supervisor-client.ts:8,
+ * /v1/agents), so its value set is not enumerable from this repo at all -- an argument against
+ * the classifier existing rather than for refining its precedence.
  */
-export function cannotActOn(liveness: AgentRecoveryLiveness | null): string | null {
-  if (!liveness) return null;
-  if (liveness.progressStatus === 'blocked') return 'blocked';
-  if (liveness.progressStatus === 'hung') return 'hung';
-  if (liveness.processStatus === 'dead' || liveness.processStatus === 'stopped') {
-    return `process ${liveness.processStatus}`;
-  }
-  return null;
-}
 
 interface RecoveryDependencies {
   wake?: (agent: string) => RuntimeWakeResult;

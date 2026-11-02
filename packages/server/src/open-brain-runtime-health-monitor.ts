@@ -18,9 +18,10 @@ import {
   readOutboundSent,
   readReplyPolicy,
   reconcileInboundReplies,
+  type ReplyMissClass,
   type SupervisorAgentStatus,
 } from './services/inbound-reply-reconcile.js';
-import { cannotActOn, recoverInboundMiss } from './services/inbound-miss-recovery.js';
+import { recoverInboundMiss } from './services/inbound-miss-recovery.js';
 
 const DEFAULT_CHAT_ID = '1491979880747765810';
 const DEFAULT_AGENT = 'eli';
@@ -609,37 +610,127 @@ export function alertFrom<T>(
  * "Healed" is reserved for entries where the supervisor did not say the runtime was unable
  * to act, and a mixed batch gets both counts rather than the flattering one.
  */
-export function formatInboundRecoveryNotice(
-  entries: Array<{
-    key: string;
-    agent: string;
-    action: string;
-    reason: string;
-    /** Why the runtime could not act, from cannotActOn(); absent means no such evidence. */
-    cannotAct?: string | null;
-    /** The supervisor's own reason string for that state, when it gave one. */
-    cannotActDetail?: string;
-  }>,
-): string {
-  const stuck = entries.filter((entry) => entry.cannotAct);
-  const lines = entries.map((entry) => {
-    if (!entry.cannotAct) return `- ${entry.agent} (${entry.action}): ${entry.reason}`;
-    // The STATE first, then what we did, because the state is the part that decides whether
-    // a human has to act -- and burying it after a success-shaped clause is how the original
-    // notice read as good news.
-    const why = entry.cannotActDetail ? `: ${entry.cannotActDetail}` : '';
-    return `- ${entry.agent} runtime ${entry.cannotAct.toUpperCase()}${why}`
-      + ` -- replay will NOT be answered until that clears (${entry.action}: ${entry.reason})`;
-  });
+/**
+ * An entry in the recovery notice.
+ *
+ * `alreadyAnswered` IS REQUIRED, NOT OPTIONAL, and that is the design (the same reason
+ * `liveness` is required on InboundRecoveryResult): the compiler then enumerates every push
+ * site, where an optional field lets a new one silently default to the claim-making arm.
+ *
+ * THERE IS NO cannotAct FIELD ANY MORE. A recovery the runtime cannot act on is routed as an
+ * INBOUND FAILURE, not as a recovery notice -- a recovery that cannot be answered is not a
+ * recovery -- so this shape cannot carry one. Keeping the field "defensively" would be a
+ * catch-all arm making a claim on evidence that no longer arrives, which is the exact defect
+ * class in PR #39's staleOneShots fallthrough.
+ */
+/**
+ * WHICH MISS CLASSES MEAN THE RUNTIME CANNOT ACT ON A REPLAY.
+ *
+ * `Record<ReplyMissClass, ...>` and NOT `Partial<...>`: the compiler then forces every member
+ * of the union to be stated here, so adding a class to `ReplyMissClass` is a build error at
+ * this line rather than a silent `undefined` that lands in the can-act branch. That is the
+ * `StaleOneShotJob` lesson from PR #39 -- derive what must FOLLOW the implementation.
+ *
+ * The three non-null entries are the three states reconcile itself derives from the supervisor
+ * snapshot, in reconcile's own vocabulary. `queued_not_consumed` never reaches this loop (it is
+ * filtered out above as the delivery-cursor arm) and is listed as null rather than omitted,
+ * because "cannot occur here" and "can occur and means can-act" must not look the same.
+ */
+const CANNOT_ACT_BY_FAILURE_CLASS: Record<ReplyMissClass, string | null> = {
+  consumed_runtime_dead: 'process dead',
+  consumed_hung: 'hung',
+  consumed_blocked: 'blocked',
+  consumed_idle_no_reply: null,
+  consumed_unknown_no_reply: null,
+  unknown_consumption_no_reply: null,
+  queued_not_consumed: null,
+};
 
+/**
+ * THE FOUR OUTCOMES OF A RECOVERY ATTEMPT, as one pure decision.
+ *
+ * Extracted on isla's step-3 review. The logic was inline in the monitor's recovery loop,
+ * which is reachable only through `runOpenBrainRuntimeHealthMonitor` and its whole fixture --
+ * so the four blockers she found were in code no test could address directly. A decision this
+ * load-bearing needs a seam, and one source means the loop and the tests cannot diverge.
+ *
+ * `cannot-act` is SEPARATE FROM `recovered` because they route to different places and carry
+ * different remedies: a recovery the runtime cannot answer is reported as an inbound FAILURE
+ * (remedy `restart`), not as a self-repair notice (remedy `none`, i.e. suppressed).
+ */
+export type RecoveryOutcome = 'failed' | 'already-answered' | 'cannot-act' | 'recovered';
+
+export function classifyRecoveryOutcome(input: {
+  failureClass: ReplyMissClass;
+  ok: boolean;
+  action: string;
+}): { outcome: RecoveryOutcome; cannotAct: string | null } {
+  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  if (!input.ok) return { outcome: 'failed', cannotAct };
+  // THE OBSERVED OUTCOME OUTRANKS THE RUNTIME-STATE EVIDENCE, and this order is the fix for
+  // isla's blocker 2 / codex's P2. `ok` with action 'none' is only ever "an outbound reply
+  // landed before recovery" (inbound-miss-recovery.ts:150): the reply is CONFIRMED, so a
+  // blocked runtime is irrelevant -- nothing is waiting on it. Testing cannotAct first
+  // reported a confirmed reply as "replayed into a runtime that cannot act, NOT healed".
+  if (input.action === 'none') return { outcome: 'already-answered', cannotAct: null };
+  if (cannotAct) return { outcome: 'cannot-act', cannotAct };
+  return { outcome: 'recovered', cannotAct: null };
+}
+
+/**
+ * WHERE EACH OUTCOME GOES, as data rather than as a three-way `if`.
+ *
+ * `runOpenBrainRuntimeHealthMonitor` has NO test anywhere in this package -- which is exactly
+ * why isla found four blockers inside its recovery loop. A dispatch expressed as control flow
+ * in an untested function is unpinnable; expressed as a map it is one assertion.
+ *
+ * `inboundAlert` carries alarm class `inbound`, whose WITHHELD_REMEDY is 'restart'.
+ * `recoveryNotice` carries `inboundRecovery`, whose remedy is 'none' -- SUPPRESSED FROM THE
+ * PRINCIPAL as self-repair. That is the whole of blocker 1: a cannot-act recovery used to go
+ * to the suppressed side, so on 2026-10-12, with eli both the subject and the default
+ * destination, the only surviving record would have said nothing here needs a human.
+ */
+export const RECOVERY_OUTCOME_ROUTE: Record<RecoveryOutcome, 'inboundAlert' | 'recoveryNotice'> = {
+  failed: 'inboundAlert',
+  'cannot-act': 'inboundAlert',
+  'already-answered': 'recoveryNotice',
+  recovered: 'recoveryNotice',
+};
+
+export interface RecoveryNoticeEntry {
+  key: string;
+  agent: string;
+  action: string;
+  reason: string;
+  /** The reply had ALREADY landed, so nothing was replayed and nothing is pending. */
+  alreadyAnswered: boolean;
+}
+
+export function formatInboundRecoveryNotice(entries: RecoveryNoticeEntry[]): string {
+  const answered = entries.filter((entry) => entry.alreadyAnswered);
+  const lines = entries.map((entry) => (entry.alreadyAnswered
+    // NOT a replay and NOT pending. Isla's blocker 2 and Codex's P2, same defect: an outbound
+    // reply that landed between reconciliation and recovery was reported as a replay into a
+    // runtime that cannot act -- "NOT healed", "will not be answered" -- about a miss whose
+    // reply had been CONFIRMED. The observed outcome outranks the runtime-state evidence.
+    ? `- ${entry.agent}: a reply had already landed; no replay was needed (${entry.reason})`
+    : `- ${entry.agent} (${entry.action}): ${entry.reason}`));
+
+  // THE HEADER REPORTS ACTIONS, NEVER THE OUTCOME. "self-healed" was the founding defect of
+  // this row and removing it only for the cannot-act case would have left the same overclaim
+  // standing for every other case: the actions are observable in this pass, a reply is not
+  // observable until a later one. SCOPE CALL, stated for the reviewer to overrule rather than
+  // discover: the row asked for the cannot-act case, and the same sentence is untrue one case
+  // over, which is the 2026-08-03 instance-versus-class miss this row already cites.
+  const replayed = entries.length - answered.length;
   let header: string;
-  if (stuck.length === 0) {
-    header = `runtime monitor self-healed ${entries.length} inbound miss(es):`;
-  } else if (stuck.length === entries.length) {
-    header = `runtime monitor replayed ${entries.length} inbound miss(es) but the runtime cannot act -- NOT healed:`;
+  if (answered.length === entries.length) {
+    header = `runtime monitor found ${entries.length} inbound miss(es) already answered; nothing was replayed:`;
+  } else if (answered.length === 0) {
+    header = `runtime monitor replayed ${entries.length} inbound miss(es); a reply is expected on a later pass:`;
   } else {
     header = `runtime monitor acted on ${entries.length} inbound miss(es):`
-      + ` ${entries.length - stuck.length} self-healed, ${stuck.length} replayed into a runtime that cannot act:`;
+      + ` ${replayed} replayed, ${answered.length} already answered:`;
   }
   return [header, ...lines].join('\n');
 }
@@ -1067,10 +1158,7 @@ async function main(): Promise<void> {
   });
   const inboundAlertMisses = [] as typeof inboundResult.misses;
   const recoveryAttempts = { ...(state.inboundRecoveryAttempts ?? {}) };
-  const recoveredThisPass: Array<{
-    key: string; agent: string; action: string; reason: string;
-    cannotAct?: string | null; cannotActDetail?: string;
-  }> = [];
+  const recoveredThisPass: RecoveryNoticeEntry[] = [];
   const outboundNow = readOutboundSent(contentRoot);
   for (const [key, attempt] of Object.entries(recoveryAttempts)) {
     if (outboundNow.some((sent) =>
@@ -1110,29 +1198,56 @@ async function main(): Promise<void> {
       supervisorStatuses,
       dependencies: { now: new Date(inboundResult.checkedAtIso) },
     });
-    const stuckNow = cannotActOn(recovery.liveness);
-    // Same correction applied to the log line, because it is the artifact anyone debugging
-    // this reads first and it made the same unqualified claim.
-    process.stdout.write(`inbound recovery ${recovery.ok ? (stuckNow ? `acted but runtime ${stuckNow}` : 'succeeded') : 'failed'}`
-      + ` for ${miss.key}: ${recovery.reason}\n`);
-    if (recovery.ok) {
+    // ONE CLASSIFIER, AND IT IS THE MISS'S OWN. `cannotActOn()` was a SECOND classifier over
+    // the same question and it disagreed with reconcile: reconcile tests dead -> hung ->
+    // blocked (inbound-reply-reconcile.ts:299/306/313) and cannotActOn tested blocked -> hung
+    // -> dead, so a runtime that was both reported differently depending on which one you
+    // asked. Two classifiers over one question is what produced that, and one source cannot
+    // diverge from itself.
+    //
+    // It also keyed on `process.status`, which is the EXTERNAL supervisor's field
+    // (agent-supervisor-client.ts:8, /v1/agents) whose value set is NOT ENUMERABLE FROM THIS
+    // REPO -- an argument against the classifier existing, not for refining it. `failureClass`
+    // is computed in this repo from a declared union.
+    const { outcome, cannotAct } = classifyRecoveryOutcome({
+      failureClass: miss.failureClass, ok: recovery.ok, action: recovery.action,
+    });
+    const alreadyAnswered = outcome === 'already-answered';
+    process.stdout.write(`inbound recovery ${outcome}`
+      + `${cannotAct ? ` (runtime ${cannotAct})` : ''} for ${miss.key}: ${recovery.reason}\n`);
+    if (RECOVERY_OUTCOME_ROUTE[outcome] === 'inboundAlert' && outcome === 'failed') {
+      inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
+    } else if (RECOVERY_OUTCOME_ROUTE[outcome] === 'inboundAlert') {
+      // A RECOVERY THAT CANNOT BE ANSWERED IS NOT A RECOVERY (isla blocker 1).
+      //
+      // This used to go to `recoveredThisPass`, whose alarm class is `inboundRecovery`, whose
+      // WITHHELD_REMEDY is 'none' -- i.e. SUPPRESSED FROM THE PRINCIPAL as self-repair. On
+      // 2026-10-12 eli was both the subject AND the default destination, so the only surviving
+      // record would have said nothing here needs a human, about a runtime that was blocked.
+      //
+      // Routed as an inbound FAILURE instead, so it inherits remedy 'restart' from the
+      // existing WITHHELD_REMEDY.inbound rather than needing a new policy. And it is
+      // DELIBERATELY NOT written to `recoveryAttempts`: recording an attempt suppresses the
+      // miss alert for graceMinutes, which would re-hide the very finding this routes.
+      inboundAlertMisses.push({
+        ...miss,
+        detail: `${miss.detail}; recovery ${recovery.action} ran but the runtime is ${cannotAct}`
+          + ` -- it will not be answered until that clears`,
+      });
+    } else {
       recoveryAttempts[miss.key] = {
         attemptedAt: inboundResult.checkedAtIso,
         action: recovery.action,
         agent: miss.agent,
         chatId: miss.chatId,
       };
-      const cannotAct = cannotActOn(recovery.liveness);
       recoveredThisPass.push({
         key: miss.key,
         agent: miss.agent,
         action: recovery.action,
         reason: recovery.reason,
-        cannotAct,
-        cannotActDetail: recovery.liveness?.progressDetail,
+        alreadyAnswered,
       });
-    } else {
-      inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
     }
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
