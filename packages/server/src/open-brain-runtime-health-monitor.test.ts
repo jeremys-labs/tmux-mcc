@@ -452,40 +452,88 @@ describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 b
     expect(names).toEqual(['process dead', 'hung', 'blocked']);
   });
 
-  it('A CANNOT-ACT ATTEMPT IS NEVER GRACE-SUPPRESSED, AND IS RECORDED SO IT IS NOT REPLAYED TWICE', () => {
-    // isla's second-pass finding on b482da6, and the correction is to my own comment. I had left
-    // the cannot-act attempt UNRECORDED so the grace could not suppress the alert, and did not
-    // trace the consequence: the next pass re-attempts the replay, the replay is refused
-    // (`already_replayed`), and that refusal rendered as "forced recovery failed" -- a FAILURE
-    // reported for a replay that went through. And on unblock, a fresh `restart` alert for work
-    // already done.
-    //
-    // "We already replayed this" and "stop alerting about it" are two different facts and I had
-    // them fused into one field. The attempt is recorded; the GRACE is what learns to ignore it.
-    const inGrace = { attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' };
-    expect(planPriorAttempt({ priorAttempt: inGrace, checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 }))
-      .toBe('alertCannotAct');
-    // the control: the SAME timing without cannotAct is correctly suppressed
-    expect(planPriorAttempt({
-      priorAttempt: { attemptedAt: '2026-10-30T11:59:00Z' },
-      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
-    })).toBe('suppress');
+  const ATTEMPT = { action: 'replay_consumed' as const, agent: 'eli', chatId: 'c1' };
+  const plan = (prior: Record<string, unknown> | undefined, currentCannotAct: string | null,
+                checkedAt = '2026-10-30T12:00:00Z', graceMinutes = 30) =>
+    planPriorAttempt({ priorAttempt: prior as never, currentCannotAct, checkedAt, graceMinutes });
+
+  it('A CANNOT-ACT ATTEMPT IS NEVER GRACE-SUPPRESSED while the runtime is STILL stuck', () => {
+    // Second-pass finding. I had left the attempt unrecorded so the grace could not suppress
+    // the alert, which made the NEXT pass re-replay and be refused `already_replayed` -- a
+    // FAILURE reported for a replay that went through. The attempt is recorded; the GRACE is
+    // what learns to ignore it.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' }, 'blocked');
+    expect(r.plan).toBe('alertCannotAct');
+    // the control: the SAME timing with no cannot-act state is correctly suppressed
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' }, null).plan).toBe('suppress');
   });
 
-  it('the other three prior-attempt plans are distinct', () => {
-    expect(planPriorAttempt({ priorAttempt: undefined, checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 }))
-      .toBe('attempt');
-    // grace elapsed, no reply: the forced recovery did not work, and that is its own finding
-    expect(planPriorAttempt({
-      priorAttempt: { attemptedAt: '2026-10-30T10:00:00Z' },
-      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
-    })).toBe('alertExhausted');
-    // and a cannot-act attempt whose grace ALSO elapsed is still the cannot-act finding, not
-    // "did not produce a reply" -- the cause is known and the instruction is different
-    expect(planPriorAttempt({
-      priorAttempt: { attemptedAt: '2026-10-30T10:00:00Z', cannotAct: 'hung' },
-      checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30,
-    })).toBe('alertCannotAct');
+  it('BLOCKED -> IDLE RESETS THE ATTEMPT: no fresh restart alert for a runtime that just cleared', () => {
+    // isla's third pass, and she ran it. Keyed only on the STORED `cannotAct`, which never
+    // cleared, a runtime going blocked -> idle still planned `alertCannotAct` forever -- and
+    // because `inboundReplyMissFingerprint` is `key:failureClass`, THE CLASS CHANGE DEFEATS
+    // DEDUPE, so a fresh alert went out telling someone to restart a runtime that had just
+    // become able to answer.
+    //
+    // This is the sticky-state class I spent the same morning removing from `auditFailures` in
+    // dc-20261019-009: a cumulative field with no reset path. Same shape, same day, different
+    // file, introduced by me in the fix for the previous round.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    expect(r.plan).toBe('suppress');                   // NOT alertCannotAct
+    expect(r.nextAttempt).toMatchObject({
+      action: 'replay_consumed', agent: 'eli', chatId: 'c1',
+      attemptedAt: '2026-10-30T12:00:00Z',             // RE-STAMPED NOW, so the grace restarts
+      cannotAct: null,                                 // and the sticky flag is cleared
+    });
+  });
+
+  it('BLOCKED -> IDLE -> GRACE ELAPSED becomes alertExhausted, not alertCannotAct', () => {
+    // The second half of what isla asked to be tested. After the reset, the replay gets its
+    // grace from the moment the runtime became able to answer; if it still produces nothing,
+    // that is "the forced recovery did not work" -- a different finding with a different
+    // instruction from "the runtime cannot act".
+    const reset = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    const after = plan(reset.nextAttempt as never, null, '2026-10-30T13:00:00Z');
+    expect(after.plan).toBe('alertExhausted');
+  });
+
+  it('THE WRITE IS IN THE RETURNED VALUE, so deleting the loop line cannot stay green', () => {
+    // isla's third pass: "Deleting it today leaves 86/86 green ... make the plan return the
+    // next attempts entry, so the write is in the tested value. The loop just applies it."
+    // The loop has no test, so anything it decides for itself is unpinnable.
+    const cleared = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    expect(cleared.nextAttempt).not.toBeNull();
+    // and the plans that must NOT rewrite state say so explicitly rather than by omission
+    expect(plan(undefined, null).nextAttempt).toBeNull();
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'hung' }, 'hung').nextAttempt).toBeNull();
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, null).nextAttempt).toBeNull();
+  });
+
+  it('AN ORDINARY ATTEMPT WHOSE RUNTIME HAS SINCE GONE BLOCKED becomes alertCannotAct', () => {
+    // FOUND BY A SURVIVING MUTATION, not by review: swapping the current-state check for the
+    // STORED flag changed nothing, because by that line the cleared case has already returned,
+    // so the two are equivalent for every case a test covered.
+    //
+    // The case they are NOT equivalent for is this one -- replayed while the runtime was
+    // healthy, and the runtime went blocked afterwards. Keying on the stored flag would plan
+    // `suppress` and then `alertExhausted` ("the forced recovery did not produce a reply"),
+    // which sends someone looking at the wrong thing: the reason it produced no reply is
+    // sitting in the current state. Keying on the CURRENT state says so.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' }, 'blocked');
+    expect(r.plan).toBe('alertCannotAct');
+    expect(r.nextAttempt).toBeNull();
+    // and once the grace has elapsed it is STILL the cannot-act finding, not "no reply"
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, 'hung').plan)
+      .toBe('alertCannotAct');
+  });
+
+  it('the other prior-attempt plans are distinct', () => {
+    expect(plan(undefined, null).plan).toBe('attempt');
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T10:00:00Z' }, null).plan).toBe('alertExhausted');
+    // a STILL-stuck runtime stays the cannot-act finding even once the grace has elapsed: the
+    // cause is known and the instruction is different from "did not produce a reply"
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T10:00:00Z', cannotAct: 'hung' }, 'hung').plan)
+      .toBe('alertCannotAct');
   });
 
   it('A CANNOT-ACT RECOVERY ROUTES TO THE ALERT SIDE, NOT THE SUPPRESSED SIDE (blocker 1)', () => {

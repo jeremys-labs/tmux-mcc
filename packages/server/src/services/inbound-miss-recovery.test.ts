@@ -107,45 +107,14 @@ describe('recoverInboundMiss', () => {
 // ordinary success case and must NOT read as unable to act, because inventing a "possibly
 // stuck" state for every unlisted agent is how a working signal becomes noise.
 
-describe('recoverInboundMiss carries liveness (dc-20261011-006)', () => {
-  it('attaches the supervisor progress status and its detail to the result', () => {
-    const contentRoot = root();
-    writeJsonl(path.join(contentRoot, 'bridge', 'inbox', 'marcus.jsonl'), [
-      { id: 'in-1', agentKey: 'marcus', channelId: 'chat-1', bindingName: 'marcus', text: 'hello' },
-    ]);
-    writeJsonl(path.join(contentRoot, 'bridge', 'inbound-expected.jsonl'), [
-      { queued_at: '2026-08-26T13:00:00.000Z', agent: 'marcus', chat_id: 'chat-1', message_id: 'in-1', binding: 'marcus', inbox_path: 'x' },
-    ]);
-    writeJson(path.join(contentRoot, 'bridge', 'runtime-state', 'marcus.json'), { lineCount: 1 });
-    const result = recoverInboundMiss({
-      miss: miss('consumed_blocked'),
-      contentRoot,
-      supervisorStatuses: [{
-        agent: 'marcus',
-        process: { status: 'running' },
-        progress: { status: 'blocked', detail: 'codex usage limit reached' },
-      }],
-      dependencies: { wake: () => ({ attempted: true, ok: true, target: 'agents:marcus' }) },
-    });
-    // The point of the row: this field existed inside livenessFor() all along and the
-    // result shape dropped it, so the notice could not qualify its own claim.
-    expect(result.liveness).toMatchObject({
-      processStatus: 'running',
-      progressStatus: 'blocked',
-      progressDetail: 'codex usage limit reached',
-    });
-  });
-
-  it('a result from a path that never read the inbox still reports liveness', () => {
-    // Every return carries it, which is why the field is required and not optional: an
-    // early return that omitted it would silently restore the unqualified claim.
-    const result = recoverInboundMiss({
-      miss: miss('consumed_blocked'),
-      contentRoot: root(),
-      supervisorStatuses: [{ agent: 'marcus', process: { status: 'running' }, progress: { status: 'blocked' } }],
-      dependencies: { wake: () => ({ attempted: true, ok: true }) },
-    });
-    expect(result.ok).toBe(false);          // no inbox file in this root
-    expect(result.liveness).toMatchObject({ progressStatus: 'blocked' });
-  });
-});
+// `recoverInboundMiss carries liveness` AND ITS TWO TESTS ARE DELETED (isla's should-fix on
+// 52927be). The RESULT field they asserted is gone: this row's premise was that livenessFor()
+// computed `progressStatus` and the result shape dropped it, but the fix that landed derives
+// the state from `miss.failureClass` instead, so the field had no production reader left --
+// only these tests. A field declared with no reader is the `holidayPolicy` class, and I
+// maintain the checker that finds it.
+//
+// `livenessFor()` itself is NOT dead and is not removed: `decideReplay` takes its own, LIVE
+// `liveness` (inbound-replay.ts:49) and that is still where the replay policy reads it. My
+// first removal pass stripped that argument too -- a regex matching the NAME rather than the
+// USE -- and tsc caught it immediately. Two fields, one name, different lifetimes.

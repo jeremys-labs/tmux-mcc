@@ -24,26 +24,20 @@ export interface InboundRecoveryResult {
   action: 'wake_queued' | 'replay_consumed' | 'none';
   reason: string;
   /**
-   * What the supervisor said about the runtime AS OF THIS PASS'S SNAPSHOT, carried so the
-   * notice can report what was observed instead of asserting an outcome.
+   * `liveness` LIVED HERE AND IS REMOVED (isla's should-fix on 52927be).
    *
-   * WORDING CORRECTED on isla's review: this said "AT THE MOMENT OF RECOVERY", which claims
-   * more than the code does. `supervisorStatuses` is read once at the START of the pass and
-   * passed in, so it is a pass-start snapshot and may already be stale by the time a recovery
-   * runs. A comment asserting a tighter guarantee than the code provides is the class this
-   * row keeps producing.
+   * This row's premise was that `livenessFor()` computed `progressStatus` and the result shape
+   * DROPPED it, so the notice could not qualify its own claim -- and adding it here was the
+   * original fix. The fix that actually landed derives the state from `miss.failureClass`
+   * instead, because a SECOND classifier over one question diverged from reconcile. So
+   * `liveness` was the MEANS to an end we now reach another way, and nothing in production
+   * read it any more: only its own tests did.
    *
-   * dc-20261011-006: on 2026-10-12T02:39:50Z the monitor mailed "self-healed 1 inbound
-   * miss(es): eli (replay_consumed)" while eli's runtime was already blocked on a Codex
-   * usage limit; the 02:49:58Z follow-up confirmed the replay produced no reply. Every step
-   * had succeeded -- the message WAS replayed and the wake WAS attempted -- and the notice
-   * was still false, because "self-healed" is a claim about the OUTCOME and all we had was
-   * the actions. livenessFor() already computed this and the result shape dropped it.
-   *
-   * `null` means the supervisor had no row for the agent, which is NOT the same as healthy
-   * and must not be rendered as such.
+   * A FIELD DECLARED WITH NO READER IS THE `holidayPolicy` CLASS -- 16 jobs declared it, zero
+   * code read it, and sixteen owners believed they had configured behaviour that did not
+   * exist. I maintain the checker that finds that, so keeping this would have been shipping
+   * the thing I built the detector for.
    */
-  liveness: AgentRecoveryLiveness | null;
 }
 
 export interface AgentRecoveryLiveness {
@@ -122,13 +116,12 @@ export function recoverInboundMiss(input: {
   if (input.miss.failureClass === 'queued_not_consumed') {
     const wakeResult = wake(input.miss.agent);
     if (!wakeResult.ok) {
-      return { ok: false, action: 'wake_queued', reason: `runtime wake failed: ${wakeResult.reason ?? 'unknown error'}`, liveness };
+      return { ok: false, action: 'wake_queued', reason: `runtime wake failed: ${wakeResult.reason ?? 'unknown error'}` };
     }
     return {
       ok: true,
       action: 'wake_queued',
       reason: wakeResult.attempted ? `woke ${wakeResult.target ?? input.miss.agent}` : `wake not required (${wakeResult.reason ?? 'runtime polls inbox'})`,
-      liveness,
     };
   }
 
@@ -136,7 +129,7 @@ export function recoverInboundMiss(input: {
   try {
     entries = parseInboxLines(fs.readFileSync(inboxPath, 'utf8'));
   } catch (error) {
-    return { ok: false, action: 'none', reason: `cannot read inbox ${inboxPath}: ${String(error)}`, liveness };
+    return { ok: false, action: 'none', reason: `cannot read inbox ${inboxPath}: ${String(error)}` };
   }
   const found = findEntry(entries, input.miss.inboundMessageId);
   const expected = readInboundExpected(input.contentRoot);
@@ -152,7 +145,7 @@ export function recoverInboundMiss(input: {
     sent.agent === input.miss.agent
     && sent.chat_id === input.miss.chatId
     && Date.parse(sent.sent_at) > Date.parse(originalExpected.queued_at))) {
-    return { ok: true, action: 'none', reason: 'an outbound reply landed before recovery', liveness };
+    return { ok: true, action: 'none', reason: 'an outbound reply landed before recovery' };
   }
 
   const decision = decideReplay({
@@ -162,18 +155,21 @@ export function recoverInboundMiss(input: {
     queuedAt: originalExpected?.queued_at ?? null,
     outboundSends: outbound,
     alreadyReplayed: found.entry ? hasReplayOf(entries, found.entry.id) : false,
-    liveness,
+    // decideReplay's own `liveness` is a DIFFERENT and LIVE field (inbound-replay.ts:49,
+    // type AgentLiveness) -- it is what the replay policy reads. Only the RESULT field of the
+    // same name was dead.
+    liveness: livenessFor(input.supervisorStatuses, input.miss.agent),
     force: true,
   });
   if (!decision.ok) {
-    return { ok: false, action: 'none', reason: `replay refused (${decision.klass}): ${decision.reason}`, liveness };
+    return { ok: false, action: 'none', reason: `replay refused (${decision.klass}): ${decision.reason}` };
   }
 
   const replay = buildReplayEntry(found.entry!);
   try {
     fs.appendFileSync(inboxPath, `${JSON.stringify(replay)}\n`);
   } catch (error) {
-    return { ok: false, action: 'replay_consumed', reason: `replay append failed: ${String(error)}`, liveness };
+    return { ok: false, action: 'replay_consumed', reason: `replay append failed: ${String(error)}` };
   }
   recordInboundExpected(input.contentRoot, {
     queued_at: now.toISOString(),
@@ -185,12 +181,11 @@ export function recoverInboundMiss(input: {
   });
   const wakeResult = wake(input.miss.agent);
   if (!wakeResult.ok) {
-    return { ok: false, action: 'replay_consumed', reason: `message replayed but runtime wake failed: ${wakeResult.reason ?? 'unknown error'}`, liveness };
+    return { ok: false, action: 'replay_consumed', reason: `message replayed but runtime wake failed: ${wakeResult.reason ?? 'unknown error'}` };
   }
   return {
     ok: true,
     action: 'replay_consumed',
     reason: wakeResult.attempted ? `message replayed and ${wakeResult.target ?? input.miss.agent} woke` : `message replayed; wake not required (${wakeResult.reason ?? 'runtime polls inbox'})`,
-      liveness,
   };
 }
