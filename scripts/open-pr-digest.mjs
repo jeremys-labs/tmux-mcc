@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const REPOS = [
   'jeremys-labs/str-ops',
@@ -86,6 +86,9 @@ const ROSTER_PATH = process.env.OPEN_PR_DIGEST_ROSTER
 // An injectable clock, because ">24h" is otherwise untestable except by waiting.
 const NOW = process.env.OPEN_PR_DIGEST_NOW ? new Date(process.env.OPEN_PR_DIGEST_NOW) : new Date();
 const REVIEW_GRACE_HOURS = Number(process.env.OPEN_PR_DIGEST_REVIEW_GRACE_HOURS ?? 24);
+// The runner passes the id it will check for. A hand run gets its own, so the artifact always
+// carries one and "no runId" can only mean an artifact older than this change.
+const RUN_ID = process.env.OPEN_PR_DIGEST_RUN_ID ?? `hand-${Date.now()}-${process.pid}`;
 const DRIFT_GRACE_HOURS = Number(process.env.OPEN_PR_DIGEST_DRIFT_GRACE_HOURS ?? 24);
 
 function hoursSince(iso) {
@@ -119,12 +122,57 @@ function agentFromBranch(headRefName, agentKeys) {
   return { agent: prefix, reason: null };
 }
 
-// A RENDERED REVIEW VERDICT, which is narrower than rule 11's "dispositioned" and is
-// deliberately the observable thing. gh exposes reviewDecision; it CANNOT tell us whether
-// each finding got a written disposition in prose, and recovering that from comment text
-// would be an unsound text predicate. Stated as a boundary rather than overclaimed: this
-// flags the ABSENCE OF A VERDICT, not the absence of a disposition.
-const DISPOSITIONED = new Set(['approved', 'changes_requested']);
+// THE VERDICT SOURCE (isla's design, PR #42 review blocker 1). `reviewDecision` CANNOT be
+// the source: it is `""` on all eight PRs sampled INCLUDING FOUR MERGED ONES, so a detector
+// keyed on it can never return a true negative and would flag every non-draft agent PR past
+// the grace, forever.
+//
+// MEASURED ROOT CAUSE, 2026-11-02, and it is sharper than "one account, no branch protection":
+// review objects DO exist in this repo, but the only actor creating them is
+// `chatgpt-codex-connector[bot]` and it reviews with state `COMMENTED`, which never sets
+// `reviewDecision`. So keying on a review's `commit_id` would have live data and would mark a
+// PR dispositioned BECAUSE A BOT COMMENTED -- the unsafe direction, and explicitly not a
+// rule-11 verdict ("Codex is a bonus, not a dependency").
+//
+// So the verdict is an explicit comment whose FIRST LINE is `VERDICT: APPROVE|MUST-CHANGE @ <sha>`,
+// matched against the CURRENT head.
+//
+// IT MUST BE THE NEWEST COMMENT WHOSE FIRST LINE MATCHES, NEVER THE NEWEST COMMENT. Verified
+// against the real corpus: on #42 the newest comment is the author's DISPOSITIONS, which is not
+// a verdict and carries no sha -- taking the newest would read it as the verdict, find no sha,
+// and leave the PR PERMANENTLY UNMATCHED. An invented fixture would have had one verdict comment
+// and nothing else, and would have hidden this.
+//
+// FAILS CLOSED on a mistyped sha: a sha that is not the current head simply does not match, so
+// the PR stays flagged. The unsafe direction requires typing a sha that happens to equal the
+// head while having reviewed something else.
+//
+// STATED LIMITATION, because the alternative is overclaiming: with one GitHub account every
+// comment is `jeremylahners`, so this verifies that A VERDICT EXISTS FOR THIS HEAD, never that
+// an INDEPENDENT party rendered it.
+const VERDICT_RE = /^VERDICT:\s*(APPROVE|MUST-CHANGE)\s*@\s*([0-9a-f]{7,40})\s*$/;
+
+function latestVerdict(comments) {
+  const matches = [...(comments ?? [])]
+    .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')))
+    .map((c) => {
+      const firstLine = String(c.body ?? '').split(/\r?\n/)[0].trim();
+      const m = VERDICT_RE.exec(firstLine);
+      return m ? { decision: m[1], sha: m[2], at: c.createdAt ?? null } : null;
+    })
+    .filter(Boolean);
+  return matches.length > 0 ? matches[matches.length - 1] : null;
+}
+
+// "verdict for an older head" and "no verdict at all" are DISTINCT findings with distinct
+// instructions to the author -- re-review the new head, versus nobody has looked yet.
+// Collapsing them tells the author the wrong thing.
+function verdictState(comments, headOid) {
+  const v = latestVerdict(comments);
+  if (!v) return { state: 'missing', verdict: null };
+  if (!headOid) return { state: 'cannot-determine', verdict: v };
+  return { state: headOid.startsWith(v.sha) ? 'current' : 'stale', verdict: v };
+}
 
 const AGENT_REPOS_LIST = [...AGENT_REPOS];
 const FINDINGS_PATH = process.env.OPEN_PR_DIGEST_FINDINGS_PATH
@@ -138,14 +186,23 @@ function git(cwd, args) {
   return execFileSync(GIT_BIN, args, { cwd, encoding: 'utf8', timeout: 60_000 });
 }
 
+// For git PREDICATES, where a non-zero exit is the ANSWER and not a failure. execFileSync
+// throws on non-zero, so using git() here would turn "no" into an exception.
+function spawnOk(cwd, args) {
+  return spawnSync(GIT_BIN, args, { cwd, encoding: 'utf8', timeout: 60_000 }).status === 0;
+}
+
+// ONE CLOCK (PR #42 review finding 10). This used `Date.now()` while hoursSince() used the
+// injectable NOW, so OPEN_PR_DIGEST_NOW moved the new flags and left `stale`, `ageDays` and
+// the header's flagged count on the wall clock -- two clocks in one digest.
 function daysSince(iso) {
-  return Math.floor((Date.now() - new Date(iso).getTime()) / DAY_MS);
+  return Math.floor((NOW.getTime() - new Date(iso).getTime()) / DAY_MS);
 }
 
 function sweepRepo(repo, agentKeys) {
   const raw = gh([
     'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '50',
-    '--json', 'number,title,body,createdAt,updatedAt,reviewDecision,isDraft,reviewRequests,assignees,files,headRefName',
+    '--json', 'number,title,body,createdAt,updatedAt,reviewDecision,isDraft,reviewRequests,assignees,files,headRefName,headRefOid,comments,commits',
   ]);
   return JSON.parse(raw).map((pr) => {
     const paths = (pr.files ?? []).map((file) => file.path ?? '').join(' ');
@@ -156,13 +213,32 @@ function sweepRepo(repo, agentKeys) {
     const repoName = repo.split('/')[1];
     const verdictHolder =
       reviewers[0] ?? assignees[0] ?? DEFAULT_VERDICT_HOLDERS[repoName] ?? FALLBACK_VERDICT_HOLDER;
-    const decision = (pr.reviewDecision || '').toLowerCase();
-    const hoursOpen = hoursSince(pr.createdAt);
     const { agent, reason } = agentFromBranch(pr.headRefName, agentKeys);
+    const headOid = pr.headRefOid ?? null;
+    const { state: verdict, verdict: verdictComment } = verdictState(pr.comments, headOid);
+
+    // THE GRACE RUNS FROM THE HEAD, NOT FROM `createdAt` (review finding 8). Once the verdict
+    // is per-head, a grace measured from PR creation lets a PR re-pushed an hour ago skip the
+    // grace entirely on its NEW head -- it is already "5 days old", so the new head is flagged
+    // immediately and nobody has had a chance to look at it.
+    //
+    // BASIS STATED, because this is a claim about time: it is the head commit's COMMITTER date,
+    // which is the closest observable proxy for "when this head came to exist" (a rebase or
+    // amend updates it). It is NOT the server's receive time, which `gh` does not expose here,
+    // so a rebase that replays genuinely old commits can backdate it. Falls back to
+    // `createdAt` when no commit is readable rather than treating the PR as brand new.
+    const headCommittedIso = [...(pr.commits ?? [])]
+      .map((c) => c.committedDate)
+      .filter(Boolean)
+      .sort()
+      .pop() ?? pr.createdAt;
+    const hoursSinceHead = hoursSince(headCommittedIso);
+    const hoursOpen = hoursSince(pr.createdAt);
+
     // DRAFTS ARE EXCLUDED: a draft is not asking for a review yet, so flagging it would
     // make the check noise within a week -- and a noisy check earns the right to be ignored.
-    const undispositioned =
-      AGENT_REPOS.has(repo) && !pr.isDraft && !DISPOSITIONED.has(decision) && hoursOpen > REVIEW_GRACE_HOURS;
+    const inScope = AGENT_REPOS.has(repo) && !pr.isDraft && hoursSinceHead > REVIEW_GRACE_HOURS;
+    const undispositioned = inScope && verdict !== 'current';
     return {
       repo: repoName,
       number: pr.number,
@@ -173,7 +249,12 @@ function sweepRepo(repo, agentKeys) {
       securityBearing,
       stale,
       headRefName: pr.headRefName ?? null,
+      headRefOid: headOid,
       hoursOpen: Math.floor(hoursOpen),
+      hoursSinceHead: Math.floor(hoursSinceHead),
+      verdict,
+      verdictSha: verdictComment?.sha ?? null,
+      verdictDecision: verdictComment?.decision ?? null,
       undispositioned,
       authorAgent: agent,
       authorUnresolvedReason: agent ? null : reason,
@@ -227,25 +308,61 @@ function checkoutDrift(repo) {
     } catch {
       branch = null; // detached: symbolic-ref exits non-zero by design
     }
-    const missing = git(dir, ['log', '--format=%cI', 'HEAD..origin/main']).trim();
+    // --first-parent (review finding 2): without it a merged side branch interleaves by date
+    // and "the last line is the oldest" is simply untrue, so the age could come from any
+    // commit on any merged branch rather than from the mainline.
+    const missing = git(dir, ['log', '--first-parent', '--format=%H %cI', 'HEAD..origin/main']).trim();
     const lines = missing ? missing.split('\n') : [];
     const behindCount = lines.length;
     if (branch === null) {
       return { ...base, state: 'detached', behindCount,
                detail: `HEAD is DETACHED (${behindCount} commit(s) behind origin/main)` };
     }
-    if (behindCount === 0) {
-      return { ...base, state: 'at-main', behindCount: 0, detail: `on ${branch}, level with origin/main` };
+    // NOT-ON-MAIN IS ITS OWN STATE (review finding 6). `branch` was captured and used only for
+    // null-versus-not, so a checkout sitting on `marcus/foo` rebased onto main counted 0
+    // commits behind and reported `at-main` WHILE RUNNING UNMERGED CODE -- the same false
+    // reading `detached` exists to prevent, one step along.
+    if (branch !== 'main') {
+      return { ...base, state: 'not-on-main', branch, behindCount,
+               detail: `on branch ${branch}, NOT main (${behindCount} commit(s) behind origin/main)` };
     }
-    const oldestMissingIso = lines[lines.length - 1];
-    const hoursBehind = hoursSince(oldestMissingIso);
+    if (behindCount === 0) {
+      return { ...base, state: 'at-main', branch, behindCount: 0, detail: `on ${branch}, level with origin/main` };
+    }
+    const [oldestMissingSha, oldestMissingIso] = lines[lines.length - 1].split(' ');
+
+    // WHEN origin/main MOVED, NOT WHEN THE COMMIT WAS WRITTEN (review finding 2). A commit
+    // authored last week and MERGED a minute ago left this reading "a week behind" when the
+    // checkout had no opportunity to be stale at all. The reflog of the remote-tracking ref is
+    // the only local record of when this checkout learned of the commit.
+    //
+    // BASIS IS REPORTED, never silently chosen: a fresh clone or a pruned reflog has no entry,
+    // and a measurement whose basis is unstated is the defect this whole flag exists to remove.
+    let hoursBehind = hoursSince(oldestMissingIso);
+    let ageBasis = 'commit-date';
+    try {
+      const reflog = git(dir, ['reflog', 'show', '--date=iso-strict', '--format=%H %gd',
+                               'refs/remotes/origin/main']).trim();
+      const entries = reflog ? reflog.split('\n').reverse() : []; // oldest first
+      for (const entry of entries.slice(0, 100)) {
+        const sha = entry.split(' ')[0];
+        const when = (entry.match(/\{([^}]+)\}/) ?? [])[1];
+        if (!sha || !when) continue;
+        const contains = spawnOk(dir, ['merge-base', '--is-ancestor', oldestMissingSha, sha]);
+        if (contains) { hoursBehind = hoursSince(when); ageBasis = 'origin-moved'; break; }
+      }
+    } catch {
+      // No reflog for the remote-tracking ref: keep the commit-date basis and say so.
+    }
     return {
       ...base,
       state: 'behind',
+      branch,
       behindCount,
       hoursBehind: Math.floor(hoursBehind),
+      ageBasis,
       overGrace: hoursBehind > DRIFT_GRACE_HOURS,
-      detail: `on ${branch}, ${behindCount} behind origin/main, oldest unmerged commit ${Math.floor(hoursBehind)}h old`,
+      detail: `on ${branch}, ${behindCount} behind origin/main, oldest unmerged commit ${Math.floor(hoursBehind)}h old (basis: ${ageBasis})`,
     };
   } catch (error) {
     return { ...base, state: 'cannot-determine',
@@ -256,9 +373,11 @@ function checkoutDrift(repo) {
 const AGENT_KEYS = rosterAgentKeys();
 const prs = [];
 const failures = [];
+const sweptRepos = [];
 for (const repo of REPOS) {
   try {
     prs.push(...sweepRepo(repo, AGENT_KEYS));
+    sweptRepos.push(repo.split('/')[1]);
   } catch (error) {
     failures.push(`${repo}: ${String(error.message ?? error).split('\n')[0]}`);
   }
@@ -281,18 +400,31 @@ if (prs.length === 0) lines.push('No open PRs across fleet repos. 🎉');
 // "M flagged" count is DEFINED by flagIcon and Jeremy reads that number daily. Widening what
 // it counts would silently change the meaning of a figure already in use.
 const undispositioned = prs.filter((pr) => pr.undispositioned);
-if (undispositioned.length > 0) {
-  lines.push('', `⛔ **No review verdict after ${REVIEW_GRACE_HOURS}h** (agent repos) — ${undispositioned.length}:`);
-  for (const pr of undispositioned) {
-    const who = pr.authorAgent ?? `UNRESOLVED (${pr.authorUnresolvedReason})`;
-    lines.push(`   ${pr.repo} #${pr.number} · ${pr.hoursOpen}h open · ${pr.reviewState} · branch ${pr.headRefName ?? '<none>'} · author: ${who}`);
+const noVerdict = undispositioned.filter((pr) => pr.verdict === 'missing' || pr.verdict === 'cannot-determine');
+const staleVerdict = undispositioned.filter((pr) => pr.verdict === 'stale');
+function authorOf(pr) {
+  return pr.authorAgent ?? `UNRESOLVED (${pr.authorUnresolvedReason})`;
+}
+if (noVerdict.length > 0) {
+  lines.push('', `⛔ **No review verdict after ${REVIEW_GRACE_HOURS}h** (agent repos) — ${noVerdict.length}:`);
+  for (const pr of noVerdict) {
+    lines.push(`   ${pr.repo} #${pr.number} · head ${String(pr.headRefOid ?? '?').slice(0, 12)} · ${pr.hoursSinceHead}h since push · branch ${pr.headRefName ?? '<none>'} · author: ${authorOf(pr)}`);
+  }
+}
+// A verdict that named an EARLIER head is not "nobody looked" -- it is "what was reviewed is
+// no longer what is there". Different instruction, so a different section.
+if (staleVerdict.length > 0) {
+  lines.push('', `🔁 **Verdict is for an OLDER head — re-review needed** (agent repos) — ${staleVerdict.length}:`);
+  for (const pr of staleVerdict) {
+    lines.push(`   ${pr.repo} #${pr.number} · head ${String(pr.headRefOid ?? '?').slice(0, 12)} · verdict ${pr.verdictDecision} @ ${String(pr.verdictSha).slice(0, 12)} · ${pr.hoursSinceHead}h since push · author: ${authorOf(pr)}`);
   }
 }
 
 // --- flag (b): live deploy-source drift ---------------------------------------------------
 const drifts = AGENT_REPOS_LIST.map(checkoutDrift);
 const driftProblems = drifts.filter(
-  (d) => d.state === 'cannot-determine' || d.state === 'detached' || (d.state === 'behind' && d.overGrace),
+  (d) => d.state === 'cannot-determine' || d.state === 'detached' || d.state === 'not-on-main'
+    || (d.state === 'behind' && d.overGrace),
 );
 lines.push('', '**Live deploy sources** (agent repos):');
 for (const d of drifts) {
@@ -300,6 +432,7 @@ for (const d of drifts) {
     d.state === 'at-main' ? '·'
     : d.state === 'cannot-determine' ? '❓'
     : d.state === 'detached' ? '🔀'
+    : d.state === 'not-on-main' ? '🌿'
     : d.overGrace ? '⛔' : '·';
   lines.push(`   ${icon} ${d.repo}: ${d.state} — ${d.detail}`);
 }
@@ -316,12 +449,29 @@ if (failures.length > 0) {
 try {
   fs.mkdirSync(path.dirname(FINDINGS_PATH), { recursive: true });
   fs.writeFileSync(FINDINGS_PATH, `${JSON.stringify({
+    // RUN ID (review finding 7): the runner matches this against the id IT asked for, so a
+    // crashed sweep cannot have yesterday's findings routed and the notified state trimmed
+    // against them. An exact match, not a freshness heuristic.
+    runId: RUN_ID,
     generatedAtIso: NOW.toISOString(),
     reviewGraceHours: REVIEW_GRACE_HOURS,
     driftGraceHours: DRIFT_GRACE_HOURS,
     rosterReadable: AGENT_KEYS !== null,
+    // WHICH REPOS WERE ACTUALLY SWEPT (review finding 4): the runner trims notified state by
+    // intersecting with open findings, and intersecting against a repo that FAILED to sweep
+    // erases the record for PRs nobody looked at. Same class as the empty-dir guard in
+    // surface-check-journal.py, where the guard has to run BEFORE the intersection.
+    sweptRepos,
+    failedRepos: failures.map((f) => f.split(':')[0]),
     undispositioned,
     drifts,
+    // DRIFT GETS ITS OWN STATUS FIELD (review finding 5). Acceptance (4) is that drift never
+    // reads as CLEAN -- it is NOT that drift sets the exit code. The exit code is already
+    // claimed by "did the job run", so folding drift into it made a finding ABOUT THE REPOS
+    // look like the JOB breaking, and a persistently detached checkout would have masked real
+    // sweep failures behind a permanent 1.
+    driftStatus: driftProblems.length > 0 ? 'problems' : 'clean',
+    driftProblems: driftProblems.map((d) => ({ repo: d.repo, state: d.state, detail: d.detail })),
   }, null, 2)}\n`);
 } catch (error) {
   lines.push(`⚠️ could not write findings artifact: ${String(error.message ?? error).split('\n')[0]}`);
@@ -329,8 +479,14 @@ try {
 
 console.log(lines.join('\n'));
 
-// EXIT 1 ALSO FOR cannot-determine AND detached, not only for sweep failures. Acceptance (4)
-// is that an unanswerable check never reads as clean, and the exit code is what runtime-health
-// consumes -- a digest that printed "❓ could not read git" and exited 0 would be exactly the
-// vacuous pass this row exists to prevent.
-process.exit(failures.length > 0 || driftProblems.length > 0 ? 1 : 0);
+// THE EXIT CODE MEANS "DID THE SWEEP RUN" AND NOTHING ELSE (review finding 5).
+//
+// It used to go non-zero for drift too, on my reading of acceptance (4) that an unanswerable
+// check must never read as clean. That acceptance is right and my implementation of it was
+// wrong: the exit code was ALREADY claimed by job health, so a drift finding -- a fact about a
+// REPO -- rendered as THE JOB BREAKING. Worse, a persistently detached checkout would have
+// pinned this at 1 forever and MASKED every real sweep failure behind it.
+//
+// "Never reads as clean" is satisfied by being present in the digest text AND in `driftStatus`
+// in the findings artifact, which is what runtime-health should consume for drift.
+process.exit(failures.length > 0 ? 1 : 0);
