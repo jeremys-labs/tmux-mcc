@@ -96,3 +96,25 @@ describe('recoverInboundMiss', () => {
     expect(result).toMatchObject({ ok: false, action: 'wake_queued' });
   });
 });
+
+// `cannotActOn` AND ITS THREE TESTS ARE DELETED (isla's step-3 review of PR #36, blockers 3+4).
+// It was a second classifier over a question inbound-reply-reconcile.ts already answers, with
+// the precedence REVERSED, and it branched on a `processStatus` value nothing emits. The
+// replacement is `classifyRecoveryOutcome` in open-brain-runtime-health-monitor.ts, driven off
+// `miss.failureClass`, and its tests live beside it.
+//
+// The one property worth keeping from these tests is carried there: an IDLE runtime is the
+// ordinary success case and must NOT read as unable to act, because inventing a "possibly
+// stuck" state for every unlisted agent is how a working signal becomes noise.
+
+// `recoverInboundMiss carries liveness` AND ITS TWO TESTS ARE DELETED (isla's should-fix on
+// 52927be). The RESULT field they asserted is gone: this row's premise was that livenessFor()
+// computed `progressStatus` and the result shape dropped it, but the fix that landed derives
+// the state from `miss.failureClass` instead, so the field had no production reader left --
+// only these tests. A field declared with no reader is the `holidayPolicy` class, and I
+// maintain the checker that finds it.
+//
+// `livenessFor()` itself is NOT dead and is not removed: `decideReplay` takes its own, LIVE
+// `liveness` (inbound-replay.ts:49) and that is still where the replay policy reads it. My
+// first removal pass stripped that argument too -- a regex matching the NAME rather than the
+// USE -- and tsc caught it immediately. Two fields, one name, different lifetimes.

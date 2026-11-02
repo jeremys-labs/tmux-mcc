@@ -18,6 +18,7 @@ import {
   readOutboundSent,
   readReplyPolicy,
   reconcileInboundReplies,
+  type ReplyMissClass,
   type SupervisorAgentStatus,
 } from './services/inbound-reply-reconcile.js';
 import { recoverInboundMiss } from './services/inbound-miss-recovery.js';
@@ -51,6 +52,19 @@ interface MonitorState {
     action: 'wake_queued' | 'replay_consumed' | 'none';
     agent: string;
     chatId: string;
+    /**
+     * Set when the replay ran but the runtime could not act on it.
+     *
+     * Two facts that used to be fused into one field: "we already replayed this, do not replay
+     * again" and "stop alerting about it". A cannot-act attempt is the first WITHOUT the second
+     * -- it is recorded so the next pass does not re-attempt and get refused
+     * (`already_replayed`, which rendered as a FAILED recovery for a replay that went through),
+     * and it is exempt from the grace so it keeps alerting until the state clears.
+     *
+     * Optional because a pre-existing state file written before this change has no such entry,
+     * and absent must mean "an ordinary attempt", which is the pre-existing behaviour.
+     */
+    cannotAct?: string | null;
   }>;
 }
 
@@ -597,12 +611,330 @@ export function alertFrom<T>(
   return { text: format(deliverable), subjects: deliverable.map(subjectOf) };
 }
 
-/** A repair must reach the same channel a failure would -- see the call site. */
-export function formatInboundRecoveryNotice(
-  entries: Array<{ key: string; agent: string; action: string; reason: string }>,
-): string {
-  const lines = entries.map((entry) => `- ${entry.agent} (${entry.action}): ${entry.reason}`);
-  return [`runtime monitor self-healed ${entries.length} inbound miss(es):`, ...lines].join('\n');
+/**
+ * A repair must reach the same channel a failure would -- see the call site.
+ *
+ * dc-20261011-006: this said "runtime monitor self-healed N inbound miss(es)" UNCONDITIONALLY.
+ * On 2026-10-12 it said exactly that about eli while his runtime was blocked on a Codex usage
+ * limit, and the follow-up pass ten minutes later confirmed the replay had produced no reply.
+ * Nothing had failed -- the message was replayed, the wake was attempted, every step returned
+ * ok -- and the sentence was still false, because SELF-HEALED IS A CLAIM ABOUT THE OUTCOME
+ * AND ALL WE HAD WERE THE ACTIONS. The actions are observable in the same pass; the outcome
+ * is not observable until the agent replies, which is a later pass's evidence.
+ *
+ * So the header reports what was DONE and makes no claim about the outcome at all.
+ *
+ * THIS PARAGRAPH SAID "'Healed' is reserved for entries where the supervisor did not say the
+ * runtime was unable to act", AND THAT IS NO LONGER TRUE (isla's should-fix on 52927be):
+ * "healed" is not reserved, it is GONE. Reserving it for the clean arm would have left the
+ * same overclaim standing one case over, because the outcome is not observable in the pass
+ * that acts whatever the runtime's state. A mixed batch still gets both counts rather than the
+ * flattering one -- that part held.
+ */
+/**
+ * An entry in the recovery notice.
+ *
+ * `alreadyAnswered` IS REQUIRED, NOT OPTIONAL, and that is the design (the same reason
+ * `liveness` is required on InboundRecoveryResult): the compiler then enumerates every push
+ * site, where an optional field lets a new one silently default to the claim-making arm.
+ *
+ * THERE IS NO cannotAct FIELD ANY MORE. A recovery the runtime cannot act on is routed as an
+ * INBOUND FAILURE, not as a recovery notice -- a recovery that cannot be answered is not a
+ * recovery -- so this shape cannot carry one. Keeping the field "defensively" would be a
+ * catch-all arm making a claim on evidence that no longer arrives, which is the exact defect
+ * class in PR #39's staleOneShots fallthrough.
+ */
+/**
+ * WHICH MISS CLASSES MEAN THE RUNTIME CANNOT ACT ON A REPLAY.
+ *
+ * `Record<ReplyMissClass, ...>` and NOT `Partial<...>`: the compiler then forces every member
+ * of the union to be stated here, so adding a class to `ReplyMissClass` is a build error at
+ * this line rather than a silent `undefined` that lands in the can-act branch. That is the
+ * `StaleOneShotJob` lesson from PR #39 -- derive what must FOLLOW the implementation.
+ *
+ * The three non-null entries are the three states reconcile itself derives from the supervisor
+ * snapshot, in reconcile's own vocabulary. `queued_not_consumed` never reaches this loop (it is
+ * filtered out above as the delivery-cursor arm) and is listed as null rather than omitted,
+ * because "cannot occur here" and "can occur and means can-act" must not look the same.
+ */
+const CANNOT_ACT_BY_FAILURE_CLASS: Record<ReplyMissClass, string | null> = {
+  consumed_runtime_dead: 'process dead',
+  consumed_hung: 'hung',
+  consumed_blocked: 'blocked',
+  consumed_idle_no_reply: null,
+  consumed_unknown_no_reply: null,
+  unknown_consumption_no_reply: null,
+  queued_not_consumed: null,
+};
+
+/**
+ * THE FOUR OUTCOMES OF A RECOVERY ATTEMPT, as one pure decision.
+ *
+ * Extracted on isla's step-3 review. The logic was inline in the monitor's recovery loop,
+ * which is reachable only through `runOpenBrainRuntimeHealthMonitor` and its whole fixture --
+ * so the four blockers she found were in code no test could address directly. A decision this
+ * load-bearing needs a seam, and one source means the loop and the tests cannot diverge.
+ *
+ * `cannot-act` is SEPARATE FROM `recovered` because they route to different places and carry
+ * different remedies: a recovery the runtime cannot answer is reported as an inbound FAILURE
+ * (remedy `restart`), not as a self-repair notice (remedy `none`, i.e. suppressed).
+ */
+
+export type RecoveryOutcome = 'failed' | 'already-answered' | 'cannot-act' | 'recovered';
+
+export function classifyRecoveryOutcome(input: {
+  failureClass: ReplyMissClass;
+  ok: boolean;
+  action: string;
+}): { outcome: RecoveryOutcome; cannotAct: string | null } {
+  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  if (!input.ok) return { outcome: 'failed', cannotAct };
+  // THE OBSERVED OUTCOME OUTRANKS THE RUNTIME-STATE EVIDENCE, and this order is the fix for
+  // isla's blocker 2 / codex's P2. `ok` with action 'none' is only ever "an outbound reply
+  // landed before recovery" (inbound-miss-recovery.ts:150): the reply is CONFIRMED, so a
+  // blocked runtime is irrelevant -- nothing is waiting on it. Testing cannotAct first
+  // reported a confirmed reply as "replayed into a runtime that cannot act, NOT healed".
+  if (input.action === 'none') return { outcome: 'already-answered', cannotAct: null };
+  if (cannotAct) return { outcome: 'cannot-act', cannotAct };
+  return { outcome: 'recovered', cannotAct: null };
+}
+
+/**
+ * WHAT TO DO ABOUT A MISS THAT WAS ALREADY ATTEMPTED, as one pure decision.
+ *
+ * Extracted for the same reason as `classifyRecoveryOutcome`, and on the same review: isla's
+ * note that writing the attempt in the cannot-act branch "leaves 84/84 green, because the loop
+ * is still untested". A branch nobody can reach from a test is a branch where defects live --
+ * all four of her first-pass blockers were in this loop.
+ *
+ * The four answers are genuinely different actions, and collapsing any two is a defect I have
+ * already shipped once in this file:
+ *   attempt           -- nothing has been tried yet.
+ *   suppress          -- a replay is in flight and inside its grace; give it time to be answered.
+ *   alertCannotAct    -- replayed, and the runtime could not act. NEVER suppressed: a runtime
+ *                        that cannot act is not going to answer, so waiting quietly IS the
+ *                        suppression blocker 1 is about.
+ *   alertExhausted    -- replayed, grace elapsed, still no reply. The forced recovery did not work.
+ */
+export type PriorAttemptPlan = 'attempt' | 'suppress' | 'alertCannotAct' | 'alertExhausted';
+
+export interface RecoveryAttemptRecord {
+  attemptedAt: string;
+  action: 'wake_queued' | 'replay_consumed' | 'none';
+  agent: string;
+  chatId: string;
+  cannotAct?: string | null;
+}
+
+/**
+ * THE PLAN RETURNS THE NEXT STATE ENTRY AS WELL, so the WRITE is part of the tested value and
+ * not a line in an untested loop (isla's third pass: "Deleting it today leaves 86/86 green").
+ * The loop's only job is to apply what this returns.
+ *
+ * `nextAttempt` semantics: the entry to store, or `null` to leave the existing one alone.
+ */
+export function planPriorAttempt(input: {
+  priorAttempt?: RecoveryAttemptRecord | undefined;
+  /** The miss's CURRENT class this pass -- not the one the attempt was made under. */
+  currentCannotAct: string | null;
+  checkedAt: string;
+  graceMinutes: number;
+}): { plan: PriorAttemptPlan; nextAttempt: RecoveryAttemptRecord | null } {
+  const prior = input.priorAttempt;
+  if (!prior) return { plan: 'attempt', nextAttempt: null };
+
+  // THE STORED cannotAct NEVER CLEARED, AND THAT WAS THE BUG (isla's third pass; she ran it).
+  // Keyed only on `prior.cannotAct`, a runtime that went blocked -> idle still planned
+  // `alertCannotAct` forever -- and because `inboundReplyMissFingerprint` is `key:failureClass`,
+  // THE CLASS CHANGE DEFEATS DEDUPE, so a fresh alert went out telling someone to restart a
+  // runtime that had just become able to answer.
+  //
+  // This is the sticky-state class I spent this morning removing from `auditFailures` in
+  // dc-20261019-009: a cumulative field with no reset path, asserted against a world that has
+  // since changed. Same shape, same day, different file, introduced by me in the fix for the
+  // previous round.
+  if (prior.cannotAct && !input.currentCannotAct) {
+    // CLEARED. Reset to an ordinary attempt stamped NOW, so the replay that already happened
+    // gets its grace from the moment the runtime became able to answer -- then `alertExhausted`
+    // if it still produces nothing. Re-stamping is what gives it that window.
+    return {
+      plan: 'suppress',
+      nextAttempt: { ...prior, attemptedAt: input.checkedAt, cannotAct: null },
+    };
+  }
+  // Checked BEFORE the grace, deliberately. Order is the fix from the previous round: a
+  // cannot-act attempt inside its grace would otherwise suppress, which is the silence this
+  // row exists to remove.
+  if (input.currentCannotAct) {
+    return { plan: 'alertCannotAct', nextAttempt: null };
+  }
+  if (recoveryAttemptStillInGrace({
+    attemptedAt: prior.attemptedAt,
+    checkedAt: input.checkedAt,
+    graceMinutes: input.graceMinutes,
+  })) return { plan: 'suppress', nextAttempt: null };
+  return { plan: 'alertExhausted', nextAttempt: null };
+}
+
+/**
+ * WHERE EACH OUTCOME GOES, as data rather than as a three-way `if`.
+ *
+ * `runOpenBrainRuntimeHealthMonitor` has NO test anywhere in this package -- which is exactly
+ * why isla found four blockers inside its recovery loop. A dispatch expressed as control flow
+ * in an untested function is unpinnable; expressed as a map it is one assertion.
+ *
+ * `inboundAlert` carries alarm class `inbound`, whose WITHHELD_REMEDY is 'restart'.
+ * `recoveryNotice` carries `inboundRecovery`, whose remedy is 'none' -- SUPPRESSED FROM THE
+ * PRINCIPAL as self-repair. That is the whole of blocker 1: a cannot-act recovery used to go
+ * to the suppressed side, so on 2026-10-12, with eli both the subject and the default
+ * destination, the only surviving record would have said nothing here needs a human.
+ */
+export const RECOVERY_OUTCOME_ROUTE: Record<RecoveryOutcome, 'inboundAlert' | 'recoveryNotice'> = {
+  failed: 'inboundAlert',
+  'cannot-act': 'inboundAlert',
+  'already-answered': 'recoveryNotice',
+  recovered: 'recoveryNotice',
+};
+
+/**
+ * THE WHOLE RECOVERY DECISION, INCLUDING THE STATE WRITE AND THE ALERT TEXT, as one pure value.
+ *
+ * isla's fourth pass. I had extracted the two classifications and still left THREE
+ * `recoveryAttempts[...] = ...` writes and all the detail strings inline, so "the loop only
+ * applies it" was false and deleting a write left 88/88 green. And the text itself carried a
+ * defect my tests could not see, because they asserted the PLAN and never the STRING: the
+ * healthy-then-blocked alert read `priorAttempt?.cannotAct`, which is undefined in exactly that
+ * case, so it rendered "the runtime was undefined".
+ *
+ * PINNING A DECISION AND NOT ITS RENDERING IS HALF A CONTROL. The text is a claim a human acts
+ * on, so it belongs in the tested value.
+ *
+ * Called at most twice per miss per pass: once with no `recovery` (which may answer `attempt`),
+ * and then once with the result. The loop's entire job is to apply what comes back.
+ */
+export interface RecoveryDecision {
+  route: 'attempt' | 'suppress' | 'inboundAlert' | 'recoveryNotice';
+  /** The entry to store, or null to leave the existing one alone. */
+  nextAttempt: RecoveryAttemptRecord | null;
+  /** The alert detail, for `inboundAlert` only. */
+  detail: string | null;
+  /** For `recoveryNotice` only: the reply had already landed. */
+  alreadyAnswered: boolean;
+}
+
+export function decideRecovery(input: {
+  failureClass: ReplyMissClass;
+  missDetail: string;
+  missAgent: string;
+  missChatId: string;
+  priorAttempt?: RecoveryAttemptRecord | undefined;
+  recovery?: { ok: boolean; action: 'wake_queued' | 'replay_consumed' | 'none'; reason: string } | null;
+  checkedAt: string;
+  graceMinutes: number;
+}): RecoveryDecision {
+  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  const base = { nextAttempt: null, detail: null, alreadyAnswered: false } as const;
+
+  if (input.priorAttempt) {
+    const { plan, nextAttempt } = planPriorAttempt({
+      priorAttempt: input.priorAttempt,
+      currentCannotAct: cannotAct,
+      checkedAt: input.checkedAt,
+      graceMinutes: input.graceMinutes,
+    });
+    if (plan === 'suppress') return { ...base, route: 'suppress', nextAttempt };
+    if (plan === 'alertCannotAct') {
+      return {
+        ...base,
+        route: 'inboundAlert',
+        // THE CURRENT VALUE, NOT THE STORED ONE. `priorAttempt.cannotAct` is undefined when the
+        // attempt was made against a healthy runtime that has since gone blocked -- the case a
+        // surviving mutation made me add a test for, and the case whose TEXT then said
+        // "the runtime was undefined" because the test only checked the plan.
+        detail: `${input.missDetail}; replayed at ${input.priorAttempt.attemptedAt} and the runtime`
+          + ` is ${cannotAct} -- still not answered`,
+      };
+    }
+    return {
+      ...base,
+      route: 'inboundAlert',
+      detail: `${input.missDetail}; forced recovery ${input.priorAttempt.action}`
+        + ` at ${input.priorAttempt.attemptedAt} did not produce a reply`,
+    };
+  }
+
+  if (!input.recovery) return { ...base, route: 'attempt' };
+
+  const record = (markCannotAct: string | null): RecoveryAttemptRecord => ({
+    attemptedAt: input.checkedAt,
+    action: input.recovery!.action,
+    agent: input.missAgent,
+    chatId: input.missChatId,
+    cannotAct: markCannotAct,
+  });
+  const { outcome } = classifyRecoveryOutcome({
+    failureClass: input.failureClass, ok: input.recovery.ok, action: input.recovery.action,
+  });
+  if (outcome === 'failed') {
+    return {
+      ...base,
+      route: 'inboundAlert',
+      detail: `${input.missDetail}; forced recovery failed: ${input.recovery.reason}`,
+    };
+  }
+  if (outcome === 'cannot-act') {
+    return {
+      route: 'inboundAlert',
+      nextAttempt: record(cannotAct),
+      detail: `${input.missDetail}; recovery ${input.recovery.action} ran but the runtime is`
+        + ` ${cannotAct} -- it will not be answered until that clears`,
+      alreadyAnswered: false,
+    };
+  }
+  return {
+    route: 'recoveryNotice',
+    nextAttempt: record(null),
+    detail: null,
+    alreadyAnswered: outcome === 'already-answered',
+  };
+}
+
+export interface RecoveryNoticeEntry {
+  key: string;
+  agent: string;
+  action: string;
+  reason: string;
+  /** The reply had ALREADY landed, so nothing was replayed and nothing is pending. */
+  alreadyAnswered: boolean;
+}
+
+export function formatInboundRecoveryNotice(entries: RecoveryNoticeEntry[]): string {
+  const answered = entries.filter((entry) => entry.alreadyAnswered);
+  const lines = entries.map((entry) => (entry.alreadyAnswered
+    // NOT a replay and NOT pending. Isla's blocker 2 and Codex's P2, same defect: an outbound
+    // reply that landed between reconciliation and recovery was reported as a replay into a
+    // runtime that cannot act -- "NOT healed", "will not be answered" -- about a miss whose
+    // reply had been CONFIRMED. The observed outcome outranks the runtime-state evidence.
+    ? `- ${entry.agent}: a reply had already landed; no replay was needed (${entry.reason})`
+    : `- ${entry.agent} (${entry.action}): ${entry.reason}`));
+
+  // THE HEADER REPORTS ACTIONS, NEVER THE OUTCOME. "self-healed" was the founding defect of
+  // this row and removing it only for the cannot-act case would have left the same overclaim
+  // standing for every other case: the actions are observable in this pass, a reply is not
+  // observable until a later one. SCOPE CALL, stated for the reviewer to overrule rather than
+  // discover: the row asked for the cannot-act case, and the same sentence is untrue one case
+  // over, which is the 2026-08-03 instance-versus-class miss this row already cites.
+  const replayed = entries.length - answered.length;
+  let header: string;
+  if (answered.length === entries.length) {
+    header = `runtime monitor found ${entries.length} inbound miss(es) already answered; nothing was replayed:`;
+  } else if (answered.length === 0) {
+    header = `runtime monitor replayed ${entries.length} inbound miss(es); no reply observed yet:`;
+  } else {
+    header = `runtime monitor acted on ${entries.length} inbound miss(es):`
+      + ` ${replayed} replayed, ${answered.length} already answered:`;
+  }
+  return [header, ...lines].join('\n');
 }
 
 /**
@@ -1028,7 +1360,7 @@ async function main(): Promise<void> {
   });
   const inboundAlertMisses = [] as typeof inboundResult.misses;
   const recoveryAttempts = { ...(state.inboundRecoveryAttempts ?? {}) };
-  const recoveredThisPass: Array<{ key: string; agent: string; action: string; reason: string }> = [];
+  const recoveredThisPass: RecoveryNoticeEntry[] = [];
   const outboundNow = readOutboundSent(contentRoot);
   for (const [key, attempt] of Object.entries(recoveryAttempts)) {
     if (outboundNow.some((sent) =>
@@ -1041,22 +1373,40 @@ async function main(): Promise<void> {
   // reply recovery prevents two independent actions and two competing alerts
   // for the same stuck inbox row.
   for (const miss of inboundResult.misses.filter((candidate) => candidate.failureClass !== 'queued_not_consumed')) {
-    const priorAttempt = recoveryAttempts[miss.key];
-    if (priorAttempt) {
-      if (recoveryAttemptStillInGrace({
-        attemptedAt: priorAttempt.attemptedAt,
+    // THE LOOP APPLIES DECISIONS AND MAKES NONE. Every route, every state write and every
+    // alert string comes back from `decideRecovery`, because this function has no test in the
+    // package and anything it decides for itself is unpinnable by construction -- which is
+    // where all four of the first-pass blockers lived.
+    const decide = (recovery?: { ok: boolean; action: 'wake_queued' | 'replay_consumed' | 'none'; reason: string }) =>
+      decideRecovery({
+        failureClass: miss.failureClass,
+        missDetail: miss.detail,
+        missAgent: miss.agent,
+        missChatId: miss.chatId,
+        priorAttempt: recoveryAttempts[miss.key],
+        recovery,
         checkedAt: inboundResult.checkedAtIso,
         graceMinutes: miss.graceMinutes,
-      })) {
-        process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
-        continue;
-      }
-      inboundAlertMisses.push({
-        ...miss,
-        detail: `${miss.detail}; forced recovery ${priorAttempt.action} at ${priorAttempt.attemptedAt} did not produce a reply`,
       });
-      continue;
-    }
+
+    const apply = (d: RecoveryDecision, recovery?: { action: string; reason: string }) => {
+      if (d.nextAttempt) recoveryAttempts[miss.key] = d.nextAttempt;
+      if (d.route === 'inboundAlert') inboundAlertMisses.push({ ...miss, detail: d.detail ?? miss.detail });
+      else if (d.route === 'suppress') {
+        process.stdout.write(`inbound recovery pending for ${miss.key}; alert suppressed\n`);
+      } else if (d.route === 'recoveryNotice' && recovery) {
+        recoveredThisPass.push({
+          key: miss.key,
+          agent: miss.agent,
+          action: recovery.action,
+          reason: recovery.reason,
+          alreadyAnswered: d.alreadyAnswered,
+        });
+      }
+    };
+
+    const first = decide();
+    if (first.route !== 'attempt') { apply(first); continue; }
 
     if (dryRun) {
       inboundAlertMisses.push(miss);
@@ -1068,18 +1418,10 @@ async function main(): Promise<void> {
       supervisorStatuses,
       dependencies: { now: new Date(inboundResult.checkedAtIso) },
     });
-    process.stdout.write(`inbound recovery ${recovery.ok ? 'succeeded' : 'failed'} for ${miss.key}: ${recovery.reason}\n`);
-    if (recovery.ok) {
-      recoveryAttempts[miss.key] = {
-        attemptedAt: inboundResult.checkedAtIso,
-        action: recovery.action,
-        agent: miss.agent,
-        chatId: miss.chatId,
-      };
-      recoveredThisPass.push({ key: miss.key, agent: miss.agent, action: recovery.action, reason: recovery.reason });
-    } else {
-      inboundAlertMisses.push({ ...miss, detail: `${miss.detail}; forced recovery failed: ${recovery.reason}` });
-    }
+    const second = decide(recovery);
+    process.stdout.write(`inbound recovery ${second.route}`
+      + ` for ${miss.key}: ${recovery.reason}\n`);
+    apply(second, recovery);
   }
   nextState.inboundRecoveryAttempts = recoveryAttempts;
 

@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   alertFrom,
+  classifyRecoveryOutcome,
+  decideRecovery,
+  planPriorAttempt,
+  RECOVERY_OUTCOME_ROUTE,
   deliveryFailureFingerprint,
   findDeliveryFailures,
   formatDeliveryFailureAlert,
   formatInboundRecoveryNotice,
+  type RecoveryNoticeEntry,
   recoverDeliveryFailuresBeforeAlert,
   recoveryAttemptStillInGrace,
   withholdReason,
@@ -25,6 +30,9 @@ import {
   formatWithheldLogHeader,
   SCHEDULER_FLEET_SUBJECT,
 } from './open-brain-runtime-health-monitor.js';
+import type { ReplyMissClass } from './services/inbound-reply-reconcile.js';
+
+const ATTEMPT = { action: 'replay_consumed' as const, agent: 'eli', chatId: 'c1' };
 import type { RuntimeHealthReport } from './services/runtime-health.js';
 
 function report(): RuntimeHealthReport {
@@ -306,8 +314,19 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
   // the only thing that happened this pass, `alerts.length === 0` returned before anyone
   // outside a log reader learned a repair had occurred. This suite covers the notice that
   // now routes a recovery through the same alertFrom/planAlertDispatch path as a failure.
-  const recovered = (agent: string, key = `${agent}:miss`) => ({
+  //
+  // REWRITTEN on isla's step-3 MUST-CHANGE at 414ef3d. The `stuck()` helper and its four
+  // tests are GONE because a cannot-act recovery no longer reaches this notice at all: it is
+  // routed as an inbound FAILURE (blocker 1), so `RecoveryNoticeEntry` cannot carry a
+  // `cannotAct` field and the arm that rendered one cannot exist. Those properties are now
+  // pinned on `classifyRecoveryOutcome` below, which is where the decision actually lives.
+  const recovered = (agent: string, key = `${agent}:miss`): RecoveryNoticeEntry => ({
     key, agent, action: 'replay_consumed', reason: `queued message replayed for ${agent}`,
+    alreadyAnswered: false,
+  });
+  const answered = (agent: string, key = `${agent}:miss`): RecoveryNoticeEntry => ({
+    key, agent, action: 'none', reason: 'an outbound reply landed before recovery',
+    alreadyAnswered: true,
   });
 
   it('formats a plain-language notice naming the agent, action, and reason', () => {
@@ -315,7 +334,44 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     expect(text).toContain('dana');
     expect(text).toContain('replay_consumed');
     expect(text).toContain('queued message replayed for dana');
-    expect(text).toContain('self-healed 1 inbound miss(es)');
+    expect(text).toContain('replayed 1 inbound miss(es)');
+  });
+
+  it('THE HEADER NEVER CLAIMS AN OUTCOME: "self-healed" appears nowhere', () => {
+    // The founding defect of dc-20261011-006. On 2026-10-12T02:39:50Z this said "self-healed
+    // 1 inbound miss(es): eli (replay_consumed)" while eli's runtime was blocked on a Codex
+    // usage limit, and the 02:49:58Z pass confirmed the replay produced no reply. Nothing had
+    // failed, and the sentence was still false: SELF-HEALED IS A CLAIM ABOUT THE OUTCOME and a
+    // pass only ever observes the ACTIONS.
+    //
+    // Removing it only for the cannot-act case would have left the same overclaim standing for
+    // every other case -- the 2026-08-03 instance-versus-class miss this row already cites.
+    for (const entries of [[recovered('dana')], [answered('dana')],
+                           [recovered('dana'), answered('eli', 'eli:miss')]]) {
+      const text = formatInboundRecoveryNotice(entries);
+      expect(text, JSON.stringify(entries)).not.toContain('self-heal');
+    }
+  });
+
+  it('an ALREADY-ANSWERED miss is not reported as a replay, and not as pending', () => {
+    // isla's blocker 2 and codex's P2, the same defect: an outbound reply that landed between
+    // reconciliation and recovery was passed through with `cannotAct` populated, so the notice
+    // claimed a replay occurred, said it would not be answered, and labelled the miss "NOT
+    // healed" -- about a miss whose reply had been CONFIRMED. This PR introduced that.
+    const text = formatInboundRecoveryNotice([answered('eli')]);
+    expect(text).toContain('already answered');
+    expect(text).toContain('no replay was needed');
+    expect(text).not.toContain('NOT healed');
+    expect(text).not.toContain('will NOT be answered');
+    expect(text).not.toContain('replay_consumed');
+  });
+
+  it('a mixed batch reports BOTH counts, not the flattering one', () => {
+    const text = formatInboundRecoveryNotice([recovered('dana'), answered('eli', 'eli:miss')]);
+    expect(text).toContain('1 replayed');
+    expect(text).toContain('1 already answered');
+    expect(text).toContain('dana');
+    expect(text).toContain('eli');
   });
 
   it('a recovery notice about the destination itself is withheld, never routed to its own channel', () => {
@@ -340,18 +396,283 @@ describe('a repair must reach the same channel a failure would (2026-09-13 RECOV
     });
     const alert = alertFrom(split.deliverable, formatInboundRecoveryNotice, (entry) => entry.agent);
     expect(alert.subjects).toEqual(['dana']);
-    expect(alert.text).toContain('self-healed');
+    expect(alert.text).toContain('replayed');
     expect(alert.text).toContain('dana');
   });
 
   it('multiple recoveries in one pass are named individually, not collapsed into a count', () => {
     const text = formatInboundRecoveryNotice([recovered('dana'), recovered('simone', 'simone:miss')]);
-    expect(text).toContain('self-healed 2 inbound miss(es)');
+    expect(text).toContain('replayed 2 inbound miss(es)');
     expect(text).toContain('dana');
     expect(text).toContain('simone');
   });
 });
 
+describe('decideRecovery \u2014 route, write and TEXT as one tested value (PR #36 fourth pass)', () => {
+  const MISS = { failureClass: 'consumed_blocked' as ReplyMissClass, missDetail: 'eli did not reply',
+                 missAgent: 'eli', missChatId: 'c1', checkedAt: '2026-10-30T12:00:00Z', graceMinutes: 30 };
+  const OK = { ok: true, action: 'replay_consumed' as const, reason: 'queued message replayed' };
+  const d = (over: Record<string, unknown>) => decideRecovery({ ...MISS, ...over } as never);
+
+  it('NO DETAIL EVER RENDERS "undefined" \u2014 the general form of the defect', () => {
+    // isla's fourth pass: the healthy-then-blocked alert read `priorAttempt?.cannotAct`, which
+    // is undefined in exactly that case, so it told a human "the runtime was undefined".
+    //
+    // MY OWN TEST FOR THAT CASE COULD NOT SEE IT, because it asserted the PLAN and never the
+    // STRING. Pinning a decision and not its rendering is half a control, and the text is the
+    // part a human acts on. So this asserts the CLASS across every route rather than the one
+    // instance she found.
+    const cases: Array<Record<string, unknown>> = [
+      { recovery: OK },                                                              // cannot-act
+      { recovery: { ok: false, action: 'replay_consumed', reason: 'boom' } },         // failed
+      { recovery: { ...OK, action: 'none' } },                                        // answered
+      { failureClass: 'consumed_idle_no_reply', recovery: OK },                       // recovered
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' } },
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' } },          // healthy -> blocked
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, failureClass: 'consumed_idle_no_reply' },
+      { priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' },
+        failureClass: 'consumed_idle_no_reply' },                                     // cleared
+    ];
+    for (const c of cases) {
+      const r = d(c);
+      expect(r.detail ?? '', JSON.stringify(c)).not.toContain('undefined');
+      expect(JSON.stringify(r.nextAttempt ?? {}), JSON.stringify(c)).not.toContain('undefined');
+    }
+  });
+
+  it('HEALTHY -> BLOCKED names the CURRENT state in the text', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' } });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('the runtime is blocked');
+    expect(r.detail).toContain('still not answered');
+    expect(r.nextAttempt).toBeNull();
+  });
+
+  it('FIRST PASS, replay ran, runtime blocked: alert side, state written, text names the state', () => {
+    const r = d({ recovery: OK });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('recovery replay_consumed ran but the runtime is blocked');
+    expect(r.nextAttempt).toMatchObject({ cannotAct: 'blocked', agent: 'eli', chatId: 'c1',
+                                          attemptedAt: '2026-10-30T12:00:00Z' });
+  });
+
+  it('SECOND PASS, still blocked: alerts again, writes nothing new', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T11:00:00Z', cannotAct: 'blocked' } });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('replayed at 2026-10-30T11:00:00Z');
+    expect(r.nextAttempt).toBeNull();
+  });
+
+  it('THIRD PASS, runtime cleared: suppresses and re-stamps, so no fresh restart alert', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' },
+                  failureClass: 'consumed_idle_no_reply' });
+    expect(r.route).toBe('suppress');
+    expect(r.nextAttempt).toMatchObject({ cannotAct: null, attemptedAt: '2026-10-30T12:00:00Z' });
+  });
+
+  it('FOURTH PASS, cleared and the grace elapsed: the forced recovery did not work', () => {
+    const r = d({ priorAttempt: { ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' },
+                  failureClass: 'consumed_idle_no_reply' });
+    expect(r.route).toBe('inboundAlert');
+    expect(r.detail).toContain('did not produce a reply');
+  });
+
+  it('a failed recovery, an already-answered miss, and a clean one each route and read correctly', () => {
+    const failed = d({ recovery: { ok: false, action: 'replay_consumed', reason: 'replay refused' } });
+    expect(failed.route).toBe('inboundAlert');
+    expect(failed.detail).toContain('forced recovery failed: replay refused');
+    expect(failed.nextAttempt).toBeNull();          // a failure must not record an attempt
+
+    const answered = d({ recovery: { ...OK, action: 'none', reason: 'an outbound reply landed before recovery' } });
+    expect(answered.route).toBe('recoveryNotice');
+    expect(answered.alreadyAnswered).toBe(true);
+
+    const clean = d({ failureClass: 'consumed_idle_no_reply', recovery: OK });
+    expect(clean.route).toBe('recoveryNotice');
+    expect(clean.alreadyAnswered).toBe(false);
+    expect(clean.nextAttempt).toMatchObject({ cannotAct: null });
+  });
+
+  it('no prior attempt and no recovery yet is `attempt`, and writes nothing', () => {
+    const r = d({});
+    expect(r.route).toBe('attempt');
+    expect(r.nextAttempt).toBeNull();
+    expect(r.detail).toBeNull();
+  });
+});
+
+describe('classifyRecoveryOutcome — one classifier, the miss’s own (PR #36 blockers 1-4)', () => {
+  const at = (failureClass: ReplyMissClass, ok: boolean, action: string) =>
+    classifyRecoveryOutcome({ failureClass, ok, action });
+
+  it('a failed recovery is `failed` whatever the runtime state', () => {
+    expect(at('consumed_blocked', false, 'replay_consumed').outcome).toBe('failed');
+    expect(at('consumed_idle_no_reply', false, 'replay_consumed').outcome).toBe('failed');
+  });
+
+  it('the three states reconcile derives from the supervisor are cannot-act', () => {
+    expect(at('consumed_runtime_dead', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'process dead' });
+    expect(at('consumed_hung', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'hung' });
+    expect(at('consumed_blocked', true, 'replay_consumed'))
+      .toEqual({ outcome: 'cannot-act', cannotAct: 'blocked' });
+  });
+
+  it('an IDLE runtime is the ordinary success case, NOT unable to act', () => {
+    // Carried over from the deleted cannotActOn suite, because it is the property that keeps
+    // this from becoming noise: an idle runtime will pick the replay up. Inventing a "possibly
+    // stuck" state for every agent the supervisor has not listed is how a guard gets ignored.
+    expect(at('consumed_idle_no_reply', true, 'replay_consumed'))
+      .toEqual({ outcome: 'recovered', cannotAct: null });
+    expect(at('consumed_unknown_no_reply', true, 'replay_consumed').outcome).toBe('recovered');
+    expect(at('unknown_consumption_no_reply', true, 'replay_consumed').outcome).toBe('recovered');
+  });
+
+  it('ALREADY-ANSWERED OUTRANKS cannot-act, which is the ordering fix itself', () => {
+    // The observed outcome beats the runtime-state evidence. Testing cannotAct first reported
+    // a CONFIRMED reply as "replayed into a runtime that cannot act, NOT healed" -- isla's
+    // blocker 2 and codex's P2. Driven on the exact combination that produced it: the reply
+    // landed AND the supervisor still says blocked.
+    expect(at('consumed_blocked', true, 'none'))
+      .toEqual({ outcome: 'already-answered', cannotAct: null });
+    expect(at('consumed_runtime_dead', true, 'none').outcome).toBe('already-answered');
+    expect(at('consumed_idle_no_reply', true, 'none').outcome).toBe('already-answered');
+  });
+
+  it('PRECEDENCE MATCHES RECONCILE: dead before hung before blocked', () => {
+    // Blocker 3. cannotActOn tested blocked -> hung -> dead while reconcile tests
+    // dead -> hung -> blocked (inbound-reply-reconcile.ts:299/306/313), so a runtime that was
+    // both got a different answer depending on which classifier you asked. There is now one
+    // source, and this asserts each class maps to reconcile's own name for it.
+    const names = (['consumed_runtime_dead', 'consumed_hung', 'consumed_blocked'] as const)
+      .map((c) => at(c, true, 'replay_consumed').cannotAct);
+    expect(names).toEqual(['process dead', 'hung', 'blocked']);
+  });
+
+  const plan = (prior: Record<string, unknown> | undefined, currentCannotAct: string | null,
+                checkedAt = '2026-10-30T12:00:00Z', graceMinutes = 30) =>
+    planPriorAttempt({ priorAttempt: prior as never, currentCannotAct, checkedAt, graceMinutes });
+
+  it('A CANNOT-ACT ATTEMPT IS NEVER GRACE-SUPPRESSED while the runtime is STILL stuck', () => {
+    // Second-pass finding. I had left the attempt unrecorded so the grace could not suppress
+    // the alert, which made the NEXT pass re-replay and be refused `already_replayed` -- a
+    // FAILURE reported for a replay that went through. The attempt is recorded; the GRACE is
+    // what learns to ignore it.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'blocked' }, 'blocked');
+    expect(r.plan).toBe('alertCannotAct');
+    // the control: the SAME timing with no cannot-act state is correctly suppressed
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' }, null).plan).toBe('suppress');
+  });
+
+  it('BLOCKED -> IDLE RESETS THE ATTEMPT: no fresh restart alert for a runtime that just cleared', () => {
+    // isla's third pass, and she ran it. Keyed only on the STORED `cannotAct`, which never
+    // cleared, a runtime going blocked -> idle still planned `alertCannotAct` forever -- and
+    // because `inboundReplyMissFingerprint` is `key:failureClass`, THE CLASS CHANGE DEFEATS
+    // DEDUPE, so a fresh alert went out telling someone to restart a runtime that had just
+    // become able to answer.
+    //
+    // This is the sticky-state class I spent the same morning removing from `auditFailures` in
+    // dc-20261019-009: a cumulative field with no reset path. Same shape, same day, different
+    // file, introduced by me in the fix for the previous round.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    expect(r.plan).toBe('suppress');                   // NOT alertCannotAct
+    expect(r.nextAttempt).toMatchObject({
+      action: 'replay_consumed', agent: 'eli', chatId: 'c1',
+      attemptedAt: '2026-10-30T12:00:00Z',             // RE-STAMPED NOW, so the grace restarts
+      cannotAct: null,                                 // and the sticky flag is cleared
+    });
+  });
+
+  it('BLOCKED -> IDLE -> GRACE ELAPSED becomes alertExhausted, not alertCannotAct', () => {
+    // The second half of what isla asked to be tested. After the reset, the replay gets its
+    // grace from the moment the runtime became able to answer; if it still produces nothing,
+    // that is "the forced recovery did not work" -- a different finding with a different
+    // instruction from "the runtime cannot act".
+    const reset = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    const after = plan(reset.nextAttempt as never, null, '2026-10-30T13:00:00Z');
+    expect(after.plan).toBe('alertExhausted');
+  });
+
+  it('THE WRITE IS IN THE RETURNED VALUE, so deleting the loop line cannot stay green', () => {
+    // isla's third pass: "Deleting it today leaves 86/86 green ... make the plan return the
+    // next attempts entry, so the write is in the tested value. The loop just applies it."
+    // The loop has no test, so anything it decides for itself is unpinnable.
+    const cleared = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z', cannotAct: 'blocked' }, null);
+    expect(cleared.nextAttempt).not.toBeNull();
+    // and the plans that must NOT rewrite state say so explicitly rather than by omission
+    expect(plan(undefined, null).nextAttempt).toBeNull();
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z', cannotAct: 'hung' }, 'hung').nextAttempt).toBeNull();
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, null).nextAttempt).toBeNull();
+  });
+
+  it('AN ORDINARY ATTEMPT WHOSE RUNTIME HAS SINCE GONE BLOCKED becomes alertCannotAct', () => {
+    // FOUND BY A SURVIVING MUTATION, not by review: swapping the current-state check for the
+    // STORED flag changed nothing, because by that line the cleared case has already returned,
+    // so the two are equivalent for every case a test covered.
+    //
+    // The case they are NOT equivalent for is this one -- replayed while the runtime was
+    // healthy, and the runtime went blocked afterwards. Keying on the stored flag would plan
+    // `suppress` and then `alertExhausted` ("the forced recovery did not produce a reply"),
+    // which sends someone looking at the wrong thing: the reason it produced no reply is
+    // sitting in the current state. Keying on the CURRENT state says so.
+    const r = plan({ ...ATTEMPT, attemptedAt: '2026-10-30T11:59:00Z' }, 'blocked');
+    expect(r.plan).toBe('alertCannotAct');
+    expect(r.nextAttempt).toBeNull();
+    // and once the grace has elapsed it is STILL the cannot-act finding, not "no reply"
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T09:00:00Z' }, 'hung').plan)
+      .toBe('alertCannotAct');
+  });
+
+  it('the other prior-attempt plans are distinct', () => {
+    expect(plan(undefined, null).plan).toBe('attempt');
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T10:00:00Z' }, null).plan).toBe('alertExhausted');
+    // a STILL-stuck runtime stays the cannot-act finding even once the grace has elapsed: the
+    // cause is known and the instruction is different from "did not produce a reply"
+    expect(plan({ ...ATTEMPT, attemptedAt: '2026-10-30T10:00:00Z', cannotAct: 'hung' }, 'hung').plan)
+      .toBe('alertCannotAct');
+  });
+
+  it('A CANNOT-ACT RECOVERY ROUTES TO THE ALERT SIDE, NOT THE SUPPRESSED SIDE (blocker 1)', () => {
+    // The defect in one assertion. `recoveryNotice` carries alarm class `inboundRecovery`,
+    // whose WITHHELD_REMEDY is 'none' = SUPPRESSED FROM THE PRINCIPAL as self-repair. A
+    // recovery the runtime cannot answer used to go there, so on 2026-10-12 -- eli both the
+    // subject and the default destination -- the only surviving record would have said
+    // nothing here needs a human, about a runtime blocked on a usage limit.
+    expect(RECOVERY_OUTCOME_ROUTE['cannot-act']).toBe('inboundAlert');
+    expect(RECOVERY_OUTCOME_ROUTE.failed).toBe('inboundAlert');
+    // AND THE COMPOSITION THAT ACTUALLY MATTERS, asserted through the PUBLIC behaviour rather
+    // than by reaching into the remedy map: an `inbound` finding yields a real first-line
+    // action, an `inboundRecovery` finding yields none, which is what "suppressed" means here.
+    expect(withheldFirstLineAction({
+      destinationAgent: 'eli', incidents: [{ alarmClass: 'inbound', subject: 'eli' } as never],
+    })).toContain('Restart eli');
+    expect(withheldNeedsPrincipal([{ alarmClass: 'inboundRecovery', subject: 'eli' } as never]))
+      .toBe(false);
+    expect(withheldNeedsPrincipal([{ alarmClass: 'inbound', subject: 'eli' } as never]))
+      .toBe(true);
+  });
+
+  it('a genuine recovery and an already-answered miss stay on the notice side', () => {
+    // The control. Routing these to the alert side would tell Jeremy to restart an agent that
+    // just self-repaired -- a false instruction in the first line of the one message that is
+    // supposed to be nothing but a true instruction.
+    expect(RECOVERY_OUTCOME_ROUTE.recovered).toBe('recoveryNotice');
+    expect(RECOVERY_OUTCOME_ROUTE['already-answered']).toBe('recoveryNotice');
+  });
+
+  it('EVERY member of ReplyMissClass is classified -- no silent undefined', () => {
+    // The map is `Record<ReplyMissClass, ...>` so omitting a member is a BUILD error, not a
+    // runtime undefined landing in the can-act branch. This asserts the runtime half: every
+    // class returns a defined outcome.
+    const all: ReplyMissClass[] = ['queued_not_consumed', 'consumed_runtime_dead',
+      'consumed_hung', 'consumed_blocked', 'consumed_idle_no_reply',
+      'consumed_unknown_no_reply', 'unknown_consumption_no_reply'];
+    for (const c of all) {
+      expect(at(c, true, 'replay_consumed').outcome, c).toBeTruthy();
+    }
+  });
+});
 
 describe('scheduler checks reach a channel at all (dc-20260919-003)', () => {
   // Until this class existed, `report.scheduler` had NO scheduled consumer. The 5-minute
