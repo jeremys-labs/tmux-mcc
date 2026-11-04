@@ -283,14 +283,31 @@ const deliveryOk = delivery.ok === true;
 // `status: 'ok'` because only the Discord delivery and the sweep exit fed this, so the one
 // leg whose whole job is reaching the AUTHOR could fail silently every day.
 const routingFailed = routing.failed.length > 0;
+// A REASON IN A FIELD NOBODY ALERTS ON IS STILL SILENT (Codex P2 on b1a8613, and it is the
+// half of isla's smaller point that I stopped short of). The sweep CATCHES a failed findings
+// write, pushes a warning line into the human digest and EXITS ZERO, so the exit code does not
+// cover it. The runner then had no artifact, skipped every author notification, and -- once I
+// had added a `skipped` reason this round -- said WHY while still reporting `status: 'ok'`.
+// Author delivery could therefore be broken every day, legibly, for ever.
+//
+// This is acceptance (4)'s own rule one layer out: a check that could not be performed must not
+// render healthy. Same tri-state discipline as dc-20261015-002 -- alive / DOWN /
+// cannot-determine, and cannot-determine is never clean.
+//
+// NOT every empty result: an artifact that is present and current with an EMPTY
+// `undispositioned` array is a real answer and stays `ok`. Only absent, stale or unroutable
+// counts, and only on a run that was supposed to route.
+const routingUnavailable = !dryRun && !routable;
 const status =
   !deliveryOk ? 'fail'
   : routingFailed ? 'fail'
+  : routingUnavailable ? 'fail'
   : sweepExitCode === 0 ? 'ok'
   : 'fail';
 const reason =
   !deliveryOk ? 'delivery_failed'
   : routingFailed ? 'routing_failed'
+  : routingUnavailable ? 'findings_unavailable'
   : sweepExitCode === 0 ? 'sweep_ok'
   : 'partial_failure';
 

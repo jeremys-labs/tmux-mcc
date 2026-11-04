@@ -398,7 +398,24 @@ function checkoutDrift(repo) {
       const reflog = git(dir, ['reflog', 'show', '--date=iso-strict', '--format=%H %gd',
                                'refs/remotes/origin/main']).trim();
       const entries = reflog ? reflog.split('\n').reverse() : []; // oldest first
-      for (const entry of entries.slice(0, 100)) {
+      // NO CAP, AND THE CAP WAS A LIVE DEFECT, NOT A LATENT ONE (Codex P2 on b1a8613).
+      // This was `entries.slice(0, 100)`. git prints the reflog newest-first, so after
+      // `.reverse()` the slice kept the OLDEST hundred and discarded the NEWEST entries --
+      // exactly the updates a recently-pushed commit was learned in. MEASURED on the live
+      // checkouts this flag sweeps: SHARED is at 137 entries today, so its newest 37 were
+      // already invisible and a commit learned an hour ago fell back to `commit-date` and read
+      // hundreds of hours behind. The feature stopped working precisely on the long-lived
+      // deploy checkouts it exists for.
+      //
+      // Cost of removing it, measured rather than feared: one `merge-base --is-ancestor` is
+      // ~7ms, this walk runs only in the `behind` branch, and the largest live reflog is 137
+      // entries -- under a second, for the repos that are actually behind. The bound bought
+      // nothing and cost the answer.
+      //
+      // Deliberately a linear scan oldest-first and NOT a binary search: breaking on the first
+      // containing entry is "when did this checkout FIRST know", and binary search would need
+      // containment to be monotone over the reflog, which a force-push to main breaks.
+      for (const entry of entries) {
         const sha = entry.split(' ')[0];
         const when = (entry.match(/\{([^}]+)\}/) ?? [])[1];
         if (!sha || !when) continue;

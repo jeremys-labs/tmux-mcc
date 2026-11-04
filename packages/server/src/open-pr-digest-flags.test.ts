@@ -958,4 +958,96 @@ process.exit(1);
     expect(st.routing.attempted).toBe(0);
     expect(st.driftStatus).toBe('unknown');
   });
+  // --- Codex P2s on b1a8613, both confirmed at source before accepting ------------------------
+
+  it('(3i) THE ORIGIN-MOVED BASIS SURVIVES PAST THE 100th REFLOG ENTRY', () => {
+    // Codex P2. The walk was `entries.slice(0, 100)` over a list reversed to oldest-first, so
+    // it kept the OLDEST hundred and threw away the NEWEST -- which is where a recently-learned
+    // commit's entry lives. MEASURED on the live checkouts this flag sweeps: SHARED is at 137
+    // entries today, so this was already broken in production, on the long-lived deploy
+    // checkout the feature exists for.
+    //
+    // The fixture controls the reflog completely: the ref's log is removed and rebuilt as 102
+    // old entries that do NOT contain the commit, then the one that does, an hour ago.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-20T12:00:00Z', '2026-10-30T06:00:00Z');
+    const sup = path.join(src, 'agent-supervisor');
+    const one = git(sup, ['rev-parse', 'HEAD']).trim();                 // does NOT contain 'two'
+    const two = git(sup, ['rev-parse', 'refs/remotes/origin/main']).trim();
+    // 102 DISTINCT shas, not 102 updates to the same one: `update-ref` writes NO reflog entry
+    // when the value is unchanged, so my first fixture produced two entries and asserted its
+    // way to a red. Each pad commit is an empty commit off `one`, so none of them contains
+    // `two` and every update really moves the ref.
+    const branch = git(sup, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    git(sup, ['checkout', '-q', '-b', 'pad']);
+    const pad: string[] = [];
+    for (let i = 0; i < 102; i += 1) {
+      git(sup, ['commit', '-q', '--allow-empty', '-m', `pad ${i}`], '2026-10-20T13:00:00Z');
+      pad.push(git(sup, ['rev-parse', 'HEAD']).trim());
+    }
+    git(sup, ['checkout', '-q', branch]);
+    fs.rmSync(path.join(sup, '.git/logs/refs/remotes/origin/main'));
+    for (const sha of pad) {
+      git(sup, ['update-ref', 'refs/remotes/origin/main', sha], '2026-10-20T13:00:00Z');
+    }
+    git(sup, ['update-ref', 'refs/remotes/origin/main', two], '2026-10-30T11:00:00Z');
+    expect(git(sup, ['reflog', 'show', '--format=%H', 'refs/remotes/origin/main'])
+      .trim().split('\n')).toHaveLength(103);        // the fixture really is past the cap
+
+    const r = sweep(baseEnv(root, {}, src));
+    const d = r.findings.drifts.find((x: any) => x.repo === 'agent-supervisor');
+    expect(d.ageBasis).toBe('origin-moved');         // not the commit-date fallback
+    expect(d.hoursBehind).toBe(1);                   // learned an hour ago
+    expect(d.overGrace).toBe(false);                 // and so NOT a drift finding
+  });
+
+  it('(19) A FINDINGS ARTIFACT THAT NEVER ARRIVED IS A FAILURE, NOT status ok', () => {
+    // Codex P2, and the half of isla's smaller point I stopped short of. The sweep CATCHES a
+    // failed findings write, warns in the human digest and EXITS ZERO, so the exit code does
+    // not cover it. The runner then skipped every author notification and -- after I added a
+    // `skipped` reason this round -- said WHY while still reporting ok. A reason in a field
+    // nobody alerts on is still silent, so author delivery could be broken every day for ever.
+    const root = tempDir();
+    runRunner(runnerEnv(root, path.join(root, 'never-written.json'), {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    const st = status(root);
+    expect(st.status).toBe('fail');
+    expect(st.reason).toBe('findings_unavailable');
+    expect(st.routing.skipped).toContain('no findings artifact');
+  });
+
+  it('(19b) AN EMPTY BUT CURRENT ARTIFACT IS A REAL ANSWER AND STAYS ok', () => {
+    // The paired control, and the one that stops (19) being satisfied by failing always. A
+    // sweep that ran and found nothing undispositioned is the healthy everyday case; treating
+    // "no findings" as "no answer" would make the status field fire every quiet day, which is
+    // how a real signal gets ignored.
+    const root = tempDir();
+    const findings = path.join(root, 'findings.json');
+    fs.writeFileSync(findings, JSON.stringify({
+      runId: FIXTURE_RUN, undispositioned: [], drifts: [],
+      sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'clean', driftProblems: [],
+    }));
+    runRunner(runnerEnv(root, findings, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    expect(status(root).status).toBe('ok');
+    expect(status(root).reason).toBe('sweep_ok');
+  });
+
+  it('(19c) --dry-run is not a routing failure', () => {
+    // The other direction: dry-run routes nothing BY DESIGN, so it must not read as broken
+    // author delivery. Without this, the fix would turn every control run into a fail.
+    const root = tempDir();
+    const findings = path.join(root, 'findings.json');
+    fs.writeFileSync(findings, JSON.stringify({
+      runId: FIXTURE_RUN, undispositioned: [], drifts: [],
+      sweptRepos: [], failedRepos: [], driftStatus: 'clean',
+    }));
+    runRunner(runnerEnv(root, findings, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }), ['--dry-run']);
+    expect(status(root).status).toBe('ok');
+    expect(status(root).routing.skipped).toContain('dry-run');
+  });
 });
