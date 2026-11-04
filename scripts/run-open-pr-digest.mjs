@@ -161,6 +161,13 @@ const routable = findings && Array.isArray(findings.undispositioned) && !dryRun 
 if (dryRun) routing.skipped = 'dry-run: no mail sent, no state written';
 else if (staleFindings) {
   routing.skipped = `findings artifact is from another run (want ${runId}, got ${findings.runId ?? '<none>'})`;
+} else if (!findings) {
+  // FIXED, not declined (isla's smaller point): a MISSING artifact left `skipped` undefined, so
+  // "nothing was routed" and "there was nothing to route" read identically -- and the first one
+  // means the sweep died before writing. Absence of a reason is not a reason.
+  routing.skipped = `no findings artifact at ${findingsPath}; the sweep produced none this run`;
+} else if (!Array.isArray(findings.undispositioned)) {
+  routing.skipped = 'findings artifact has no undispositioned array; shape is not routable';
 }
 
 if (routable) {
@@ -207,23 +214,50 @@ if (routable) {
     const already = prior && prior.head === head && prior.recipients ? { ...prior.recipients } : {};
     const pending = recipients.filter((to) => !already[to]);
     if (pending.length === 0) continue;
+    // THE MAIL MUST SAY WHICH OF THE TWO THINGS HAPPENED (isla, review of b1a8613).
+    //
+    // Her live run produced the false claim: body "tmux-mcc #36 has had no review verdict for
+    // 217h" with subject "No review verdict after 0h". #36 had SEVERAL verdicts from her; what it
+    // had was a STALE one on a new head. I accepted keeping "older head" and "nobody looked"
+    // apart and then built it into the DIGEST only -- the mail kept one wording for both.
+    //
+    // Two bugs in one line, and the second is the 217h: the body used `hoursOpen` (PR age) while
+    // the subject used `hoursSinceHead`, so one mail carried two different numbers for the same
+    // fact. Both now use `hoursSinceHead`, which is what the grace is measured from.
+    const stale = f.verdict === 'stale';
+    const headShort = String(f.headRefOid ?? '?').slice(0, 12);
+    const headline = stale
+      ? `**${f.repo} #${f.number} has a review verdict, but it is for an OLDER head.**`
+      : `**${f.repo} #${f.number} has had no review verdict for ${f.hoursSinceHead}h.**`;
+    const instruction = stale
+      ? [`The last verdict was \`${f.verdictDecision}\` at \`${String(f.verdictSha ?? '?').slice(0, 12)}\`,`,
+         `and the current head is \`${headShort}\` (pushed ${f.hoursSinceHead}h ago).`,
+         '',
+         'What was reviewed is no longer what is there, so it needs RE-REVIEW on the exact head --',
+         'not a first look.']
+      : ['Nobody has rendered a verdict on this head.',
+         '',
+         'Nothing merges on an unread or un-dispositioned review. Either get a verdict on the exact',
+         'head, or close the PR if it is abandoned.'];
     const body = path.join(os.tmpdir(), `pr-unreviewed-${f.repo}-${f.number}.md`);
     fs.writeFileSync(body, [
-      `**${f.repo} #${f.number} has had no review verdict for ${f.hoursOpen}h.**`,
+      headline,
       '',
-      `Branch \`${f.headRefName ?? '<none>'}\`, review state \`${f.reviewState}\`.`,
+      `Branch \`${f.headRefName ?? '<none>'}\`, head \`${headShort}\`, review state \`${f.reviewState}\`.`,
       f.authorAgent
         ? `Routed to you as the branch-prefix author, and to ${operator}.`
         : `AUTHOR COULD NOT BE RESOLVED (${f.authorUnresolvedReason}), so this reached ${operator} only.`,
       '',
-      'Nothing merges on an unread or un-dispositioned review. Either get a verdict on the exact',
-      'head, or close the PR if it is abandoned.',
+      ...instruction,
       '',
-      '_Automated: open-PR digest, dc-20261021-001. Once per PR, not daily._',
+      '_Automated: open-PR digest, dc-20261021-001. Once per PR per head, not daily._',
     ].join('\n'));
+    const subject = stale
+      ? `Verdict is for an older head (${f.hoursSinceHead}h since push): ${f.repo} #${f.number}`
+      : `No review verdict after ${f.hoursSinceHead}h: ${f.repo} #${f.number}`;
     for (const to of pending) {
       routing.attempted += 1;
-      if (sendMail(to, `No review verdict after ${f.hoursSinceHead ?? f.hoursOpen}h: ${f.repo} #${f.number}`, body)) {
+      if (sendMail(to, subject, body)) {
         routing.delivered += 1;
         // Recorded per recipient, so a failure to one never re-mails the other.
         already[to] = new Date().toISOString();
@@ -274,10 +308,18 @@ writeStatus({
   routing,
   // DRIFT'S OWN SURFACE (review finding 5). The sweep's exit code now means "did the sweep
   // run", so drift needs a field of its own or acceptance (4) -- drift never reads as clean --
-  // would be lost rather than re-expressed. runtime-health consumes THIS for drift, and the
-  // exit code for job health. Unknown when the artifact could not be read, never 'clean'.
-  driftStatus: findings?.driftStatus ?? 'unknown',
-  driftProblems: findings?.driftProblems ?? undefined,
+  // would be lost rather than re-expressed.
+  //
+  // CORRECTED (isla): this said "runtime-health consumes THIS for drift", and NOTHING CONSUMES
+  // IT YET -- I wrote the intended consumer as though it existed, which is the same overclaim as
+  // the prose this row keeps catching. What is true: this is where a consumer SHOULD read drift
+  // from, and the exit code stays "did the job run". Unknown when the artifact is absent or from
+  // another run, never 'clean'.
+  // ONLY FROM A FRESH ARTIFACT (isla, review of b1a8613). This copied `findings.driftStatus`
+  // whatever its provenance, so yesterday's `clean` sat in today's status beside
+  // `findingsFresh: false` -- a stale reassurance, which is worse than no answer.
+  driftStatus: findings && findings.runId === runId ? (findings.driftStatus ?? 'unknown') : 'unknown',
+  driftProblems: findings && findings.runId === runId ? findings.driftProblems : undefined,
   findingsRunId: findings?.runId ?? undefined,
   findingsFresh: findings ? findings.runId === runId : undefined,
 });

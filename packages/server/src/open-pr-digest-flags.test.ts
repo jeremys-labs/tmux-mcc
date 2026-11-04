@@ -180,6 +180,17 @@ if (!process.env.AGENT_MAIL_DIR) {
   process.exit(1);
 }
 require('fs').appendFileSync(${JSON.stringify(log)}, argv.join(' ') + '\\n');
+// THE BODY IS RECORDED TOO, in its own file so every existing assertion on the argv log keeps
+// measuring exactly what it measured before. Repointing a shared helper changes every caller's
+// meaning at once, and the callers that still pass are the dangerous half.
+//
+// This seam is why isla's finding existed at all: my controls asserted WHO was mailed and never
+// WHAT THE MAIL SAID, so a body reading "no review verdict for 217h" over a PR with several
+// verdicts, beside a subject saying 0h, was invisible to 31 green tests. Same defect as #36's
+// "the runtime was undefined": the plan was asserted, the string never was.
+const bf = argv[argv.indexOf('--body-file') + 1];
+if (bf) require('fs').appendFileSync(${JSON.stringify(log)} + '.bodies',
+  '=== ' + argv.join(' ') + '\\n' + require('fs').readFileSync(bf, 'utf8') + '\\n');
 const failFor = ${JSON.stringify(failFor ?? null)};
 if (failFor && argv.includes(failFor)) process.exit(1);
 `);
@@ -225,6 +236,11 @@ function status(root: string) {
 }
 function mailLines(log: string): string[] {
   return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : [];
+}
+/** Every mail's argv AND body, so the TEXT is assertable and not just the recipient list. */
+function mailBodies(log: string): string {
+  const p = `${log}.bodies`;
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 }
 
 describe('dc-20261021-001 — open-PR digest flags', () => {
@@ -794,5 +810,152 @@ process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
     expect(r.findings.rosterReadable).toBe(false);
     expect(r.findings.undispositioned[0].authorAgent).toBe(null);
     expect(r.findings.undispositioned[0].authorUnresolvedReason).toBe('roster unreadable');
+  });
+  // --- isla's review of b1a8613: the three items, each with the control that discriminates it --
+
+  it('(15) THE MAIL CARRIES ONE NUMBER FOR ONE FACT, and it is the one the grace runs from', () => {
+    // isla's live run: body "tmux-mcc #36 has had no review verdict for 217h" beside subject
+    // "No review verdict after 0h". ONE MAIL, TWO NUMBERS FOR THE SAME FACT -- the body used
+    // `hoursOpen` (PR age) and the subject used `hoursSinceHead`.
+    //
+    // The fixture has to SEPARATE them or it cannot see the bug: a PR opened in January whose
+    // head was pushed 48h ago. With them equal, as every earlier fixture had them, the two
+    // spellings are indistinguishable and this test would pass against the defect.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr({ createdAt: '2026-01-01T00:00:00Z' })] },
+                        src, ['marcus', 'eli', 'isla'], { [HEAD_OID]: '2026-10-28T12:00:00Z' });
+    const r = sweep(env);
+    const f = r.findings.undispositioned[0];
+    expect(f.verdict).toBe('missing');
+    expect(f.hoursSinceHead).toBe(48);
+    expect(f.hoursOpen).toBeGreaterThan(7000);        // the fixture really does separate them
+
+    const log = path.join(root, 'mail.log');
+    runRunner(runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log),
+    }));
+    const argv = mailLines(log).join('\n');
+    const bodies = mailBodies(log);
+    expect(argv).toContain('No review verdict after 48h');
+    expect(bodies).toContain('has had no review verdict for 48h');
+    // The PR-age number must appear NOWHERE in either, which is the actual defect.
+    expect(argv).not.toContain(String(f.hoursOpen));
+    expect(bodies).not.toContain(String(f.hoursOpen));
+  });
+
+  it('(15b) A STALE VERDICT MAIL ASKS FOR A RE-REVIEW, not for a first look', () => {
+    // The digest kept "older head" and "nobody looked" apart from the first round; the MAIL did
+    // not, so the author of a PR isla had reviewed several times was told nobody had looked at
+    // it. Keeping two findings distinct in one surface and collapsed in the other is worse than
+    // collapsing them in both, because the two surfaces then disagree about the same PR.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const old = 'f'.repeat(40);
+    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr({ comments: [verdict(old, 'APPROVE')] })] }, src);
+    const r = sweep(env);
+    expect(r.findings.undispositioned[0].verdict).toBe('stale');
+
+    const log = path.join(root, 'mail.log');
+    runRunner(runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log),
+    }));
+    const argv = mailLines(log).join('\n');
+    const bodies = mailBodies(log);
+    expect(argv).toContain('Verdict is for an older head');
+    expect(bodies).toContain('it is for an OLDER head');
+    expect(bodies).toContain('APPROVE');               // which verdict, and at which sha
+    expect(bodies).toContain(old.slice(0, 12));
+    expect(bodies).toContain('RE-REVIEW');
+    // The false claim this fixes: it must not say nobody rendered a verdict.
+    expect(bodies).not.toContain('has had no review verdict');
+    expect(bodies).not.toContain('Nobody has rendered a verdict');
+  });
+
+  it('(16) AN EMPTY LIST IS NOT GOOD NEWS WHEN EVERY REPO FAILED TO SWEEP', () => {
+    // The 🎉 at open-pr-digest.mjs:444 fired on `prs.length === 0` unconditionally, so the
+    // node-limit refusal produced a party emoji over a blanked report -- the digest Jeremy
+    // reads, saying the opposite of the truth. Fixing the node limit removed that cause; it did
+    // not remove the line, and any future whole-fleet failure reaches it the same way.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const dead = path.join(root, 'gh-dead');
+    fs.writeFileSync(dead, `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv[0] === 'api') { process.stdout.write('2026-10-25T12:00:00Z'); process.exit(0); }
+process.stderr.write('gh: could not reach github.com\\n');
+process.exit(1);
+`);
+    fs.chmodSync(dead, 0o755);
+    const r = sweep({ ...baseEnv(root, {}, src), OPEN_PR_DIGEST_GH_BIN: dead });
+    expect(r.findings.failedRepos).toHaveLength(8);
+    expect(r.findings.sweptRepos).toEqual([]);
+    expect(r.stdout).toContain('NO DATA');
+    expect(r.stdout).not.toContain('🎉');
+    expect(r.status).toBe(1);                          // and the sweep failing IS the exit code
+  });
+
+  it('(16b) a genuinely empty fleet still says so, and still celebrates', () => {
+    // The paired control. Suppressing the good-news line whenever the list is empty would make
+    // "nothing to do" permanently indistinguishable from "everything broke", which is the same
+    // conflation one direction over.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-30T12:00:00Z');   // at main: no drift noise
+    const r = sweep(baseEnv(root, {}, src));
+    expect(r.findings.failedRepos).toEqual([]);
+    expect(r.stdout).toContain('No open PRs across fleet repos. 🎉');
+    expect(r.stdout).not.toContain('NO DATA');
+  });
+
+  it('(17) A STALE ARTIFACT YIELDS driftStatus unknown, NEVER its stale value', () => {
+    // isla's review of b1a8613. `findings?.driftStatus ?? 'unknown'` copied the value whatever
+    // its provenance, so yesterday's `clean` sat in today's status beside `findingsFresh:
+    // false`. A stale reassurance is worse than no answer: `unknown` sends someone to look,
+    // `clean` tells them not to.
+    const root = tempDir();
+    const findings = path.join(root, 'findings.json');
+    fs.writeFileSync(findings, JSON.stringify({
+      runId: 'yesterday', undispositioned: [], drifts: [],
+      sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'clean', driftProblems: [],
+    }));
+    runRunner(runnerEnv(root, findings, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    const st = status(root);
+    expect(st.findingsFresh).toBe(false);
+    expect(st.driftStatus).toBe('unknown');
+    expect(st.driftProblems).toBeUndefined();
+  });
+
+  it('(17b) a FRESH artifact does pass its drift verdict through', () => {
+    // Without this, returning the literal 'unknown' unconditionally would pass (17), and the
+    // field would carry no information at all while looking implemented.
+    const root = tempDir();
+    const findings = path.join(root, 'findings.json');
+    fs.writeFileSync(findings, JSON.stringify({
+      runId: FIXTURE_RUN, undispositioned: [], drifts: [],
+      sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'problems',
+      driftProblems: [{ repo: 'tmux-mcc', state: 'ahead' }],
+    }));
+    runRunner(runnerEnv(root, findings, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    expect(status(root).findingsFresh).toBe(true);
+    expect(status(root).driftStatus).toBe('problems');
+    expect(status(root).driftProblems).toHaveLength(1);
+  });
+
+  it('(18) A MISSING ARTIFACT SAYS WHY NOTHING WAS ROUTED', () => {
+    // isla's smaller point. `skipped` was left undefined when the artifact was absent, so "the
+    // sweep died before writing" and "there was nothing to route" read identically in the
+    // status file -- and only the first one needs a human. Absence of a reason is not a reason.
+    const root = tempDir();
+    runRunner(runnerEnv(root, path.join(root, 'nope.json'), {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    const st = status(root);
+    expect(st.routing.skipped).toContain('no findings artifact');
+    expect(st.routing.attempted).toBe(0);
+    expect(st.driftStatus).toBe('unknown');
   });
 });

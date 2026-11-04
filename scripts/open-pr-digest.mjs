@@ -305,7 +305,13 @@ function flagRank(pr) {
 // ---------------------------------------------------------------------------
 // Flag (b): a live production checkout behind origin/main for more than DRIFT_GRACE_HOURS.
 //
-// FOUR states, not two. `detached` is its own state on isla's amendment, because it HAPPENED
+// SEVEN states, not two, and this comment said FOUR until isla counted them (2026-11-02):
+// at-main / behind / detached / not-on-main / ahead / diverged / cannot-determine. The number was
+// right when written and three states were added under it without the sentence being updated --
+// the prose-asserts-more-than-the-code class, in a comment whose whole job is to say how many
+// states there are. Counted from the returns below rather than from memory this time.
+//
+// `detached` is its own state on isla's amendment, because it HAPPENED
 // in the live agent-supervisor checkout on 2026-10-19 and it is neither at-main nor behind:
 // a detached HEAD can be at main's tip and still not be ON main, so the next pull is not a
 // fast-forward and `rev-list HEAD..origin/main` can read 0 while the checkout is not tracking
@@ -441,7 +447,15 @@ const lines = [
       `${flagIcon(pr) || '·'} ${pr.repo} #${pr.number} · ${pr.title} · ${pr.ageDays}d · ${pr.reviewState} · verdict-holder: ${pr.verdictHolder}`,
   ),
 ];
-if (prs.length === 0) lines.push('No open PRs across fleet repos. 🎉');
+// AN EMPTY LIST IS ONLY GOOD NEWS IF THE SWEEP WORKED (isla, review of 02a070f).
+// This celebrated `prs.length === 0` unconditionally, so when every repo failed to sweep the
+// digest Jeremy reads opened with a party emoji over a blanked report. My own comment ~220 lines
+// above names this exact line as the failure, and I left it standing.
+if (prs.length === 0) {
+  lines.push(failures.length > 0
+    ? `⚠️ NO DATA: all ${failures.length} repo sweep(s) failed, so this is not "no open PRs" -- see the failures below.`
+    : 'No open PRs across fleet repos. 🎉');
+}
 
 // --- flag (a): agent-repo PRs with no rendered review verdict past the grace -------------
 // Appended as its own section rather than folded into flagIcon(), because the header's
@@ -475,7 +489,12 @@ const driftProblems = drifts.filter(
     || d.state === 'ahead' || d.state === 'diverged'
     || (d.state === 'behind' && d.overGrace),
 );
-lines.push('', '**Live deploy sources** (agent repos):');
+// `at-main` MEANS THE CHECKOUT, NOT WHAT IS RUNNING (isla, 2026-11-02). A checkout level with
+// origin/main can still be serving a long-built artifact: mcc-tmux's own server runs
+// `packages/server/dist/index.js` from a 2026-09-27 build, 25 commits behind its own source.
+// Stating the limit rather than checking it -- a dist check belongs with whatever owns
+// deployment, not in a read-only PR sweep.
+lines.push('', '**Live deploy sources** (agent repos) -- CHECKOUT state, not what each process has loaded:');
 for (const d of drifts) {
   const icon =
     d.state === 'at-main' ? '·'
