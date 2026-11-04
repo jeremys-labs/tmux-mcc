@@ -247,10 +247,84 @@ describe('structural controls: the properties behaviour tests cannot reach here'
    * Deliberately conservative: it reads the few lines after the definition, so a long wrapper
    * fires the control rather than passing. A control that errs should err toward complaining.
    */
-  const wrapperRoutesToWriter = (text: string, name: string): boolean => {
+  /**
+   * Does the function `name` -- wherever it is defined -- hand the path to the one writer?
+   *
+   * HERCULE FOUND THE FIRST VERSION OF THIS WRONG (Mut-3, 2026-11-04), and the defect is a shape I
+   * hit repeatedly: a guard WIDENED to admit a legitimate case without re-drawing its boundary.
+   * The legitimate case is an IMPORTED sink -- `appendRuntimeEventToLog` is defined in
+   * `runtime-events.ts`, not in its callers -- so I admitted it with a disjunct:
+   *
+   *     wrapperRoutesToWriter(text, callee) || text.includes('appendRuntimeLogLine')
+   *
+   * That second clause CLEARS EVERY CALLEE IN ANY FILE THAT USES THE WRITER ANYWHERE. Combined
+   * with the write-API control keying on the ARGUMENT name, a renamed parameter escaped both:
+   *
+   *     function sneaky(p: string, b: string) { fs.appendFileSync(p, b); }
+   *     sneaky(runtimeLogPath, prompt);          // in claude-wrapper.ts -- 17/17 STAYED GREEN
+   *
+   * I reproduced it myself before accepting it: a real body-leaking bypass, naming `runtimeLogPath`
+   * at the call site, in an existing file -- so NOT the computed-path residual I had documented.
+   * My "a reversion either routes through the formatter or the control fires" was overstated by
+   * exactly that shape.
+   *
+   * The fix is to RESOLVE the callee instead of guessing from the file: check the definition where
+   * it actually lives -- locally, or in the module it is imported from.
+   */
+  /**
+   * MY FIRST FIX FOR HERCULE'S Mut-3 WAS DECORATION, and only running his mutation showed it: I
+   * read a BOUNDED 400-CHARACTER WINDOW from `function <name>(`, and that window SPILLS INTO THE
+   * NEXT FUNCTION. His `sneaky` sits immediately before `logRuntime`, whose body does contain
+   * `appendRuntimeLogLine`, so the bypass was cleared by its NEIGHBOUR's body and Mut-3 stayed
+   * 17/17 green against the "fix". That is the same shape as the defect it was fixing -- a bounded
+   * heuristic whose REACH was wrong -- which is why this now matches braces instead of counting
+   * characters: the body of a function is a thing you can find exactly, so guessing at it was
+   * never justified.
+   */
+  const functionBody = (text: string, name: string): string | undefined => {
     const at = text.indexOf(`function ${name}(`);
-    if (at === -1) return false;
-    return text.slice(at, at + 400).includes('appendRuntimeLogLine');
+    if (at === -1) return undefined;
+    const open = text.indexOf('{', at);
+    if (open === -1) return undefined;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      if (text[i] === '{') depth += 1;
+      else if (text[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return text.slice(open, i + 1);
+      }
+    }
+    return undefined; // unbalanced -> treat as unknown, which the caller reads as "does not route"
+  };
+
+  const definitionRoutes = (text: string, name: string): boolean => {
+    const body = functionBody(text, name);
+    return body === undefined ? false : body.includes('appendRuntimeLogLine');
+  };
+
+  /** The module a name is imported from, if it is. */
+  const importedFrom = (text: string, name: string): string | undefined => {
+    const re = new RegExp(String.raw`import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]`, 'g');
+    for (const m of text.matchAll(re)) {
+      const names = m[1].split(',').map((n) => n.trim().split(/\s+as\s+/)[0].trim());
+      if (names.includes(name)) return m[2];
+    }
+    return undefined;
+  };
+
+  const resolveModule = (fromFile: string, spec: string): string | undefined => {
+    if (!spec.startsWith('.')) return undefined;
+    const candidate = path.resolve(path.dirname(fromFile), spec.replace(/\.js$/, '.ts'));
+    return fs.existsSync(candidate) ? candidate : undefined;
+  };
+
+  const calleeRoutesToWriter = (file: string, text: string, callee: string): boolean => {
+    if (definitionRoutes(text, callee)) return true;           // defined here and routes
+    const spec = importedFrom(text, callee);
+    if (!spec) return false;                                   // neither local nor imported
+    const mod = resolveModule(file, spec);
+    if (!mod) return false;                                    // unresolvable -> complain
+    return definitionRoutes(fs.readFileSync(mod, 'utf8'), callee);
   };
 
   it('the declared exceptions still write DIFFERENT files, which is what licenses excluding them', () => {
@@ -286,7 +360,7 @@ describe('structural controls: the properties behaviour tests cannot reach here'
       for (const callee of new Set(calleesReceivingLogPath(text))) {
         if (callee === 'appendRuntimeLogLine' || PATH_HELPERS.has(callee)) continue;
         // An imported sink is fine if its own module routes; a local wrapper must route here.
-        const routes = wrapperRoutesToWriter(text, callee) || text.includes('appendRuntimeLogLine');
+        const routes = calleeRoutesToWriter(f, text, callee);
         if (!routes) offenders.push(`${rel}: ${callee}(`);
       }
     }
