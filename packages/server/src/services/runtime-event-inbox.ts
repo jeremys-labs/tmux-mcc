@@ -1,4 +1,4 @@
-import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 import {
   formatEventInboxForRuntime,
   type EventInboxRecord,
@@ -26,7 +26,7 @@ export interface EnqueuePendingRuntimeEventInboxInput extends Omit<RuntimeEventI
 }
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+  appendRuntimeLogLine(runtimeLogPath, line);
 }
 
 export async function deliverRuntimeEventInbox(input: RuntimeEventInboxDeliveryInput): Promise<void> {

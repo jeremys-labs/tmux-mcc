@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 import path from 'path';
 import { buildAnswerContext } from './answer-context.js';
 import {
@@ -52,7 +53,7 @@ function blueBubblesCursorPath(contentRoot: string, agentKey: string): string {
 }
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+  appendRuntimeLogLine(runtimeLogPath, line);
 }
 
 function readBlueBubblesInboxCursor(contentRoot: string, agentKey: string): BlueBubblesInboxCursorState {

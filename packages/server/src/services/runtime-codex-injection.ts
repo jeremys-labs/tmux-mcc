@@ -7,6 +7,8 @@
  * `retryBudget` times; once the budget is spent the prompt is submitted without confirmation
  * (best-effort, at-least-once) rather than being retried forever.
  */
+
+import { formatInjectionLog } from './runtime-log.js';
 export class CodexInjectionDeferredError extends Error {
   constructor(label: string, id: string, attempts: number) {
     super(`codex injection deferred for ${label} ${id} (attempt ${attempts})`);
@@ -96,7 +98,10 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
 
       deferrals.delete(id);
       neverReadyStreak = 0;
-      log(`injecting ${label} ${id}: ${prompt}`);
+      // dc-20261001-002: LENGTH, NEVER THE BODY. `log` here is the wrapper's routed sink, so
+      // the bound is already applied upstream; what this line owed was to stop writing the
+      // prompt itself. This is the site the row named -- there were seven.
+      log(formatInjectionLog(label, id, prompt));
       await submit(prompt);
     },
   };
