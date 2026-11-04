@@ -1,6 +1,7 @@
 import process from 'process';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
+import { appendRuntimeLogLine } from './services/runtime-log.js';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
@@ -129,7 +130,7 @@ const readRenderedScreen = tmuxPane
   : undefined;
 
 function logRuntime(message: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${message}\n`);
+  appendRuntimeLogLine(runtimeLogPath, message);
 }
 
 // 2026-10-04: the injector's default 512-char chunks at 10ms arrive as a paste burst, and
@@ -163,7 +164,7 @@ const pollers = startRuntimeInboxPollers({
   handoff: {
     workspace: cwd,
     submitHandoff: async (prompt) => {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      logRuntime(`injecting handoff: ${prompt.length} chars`);
       await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
@@ -175,7 +176,7 @@ const pollers = startRuntimeInboxPollers({
   },
   blueBubbles: {
     submitPrompt: async (prompt, entry) => {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting bluebubbles ${entry.id}: ${prompt}\n`);
+      logRuntime(`injecting bluebubbles ${entry.id}: ${prompt.length} chars`);
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -188,7 +189,7 @@ const pollers = startRuntimeInboxPollers({
     submitPrompt: async (prompt, entry) => stdinGate.run(async () => {
       const switchResult = detectModelSwitch(entry.content);
       if (switchResult.matched && switchResult.model) {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} model switch requested via discord ${entry.id}: /model ${switchResult.model}\n`);
+        logRuntime(`model switch requested via discord ${entry.id}: /model ${switchResult.model}`);
         await runtimeEvents.emit('onModelSwitch', {
           source: 'discord',
           messageId: entry.id,
@@ -196,7 +197,7 @@ const pollers = startRuntimeInboxPollers({
         });
         await injectModelSwitch(term, switchResult.model);
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting discord ${entry.id}: ${prompt}\n`);
+      logRuntime(`injecting discord ${entry.id}: ${prompt.length} chars`);
       await submitClaudePrompt(prompt);
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -208,7 +209,7 @@ const pollers = startRuntimeInboxPollers({
   agentMail: {
     mailStore: store,
     submitPrompt: async (prompt, message) => {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting mail ${message.id}: ${prompt}\n`);
+      logRuntime(`injecting mail ${message.id}: ${prompt.length} chars`);
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -220,7 +221,7 @@ const pollers = startRuntimeInboxPollers({
   eventInbox: {
     eventInbox,
     submitPrompt: async (prompt, event) => {
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting event-inbox ${event.id}: ${prompt}\n`);
+      logRuntime(`injecting event-inbox ${event.id}: ${prompt.length} chars`);
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),

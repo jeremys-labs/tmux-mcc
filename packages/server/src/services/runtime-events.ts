@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 
 export const RUNTIME_EVENT_NAMES = [
   'onInboundMessage',
@@ -53,7 +54,7 @@ export interface RuntimeInboundTurnInput {
 
 export function appendRuntimeEventToLog(logPath: string): RuntimeEventSink {
   return (event) => {
-    fs.appendFileSync(logPath, `${new Date().toISOString()} runtime-event ${JSON.stringify(event)}\n`);
+    appendRuntimeLogLine(logPath, `runtime-event ${JSON.stringify(event)}`);
   };
 }
 

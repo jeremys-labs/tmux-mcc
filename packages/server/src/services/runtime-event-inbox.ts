@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 import {
   formatEventInboxForRuntime,
   type EventInboxRecord,

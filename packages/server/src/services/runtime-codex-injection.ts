@@ -96,7 +96,10 @@ export function createCodexInjectionGate(options: CodexInjectionGateOptions): Co
 
       deferrals.delete(id);
       neverReadyStreak = 0;
-      log(`injecting ${label} ${id}: ${prompt}`);
+      // dc-20261001-002: LENGTH, NEVER THE BODY. `log` here is the wrapper's routed sink, so
+      // the bound is already applied upstream; what this line owed was to stop writing the
+      // prompt itself. This is the site the row named -- there were seven.
+      log(`injecting ${label} ${id}: ${prompt.length} chars`);
       await submit(prompt);
     },
   };

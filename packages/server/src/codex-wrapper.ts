@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import process from 'process';
 import fs from 'fs';
+import { appendRuntimeLogLine } from './services/runtime-log.js';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
@@ -127,7 +128,7 @@ const readinessWaitTimeoutMs = Number(process.env.CODEX_WRAPPER_READINESS_WAIT_T
 const unackedRetryBudget = Number(process.env.CODEX_WRAPPER_UNACKED_RETRY_BUDGET ?? '3');
 
 function appendRuntimeLog(line: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+  appendRuntimeLogLine(runtimeLogPath, line);
 }
 
 function createCodexEnv(source: NodeJS.ProcessEnv): Record<string, string> {
@@ -253,9 +254,9 @@ writePreSessionContextSidecar({
 });
 
 if (openBrainConfig) {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain startup recall delegated to Codex SessionStart hook for ${agentKey} (soul=${hasSoul} memory=true)\n`);
+  appendRuntimeLog(`open-brain startup recall delegated to Codex SessionStart hook for ${agentKey} (soul=${hasSoul} memory=true)`);
 } else {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} open-brain runtime disabled or unconfigured for ${agentKey} (soul=${hasSoul} memory=false)\n`);
+  appendRuntimeLog(`open-brain runtime disabled or unconfigured for ${agentKey} (soul=${hasSoul} memory=false)`);
 }
 
 void runtimeEvents.emit('onRuntimeHealth', {
@@ -277,10 +278,10 @@ const pollers = startRuntimeInboxPollers({
     submitHandoff: async (prompt) => {
       const readinessResult = await waitForCodexInjectionWindow();
       if (readinessResult === 'timeout') {
-        fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} codex readiness wait timed out for handoff; leaving handoff pending for retry\n`);
+        appendRuntimeLog('codex readiness wait timed out for handoff; leaving handoff pending for retry');
         return false;
       }
-      fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} injecting handoff: ${prompt}\n`);
+      appendRuntimeLog(`injecting handoff: ${prompt.length} chars`);
       logSubmitOutcome(await stdinGate.run(() => submitCodexPrompt(prompt)), 'handoff');
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),

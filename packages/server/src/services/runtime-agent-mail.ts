@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 import {
   formatAgentMailForRuntime,
   type AgentMailMessage,
@@ -33,7 +34,7 @@ export interface EnqueuePendingRuntimeAgentMailInput extends Omit<RuntimeAgentMa
 }
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+  appendRuntimeLogLine(runtimeLogPath, line);
 }
 
 export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInput): Promise<void> {

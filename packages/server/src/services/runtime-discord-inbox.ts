@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { appendRuntimeLogLine } from './runtime-log.js';
 import {
   formatInboxEntryForCodex,
   markInboxEntryDelivered,
@@ -57,7 +58,7 @@ export function runtimeDiscordDeliveryKey(entry: CodexBridgeInboxEntry): string 
 }
 
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
-  fs.appendFileSync(runtimeLogPath, `${new Date().toISOString()} ${line}\n`);
+  appendRuntimeLogLine(runtimeLogPath, line);
 }
 
 export async function deliverRuntimeDiscordInbox(input: RuntimeDiscordInboxDeliveryInput): Promise<void> {
