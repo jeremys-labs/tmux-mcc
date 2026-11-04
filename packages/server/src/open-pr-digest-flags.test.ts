@@ -849,12 +849,23 @@ process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
     // not, so the author of a PR isla had reviewed several times was told nobody had looked at
     // it. Keeping two findings distinct in one surface and collapsed in the other is worse than
     // collapsing them in both, because the two surfaces then disagree about the same PR.
+    //
+    // THE NUMBER IS ASSERTED HERE TOO (isla, review of a32fcb1). This checked the WORDS and
+    // never the hours, so changing the stale subject to `f.hoursOpen` passed 48/48 -- the 217h
+    // bug walking straight back in through the other arm. I fixed both arms and pinned ONE,
+    // which is the instance-versus-class miss I keep writing down. So this now uses the same
+    // separated fixture as (15): a PR opened in January whose head was pushed 48h ago.
     const root = tempDir();
     const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
     const old = 'f'.repeat(40);
-    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr({ comments: [verdict(old, 'APPROVE')] })] }, src);
+    const env = baseEnv(root, {
+      'jeremys-labs/tmux-mcc': [pr({ createdAt: '2026-01-01T00:00:00Z', comments: [verdict(old, 'APPROVE')] })],
+    }, src, ['marcus', 'eli', 'isla'], { [HEAD_OID]: '2026-10-28T12:00:00Z' });
     const r = sweep(env);
-    expect(r.findings.undispositioned[0].verdict).toBe('stale');
+    const f = r.findings.undispositioned[0];
+    expect(f.verdict).toBe('stale');
+    expect(f.hoursSinceHead).toBe(48);
+    expect(f.hoursOpen).toBeGreaterThan(7000);     // the fixture really does separate them
 
     const log = path.join(root, 'mail.log');
     runRunner(runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
@@ -863,7 +874,11 @@ process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
     const argv = mailLines(log).join('\n');
     const bodies = mailBodies(log);
     expect(argv).toContain('Verdict is for an older head');
+    expect(argv).toContain('48h since push');                  // the number, in the SUBJECT
     expect(bodies).toContain('it is for an OLDER head');
+    expect(bodies).toContain('pushed 48h ago');                // and in the body
+    expect(argv).not.toContain(String(f.hoursOpen));           // never the PR age
+    expect(bodies).not.toContain(String(f.hoursOpen));
     expect(bodies).toContain('APPROVE');               // which verdict, and at which sha
     expect(bodies).toContain(old.slice(0, 12));
     expect(bodies).toContain('RE-REVIEW');
@@ -1049,5 +1064,56 @@ process.exit(1);
     }), ['--dry-run']);
     expect(status(root).status).toBe('ok');
     expect(status(root).routing.skipped).toContain('dry-run');
+  });
+  it('(16c) A PARTIAL SWEEP FAILURE DOES NOT SAY "ALL"', () => {
+    // isla's review of a32fcb1. The line I added to stop one false claim carried another: N was
+    // `failures.length`, so three failures out of eight repos with no open PRs in the five that
+    // DID sweep read "all 3 repo sweep(s) failed". A false count inside the fix for a false
+    // claim, in the digest Jeremy reads.
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-30T12:00:00Z');       // at main: no drift noise
+    const flaky = path.join(root, 'gh-flaky');
+    fs.writeFileSync(flaky, `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv[0] === 'api') { process.stdout.write('2026-10-25T12:00:00Z'); process.exit(0); }
+const repo = argv[argv.indexOf('--repo') + 1] || '';
+// Three of the eight refuse; the rest sweep cleanly and have nothing open.
+if (/(agent-comms|deal-analyzer|str-ops)/.test(repo)) {   // three names READ from REPOS, not recalled
+  process.stderr.write('gh: could not reach github.com\\n');
+  process.exit(1);
+}
+process.stdout.write('[]');
+`);
+    fs.chmodSync(flaky, 0o755);
+    const r = sweep({ ...baseEnv(root, {}, src), OPEN_PR_DIGEST_GH_BIN: flaky });
+    expect(r.findings.failedRepos).toHaveLength(3);
+    expect(r.findings.sweptRepos).toHaveLength(5);
+    expect(r.stdout).toContain('PARTIAL: 3 of 8 repo sweeps failed');
+    expect(r.stdout).toContain('the 5 that ran have no open PRs');
+    expect(r.stdout).not.toContain('all 3');                        // the false count
+    expect(r.stdout).not.toContain('NO DATA');                      // not a total blackout
+    expect(r.stdout).not.toContain('🎉');                           // and not good news either
+  });
+
+  it('(19d) A STALE ARTIFACT LEFT IN PLACE IS ALSO findings_unavailable', () => {
+    // isla's review of a32fcb1, and her reasoning is better than my test's: mutating to
+    // `!dryRun && !routable && !staleFindings` passed 48/48, because (19) covers the MISSING
+    // artifact only. A LEFTOVER FILE IS THE LIKELIEST REAL FORM of the failure Codex described
+    // -- if the directory became unwritable, yesterday's file is still sitting there -- so the
+    // case I did not test is the one most likely to happen.
+    const root = tempDir();
+    const findings = path.join(root, 'findings.json');
+    fs.writeFileSync(findings, JSON.stringify({
+      runId: 'yesterday', undispositioned: [], drifts: [],
+      sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'clean', driftProblems: [],
+    }));
+    runRunner(runnerEnv(root, findings, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
+    }));
+    const st = status(root);
+    expect(st.status).toBe('fail');
+    expect(st.reason).toBe('findings_unavailable');
+    expect(st.findingsFresh).toBe(false);
+    expect(st.driftStatus).toBe('unknown');        // and the stale 'clean' never surfaces
   });
 });

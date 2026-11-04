@@ -469,9 +469,17 @@ const lines = [
 // digest Jeremy reads opened with a party emoji over a blanked report. My own comment ~220 lines
 // above names this exact line as the failure, and I left it standing.
 if (prs.length === 0) {
-  lines.push(failures.length > 0
-    ? `⚠️ NO DATA: all ${failures.length} repo sweep(s) failed, so this is not "no open PRs" -- see the failures below.`
-    : 'No open PRs across fleet repos. 🎉');
+  // "ALL N" WAS FALSE ON A PARTIAL FAILURE (isla, review of a32fcb1). N was `failures.length`,
+  // so three failures out of eight repos, with no open PRs in the five that DID sweep, read
+  // "all 3 repo sweep(s) failed" -- a false count in the digest Jeremy reads, inside the line I
+  // added to stop a false claim. Say how many of how many, and distinguish the two cases: with
+  // some repos swept this is a PARTIAL answer, with none swept it is no answer at all.
+  const total = sweptRepos.length + failures.length;
+  lines.push(failures.length === 0
+    ? 'No open PRs across fleet repos. 🎉'
+    : sweptRepos.length === 0
+      ? `⚠️ NO DATA: all ${failures.length} of ${total} repo sweeps failed, so this is not "no open PRs" -- see the failures below.`
+      : `⚠️ PARTIAL: ${failures.length} of ${total} repo sweeps failed; the ${sweptRepos.length} that ran have no open PRs -- see the failures below.`);
 }
 
 // --- flag (a): agent-repo PRs with no rendered review verdict past the grace -------------
