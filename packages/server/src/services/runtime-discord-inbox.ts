@@ -1,4 +1,3 @@
-import fs from 'fs';
 import { appendRuntimeLogLine } from './runtime-log.js';
 import {
   formatInboxEntryForCodex,

@@ -1,7 +1,7 @@
 import process from 'process';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
-import { appendRuntimeLogLine } from './services/runtime-log.js';
+import { appendRuntimeLogLine, formatInjectionLog } from './services/runtime-log.js';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
@@ -59,14 +59,14 @@ if (preSession.text) {
     runtime: 'claude',
   });
   claudeArgs.push('--append-system-prompt-file', file);
-  fs.appendFileSync(
+  appendRuntimeLogLine(
     runtimeLogPath,
-    `${new Date().toISOString()} pre-session prompt assembled (soul=${preSession.hasSoul} memory=${preSession.hasMemory}) -> ${file}\n`,
+    `pre-session prompt assembled (soul=${preSession.hasSoul} memory=${preSession.hasMemory}) -> ${file}`,
   );
 } else {
-  fs.appendFileSync(
+  appendRuntimeLogLine(
     runtimeLogPath,
-    `${new Date().toISOString()} pre-session prompt skipped (no SOUL.md, no OB1 config)\n`,
+    'pre-session prompt skipped (no SOUL.md, no OB1 config)',
   );
 }
 
@@ -164,7 +164,7 @@ const pollers = startRuntimeInboxPollers({
   handoff: {
     workspace: cwd,
     submitHandoff: async (prompt) => {
-      logRuntime(`injecting handoff: ${prompt.length} chars`);
+      logRuntime(formatInjectionLog('handoff', undefined, prompt));
       await new Promise((resolve) => setTimeout(resolve, handoffSubmitDelayMs));
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
@@ -176,7 +176,7 @@ const pollers = startRuntimeInboxPollers({
   },
   blueBubbles: {
     submitPrompt: async (prompt, entry) => {
-      logRuntime(`injecting bluebubbles ${entry.id}: ${prompt.length} chars`);
+      logRuntime(formatInjectionLog('bluebubbles', entry.id, prompt));
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -197,7 +197,7 @@ const pollers = startRuntimeInboxPollers({
         });
         await injectModelSwitch(term, switchResult.model);
       }
-      logRuntime(`injecting discord ${entry.id}: ${prompt.length} chars`);
+      logRuntime(formatInjectionLog('discord', entry.id, prompt));
       await submitClaudePrompt(prompt);
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -209,7 +209,7 @@ const pollers = startRuntimeInboxPollers({
   agentMail: {
     mailStore: store,
     submitPrompt: async (prompt, message) => {
-      logRuntime(`injecting mail ${message.id}: ${prompt.length} chars`);
+      logRuntime(formatInjectionLog('mail', message.id, prompt));
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),
@@ -221,7 +221,7 @@ const pollers = startRuntimeInboxPollers({
   eventInbox: {
     eventInbox,
     submitPrompt: async (prompt, event) => {
-      logRuntime(`injecting event-inbox ${event.id}: ${prompt.length} chars`);
+      logRuntime(formatInjectionLog('event-inbox', event.id, prompt));
       await stdinGate.run(() => submitClaudePrompt(prompt));
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),

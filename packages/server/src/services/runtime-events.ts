@@ -1,4 +1,3 @@
-import fs from 'fs';
 import { appendRuntimeLogLine } from './runtime-log.js';
 
 export const RUNTIME_EVENT_NAMES = [

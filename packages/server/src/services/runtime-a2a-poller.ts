@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import { appendRuntimeLogLine } from './runtime-log.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -159,7 +158,7 @@ export async function runA2APollerTick(options: RunA2APollerTickOptions = {}): P
   } = options;
 
   const log = (line: string) => {
-    if (logPath) appendRuntimeLogLine(logPath, line);
+    if (logPath) fs.appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`);
   };
 
   const pending = readPendingRowsResilient(paths, log);

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import process from 'process';
 import fs from 'fs';
-import { appendRuntimeLogLine } from './services/runtime-log.js';
+import { appendRuntimeLogLine, formatInjectionLog } from './services/runtime-log.js';
 import path from 'path';
 import * as pty from 'node-pty';
 import { createAgentMailStore } from '@agent-comms/mailbox';
@@ -281,7 +281,7 @@ const pollers = startRuntimeInboxPollers({
         appendRuntimeLog('codex readiness wait timed out for handoff; leaving handoff pending for retry');
         return false;
       }
-      appendRuntimeLog(`injecting handoff: ${prompt.length} chars`);
+      appendRuntimeLog(formatInjectionLog('handoff', undefined, prompt));
       logSubmitOutcome(await stdinGate.run(() => submitCodexPrompt(prompt)), 'handoff');
       appendInjectionJournalEntry(contentRoot, agentKey, {
         ts: new Date().toISOString(),

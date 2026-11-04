@@ -25,9 +25,10 @@ afterEach(() => {
  * FIRING demonstrable -- the row's acceptance (b) asks for the file driven PAST the bound, and a
  * bound only reachable by writing 8 MiB is a bound nobody ever shows working.
  */
-async function loadWriter(maxBytes?: number) {
+async function loadWriter(maxBytes?: number, rawKnob?: string) {
   vi.resetModules();
-  if (maxBytes !== undefined) vi.stubEnv('RUNTIME_LOG_MAX_BYTES', String(maxBytes));
+  if (rawKnob !== undefined) vi.stubEnv('RUNTIME_LOG_MAX_BYTES', rawKnob);
+  else if (maxBytes !== undefined) vi.stubEnv('RUNTIME_LOG_MAX_BYTES', String(maxBytes));
   return await import('./runtime-log.js');
 }
 
@@ -151,19 +152,38 @@ describe('acceptance (c): the log stays greppable for its OWN signal lines', () 
 });
 
 /**
- * STRUCTURAL CONTROLS, AND THEY EXIST BECAUSE OF A LIMIT I CAN STATE PRECISELY: six of the seven
- * body-writing sites live in `claude-wrapper.ts` and `codex-wrapper.ts`, which run module-scope
- * side effects on import (they read argv and the environment and build paths), so no behaviour
- * test in this package can reach them. The acceptance (a) and (c) tests above drive the SEVENTH
- * site, which is the one the row named and the only injectable one.
+ * STRUCTURAL CONTROLS, REBUILT AFTER ISLA'S AND HERCULE'S REVIEWS OF THE FIRST VERSION.
  *
- * So the other six are pinned the only way they can be: by the source. That is weaker than a
- * behaviour test and stronger than nothing, and it has one property a behaviour test would not
- * have -- IT ALSO CATCHES A SITE SOMEONE ADDS LATER, which is how this defect arrived in the
- * first place (the sibling journal was written to avoid bodies while six wrappers wrote them).
+ * The first version had two defects they found between them, and both matter more than the fix:
+ *
+ *  - ISLA: it matched LINE BY LINE, so `claude-wrapper.ts`'s two MULTI-LINE `fs.appendFileSync(`
+ *    calls were invisible to it. "Every write routes through the writer" was FALSE while the test
+ *    PASSED -- a control reporting a property it could not see.
+ *  - HERCULE: for a body-DISCLOSURE property a source-pinned control is weaker than for a
+ *    behaviour one, and it earns its keep only by EVASION-RESISTANCE. A control that matches only
+ *    the old inline shape lets a thin wrapper, an alias or a computed path write the log untouched.
+ *
+ * So the rule is now stated over the DESTINATION rather than over a spelling: in any file that
+ * touches the runtime log, the only write API permitted is `appendRuntimeLogLine`. That catches an
+ * alias and a thin wrapper, because either still has to name an append-capable fs API in a file
+ * that also names the log.
+ *
+ * RESIDUAL LIMIT, STATED RATHER THAN GLOSSED: a source control cannot be made evasion-proof. A
+ * brand-new file that computes the path from fragments and never mentions `runtime-state` or
+ * `runtimeLogPath` would escape every one of these. That is why acceptance (a) also has an
+ * end-to-end observation, and why the formatter exists -- the controls bound the ways in, they do
+ * not prove there are none.
  */
 describe('structural controls: the properties behaviour tests cannot reach here', () => {
   const SRC = path.resolve(__dirname, '..');
+  const WRITER = path.join('services', 'runtime-log.ts');
+  /**
+   * `discord-direct-send.ts` appends to a variable also named `logPath`, but it is the discord-send
+   * HEALTH log -- a different file. The exclusion is declared, and its precondition is asserted
+   * below, so repointing that file at the runtime log fires the control instead of hiding in it.
+   */
+  const DECLARED_EXCEPTION = path.join('services', 'discord-direct-send.ts');
+
   const files = (): string[] => {
     const out: string[] = [];
     const walk = (d: string) => {
@@ -178,63 +198,186 @@ describe('structural controls: the properties behaviour tests cannot reach here'
   };
 
   /**
-   * THE ONE DECLARED EXCEPTION, AND ITS PRECONDITION IS ASSERTED RATHER THAN TRUSTED.
-   * `discord-direct-send.ts` appends to a variable also called `logPath`, but it is a DIFFERENT
-   * FILE -- the discord-send health log, not `bridge/runtime-state/<agent>.log`. This control
-   * matches by VARIABLE NAME, which cannot distinguish destinations: a predicate over a name
-   * standing in for a question about which file. So the exclusion is conditional on that file
-   * still resolving its path from `discordSendHealthLogPath()`; repoint it at the runtime log and
-   * the next test fails, which is what stops this exception from quietly widening.
+   * The runtime log path, in the spellings the codebase uses for it.
+   *
+   * MY FIRST WIDENING WAS WRONG IN THE OTHER DIRECTION and its own failure caught it: I made the
+   * population "any file that NAMES the runtime log", which flagged `replay-inbound.ts` and
+   * `inbound-miss-recovery.ts` -- both legitimately append to a message INBOX and merely mention
+   * the runtime log elsewhere. That is the same name-for-destination confusion as the
+   * discord-direct-send exception, one level up, and the THIRD time today a predicate over a NAME
+   * stood in for a question about a FILE. So the rule is back on the ARGUMENT, matched across
+   * lines, which is what isla asked for.
    */
-  const DECLARED_EXCEPTION = path.join('services', 'discord-direct-send.ts');
+  const LOG_PATH_ARG = String.raw`(?:input\.)?(?:runtimeLogPath|logPath)`;
 
-  it('the declared exception still writes a DIFFERENT file, which is what licenses excluding it', () => {
-    const text = fs.readFileSync(path.join(SRC, DECLARED_EXCEPTION), 'utf8');
-    expect(text).toContain('discordSendHealthLogPath()');
-    expect(text).not.toContain('runtime-state');
+  /** Append- or write-capable APIs, in any spelling a bypass could reach for. */
+  const WRITE_CALL = new RegExp(
+    String.raw`(?:appendFileSync|appendFile|createWriteStream|writeFileSync|writeFile)\s*\(\s*` + LOG_PATH_ARG,
+    's'
+  );
+
+  /**
+   * Path helpers and reads: receiving the log path for these is not a write.
+   */
+  const PATH_HELPERS = new Set([
+    'dirname', 'basename', 'join', 'resolve', 'relative',
+    'existsSync', 'statSync', 'readFileSync', 'mkdirSync', 'rmSync', 'unlinkSync',
+    'String', 'expect', 'if', 'for', 'while', 'return', 'switch',
+  ]);
+
+  /**
+   * `runtime-a2a-poller.ts` is the SECOND declared exception, and isla found why it had to be:
+   * its `logPath` is launchd's `StandardOutPath` for the poller, so putting it through a ROTATING
+   * writer makes launchd's stdout follow the renamed inode and then an unlinked one. It is also
+   * not a `runtime-state/<agent>.log` at all. Its precondition is asserted below.
+   */
+  const SECOND_EXCEPTION = path.join('services', 'runtime-a2a-poller.ts');
+
+  const calleesReceivingLogPath = (text: string): string[] => {
+    const re = new RegExp(String.raw`([A-Za-z_$][\w$]*)\s*\(\s*` + LOG_PATH_ARG + String.raw`\b`, 'gs');
+    return [...text.matchAll(re)].map((m) => m[1]);
+  };
+
+  /**
+   * A thin wrapper that receives the log path is FINE if it routes to the one writer -- that is
+   * what `appendRuntimeLog` in each inbox module is. It is a BYPASS if it does not. So the rule is
+   * not a name allowlist (which would bless the evasion by spelling) but a property of the
+   * wrapper's own body: whatever receives the path must hand it to `appendRuntimeLogLine`.
+   *
+   * Deliberately conservative: it reads the few lines after the definition, so a long wrapper
+   * fires the control rather than passing. A control that errs should err toward complaining.
+   */
+  const wrapperRoutesToWriter = (text: string, name: string): boolean => {
+    const at = text.indexOf(`function ${name}(`);
+    if (at === -1) return false;
+    return text.slice(at, at + 400).includes('appendRuntimeLogLine');
+  };
+
+  it('the declared exceptions still write DIFFERENT files, which is what licenses excluding them', () => {
+    const direct = fs.readFileSync(path.join(SRC, DECLARED_EXCEPTION), 'utf8');
+    expect(direct).toContain('discordSendHealthLogPath()');
+    expect(direct).not.toContain('runtime-state');
+    expect(direct).not.toContain('runtimeLogPath');
+
+    const poller = fs.readFileSync(path.join(SRC, SECOND_EXCEPTION), 'utf8');
+    // If this ever becomes a runtime-state log, it stops being exempt and the control must see it.
+    expect(poller).not.toContain('runtime-state');
   });
 
-  it('every runtime-log write goes through the ONE writer, so the bound cannot be bypassed', () => {
+  it('no write API is called with the runtime log path, including across lines', () => {
     const offenders: string[] = [];
     for (const f of files()) {
-      if (f.endsWith(path.join('services', 'runtime-log.ts'))) continue; // the writer itself
-      if (f.endsWith(DECLARED_EXCEPTION)) continue;                      // asserted above
-      const text = fs.readFileSync(f, 'utf8');
-      text.split('\n').forEach((line, i) => {
-        if (/appendFileSync\(\s*(runtimeLogPath|logPath)\b/.test(line)) {
-          offenders.push(`${path.relative(SRC, f)}:${i + 1}`);
-        }
-      });
+      const rel = path.relative(SRC, f);
+      if (rel === WRITER || rel === DECLARED_EXCEPTION || rel === SECOND_EXCEPTION) continue;
+      // Matched over the WHOLE FILE: isla found that a per-line scan could not see
+      // `claude-wrapper.ts`'s two multi-line `fs.appendFileSync(` calls, so the control reported a
+      // property it was structurally unable to observe, while passing.
+      if (WRITE_CALL.test(fs.readFileSync(f, 'utf8'))) offenders.push(rel);
     }
-    // A raw append would be a write the rotation never sees: the file would grow past the bound
-    // for whichever code path used it, and "the log is bounded" would depend on the call site.
     expect(offenders).toEqual([]);
   });
 
-  it('no runtime-log write interpolates a prompt BODY, which pins all seven sites', () => {
+  it('anything that RECEIVES the log path routes to the one writer, so an alias cannot bypass it', () => {
     const offenders: string[] = [];
     for (const f of files()) {
+      const rel = path.relative(SRC, f);
+      if (rel === WRITER || rel === DECLARED_EXCEPTION || rel === SECOND_EXCEPTION) continue;
       const text = fs.readFileSync(f, 'utf8');
-      text.split('\n').forEach((line, i) => {
-        const writes = /(appendRuntimeLogLine|appendRuntimeLog|logRuntime|log)\s*\(/.test(line);
-        // `${prompt}` but NOT `${prompt.length}` -- the body itself.
-        const body = /\$\{\s*prompt\s*\}/.test(line);
-        if (writes && body) offenders.push(`${path.relative(SRC, f)}:${i + 1}`);
-      });
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('the seven injection sites all report a length, so the fix is complete rather than partial', () => {
-    let lengthForm = 0;
-    for (const f of files()) {
-      for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
-        if (/injecting .*\$\{\s*prompt\.length\s*\} chars/.test(line)) lengthForm += 1;
+      for (const callee of new Set(calleesReceivingLogPath(text))) {
+        if (callee === 'appendRuntimeLogLine' || PATH_HELPERS.has(callee)) continue;
+        // An imported sink is fine if its own module routes; a local wrapper must route here.
+        const routes = wrapperRoutesToWriter(text, callee) || text.includes('appendRuntimeLogLine');
+        if (!routes) offenders.push(`${rel}: ${callee}(`);
       }
     }
-    // Hercule treats the count as a claim to check (dc-20261001-002 row), so it is asserted here
-    // rather than only stated in a message. Enumerated by grepping for runtime-log writes that
-    // embed a body variable -- NOT taken from the row, which named one site of the seven.
-    expect(lengthForm).toBe(7);
+    // This is the evasion-resistance half hercule said he would attack: a thin wrapper or an alias
+    // around `appendFileSync` still RECEIVES the path, so it surfaces here even though it never
+    // names an fs API. A COMPUTED path still escapes -- stated in the block comment above, and the
+    // reason acceptance (a) also observes a real file rather than resting on these.
+    expect(offenders).toEqual([]);
+  });
+
+  it('no injection log line is constructed outside formatInjectionLog', () => {
+    const offenders: string[] = [];
+    for (const f of files()) {
+      const rel = path.relative(SRC, f);
+      if (rel === WRITER) continue;
+      const text = fs.readFileSync(f, 'utf8');
+      // Any template literal that builds an "injecting ..." line is a second formatter.
+      const m = text.match(/`injecting [^`]*`/g);
+      if (m) offenders.push(`${rel}: ${m.join(' | ')}`);
+    }
+    // isla: the old control matched only the literal `${prompt}`, so `${prompt.trim()}` or
+    // `${message.body}` would have passed it. Forbidding the LINE SHAPE outside the formatter
+    // closes the whole family instead of naming one spelling of it.
+    expect(offenders).toEqual([]);
+  });
+
+  it('every injection site calls the formatter, and there are seven of them', () => {
+    let calls = 0;
+    for (const f of files()) {
+      if (path.relative(SRC, f) === WRITER) continue;
+      for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+        if (/formatInjectionLog\(/.test(line)) calls += 1;
+      }
+    }
+    // Hercule treats the count as a claim to check, so it is asserted rather than stated. The
+    // method was a grep for runtime-log writes embedding a body variable, then an enumeration --
+    // NOT taken from the row, which named one site of the seven.
+    expect(calls).toBe(7);
+  });
+});
+
+describe('formatInjectionLog: the chokepoint itself', () => {
+  it('records the length and never the body, whatever the body contains', async () => {
+    const { formatInjectionLog } = await loadWriter();
+    const prompt = 'rotate SQUAMOUS-PANGOLIN-8821 and also $pipestatus and `backticks`';
+    const line = formatInjectionLog('mail', 'msg-9', prompt);
+
+    expect(line).toBe(`injecting mail msg-9: ${prompt.length} chars`);
+    expect(line).not.toContain('SQUAMOUS-PANGOLIN-8821');
+  });
+
+  it('omits the id for sources that have none, rather than printing undefined', async () => {
+    const { formatInjectionLog } = await loadWriter();
+    expect(formatInjectionLog('handoff', undefined, 'abc')).toBe('injecting handoff: 3 chars');
+    // event-inbox ids are numeric; the signature admits that rather than coercing at one site.
+    expect(formatInjectionLog('event-inbox', 41, 'abcd')).toBe('injecting event-inbox 41: 4 chars');
+  });
+});
+
+describe('the bound tolerates a mistyped knob (isla)', () => {
+  it('falls back to the default on a value that is not a usable number', async () => {
+    for (const bad of ['8MiB', '', '   ', 'NaN', '-1', '0', '12abc']) {
+      const { RUNTIME_LOG_MAX_BYTES } = await loadWriter(undefined, bad);
+      // The first version was Math.max(1024, Number(raw)): "8MiB" is NaN, and `size >= NaN` is
+      // ALWAYS FALSE, so a typo in the knob this PR advertises silently REMOVED the bound. An
+      // empty string gave 1024 and rotated on every line.
+      expect(RUNTIME_LOG_MAX_BYTES).toBe(8 * 1024 * 1024);
+    }
+  });
+
+  it('accepts a valid override, so the fallback has not swallowed the knob', async () => {
+    const { RUNTIME_LOG_MAX_BYTES } = await loadWriter(undefined, '4096');
+    expect(RUNTIME_LOG_MAX_BYTES).toBe(4096);
+  });
+});
+
+describe('a persistent rotation failure is reported once, not swallowed and not repeated (isla)', () => {
+  it('writes one rotation-failed line and keeps appending', async () => {
+    const { appendRuntimeLogLine } = await loadWriter(1024);
+    fs.mkdirSync(`${logPath}.1`);
+    fs.writeFileSync(path.join(`${logPath}.1`, 'occupied'), 'x');
+    fs.writeFileSync(logPath, 'z'.repeat(2048));
+
+    for (let i = 0; i < 5; i += 1) appendRuntimeLogLine(logPath, `FAULT attempt ${i}`);
+
+    const text = fs.readFileSync(logPath, 'utf8');
+    const failures = text.split('\n').filter((l) => l.includes('rotation failed:'));
+    // Once per process: the bound is lost, and losing it SILENTLY was the defect. A line per
+    // append would be the same unbounded growth wearing a diagnostic label.
+    expect(failures).toHaveLength(1);
+    // And the non-goal still holds -- every signal line got through.
+    for (let i = 0; i < 5; i += 1) expect(text).toContain(`FAULT attempt ${i}`);
   });
 });
