@@ -19,6 +19,12 @@ type Args = {
   awaitingReply?: boolean;
   expectAttachments?: number;
   socketPath: string;
+  /**
+   * Who is sending. `agent` (the default) is subject to the agent-time deferral
+   * rule; `system` is exempt. Defaulting to `agent` means a sender must OPT OUT,
+   * so a new call site is covered rather than quietly exempt.
+   */
+  senderKind: 'agent' | 'system';
 };
 
 type BridgeSendResponse = {
@@ -32,6 +38,7 @@ function parseArgs(argv: string[]): Args {
   const args: Args = {
     files: [],
     textStdin: false,
+    senderKind: 'agent',
     socketPath: process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock',
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -48,6 +55,13 @@ function parseArgs(argv: string[]): Args {
       index += 1;
     } else if (item === '--text-file') {
       args.textFile = next;
+      index += 1;
+    } else if (item === '--sender-kind') {
+      if (next !== 'agent' && next !== 'system') {
+        console.error(`--sender-kind must be 'agent' or 'system': ${next}`);
+        process.exit(1);
+      }
+      args.senderKind = next;
       index += 1;
     } else if (item === '--text-stdin') {
       args.textStdin = true;
@@ -131,8 +145,94 @@ if (args.textStdin) {
   args.text = fs.readFileSync(0, 'utf8');
 }
 
+// The agent-time deferral rule on this transport (~/.claude/rules/agent-time-and-deferral.md).
+// It used to run only as a PreToolUse guard on Bash, so the scheduler and any
+// non-Claude runtime bypassed it (hercule's review, A.4).
+//
+// WHY `system` IS EXEMPT RATHER THAN RELYING ON THE RULE NEVER TRIPPING. Today's
+// newsletter produced zero hits, so a one-day fixture would have certified it
+// clean. Across all 97 newsletter runs on disk, 20 delivery chunks in 17 RUNS trip
+// the human-time estimate rule -- roughly one newsletter in six would have failed
+// to deliver. Every one is a false positive on CONTENT, not a promise about
+// anyone's work: "365 to 325 in 5 months" (a subscriber stat), "the tide turning
+// in four hours" (narrative), "Woodstock concludes ... after three days" (a 1969
+// date), "Kay's birthday in 2 days", "takes effect in three weeks" (a trade ban).
+//
+// No matcher refinement fixes that: "in 5 months" in a subscriber count and "in 5
+// months" in a promise are the same string. The rule is about an agent estimating
+// ITS OWN work, so the exemption has to be an IDENTITY decision.
+//
+// `--sender-kind system` is therefore a deliberate hole: anything invoking this
+// binary can pass it. That is accepted for an accident-focused rule BECAUSE its
+// use is visible -- every exemption is journalled with the DECLARED identity
+// (--source/--job-id) alongside the OBSERVED process (ppid, parent command,
+// SCHEDULED_JOB_ID). An agent self-exempting shows up as a non-scheduler source
+// rather than blending in (isla's added guard).
+if (args.text) {
+  const { spawnSync: spawnCheck } = await import('child_process');
+  const checker = process.env.DEFERRAL_CHECK
+    ?? '/Volumes/Repo-Drive/agents/SHARED/hooks/deferral_check.py';
+  const journalPath = process.env.DEFERRAL_GUARD_JOURNAL
+    ?? '/Volumes/Repo-Drive/agents/SHARED/reports/deferral-guard.jsonl';
+  const note = (kind: string, extra: Record<string, unknown>): void => {
+    try {
+      fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+      fs.appendFileSync(journalPath, `${JSON.stringify({
+        ts: Date.now() / 1000, kind, source: 'discord-bridge-reply',
+        sender_kind: args.senderKind,
+        declared_source: args.source ?? null, declared_job_id: args.jobId ?? null,
+        observed: {
+          ppid: process.ppid,
+          parent: spawnCheck('/bin/ps', ['-o', 'comm=', '-p', String(process.ppid)],
+                             { encoding: 'utf8' }).stdout?.trim() ?? null,
+          scheduled_job_id: process.env.SCHEDULED_JOB_ID ?? null,
+        },
+        ...extra,
+      })}\n`);
+    } catch { /* logging must never break a send */ }
+  };
+
+  if (args.senderKind === 'system') {
+    note('exempt', { reason: 'sender-kind system' });
+  } else {
+    const run = spawnCheck(process.env.DEFERRAL_CHECK_PYTHON ?? '/usr/bin/python3',
+      [checker, '--stdin', '--source', 'discord-bridge-reply'],
+      { input: args.text, encoding: 'utf8' });
+    if (run.error || run.status !== 0) {
+      // FAILS OPEN: a broken guard must not stop an agent answering Mike. Loud and
+      // journalled, so a broken checker reads as a run of fail-opens rather than as
+      // a quiet, compliant fleet.
+      const reason = run.error ? String(run.error) : `checker exit ${run.status}`;
+      note('fail-open', { reason });
+      console.error(`agent-time rule NOT CHECKED (${reason}). Sending anyway.`);
+    } else {
+      let hits: Array<[string, string, string]> = [];
+      try {
+        hits = (JSON.parse(run.stdout).hits ?? []) as Array<[string, string, string]>;
+      } catch (err) {
+        note('fail-open', { reason: `unparseable checker output: ${String(err)}` });
+        console.error('agent-time rule NOT CHECKED (unparseable checker output).');
+      }
+      if (hits.length > 0) {
+        note('block', { hits });
+        console.error(
+          'BLOCKED (agent-time rule, ~/.claude/rules/agent-time-and-deferral.md): this '
+          + 'message defers work or estimates it in human time.');
+        for (const [kind, word, snippet] of hits.slice(0, 5)) {
+          console.error(`  - ${kind}: '${word}' in: ${snippet}`);
+        }
+        console.error(
+          'Agents work around the clock. Rewrite with a minutes estimate and do the work '
+          + 'now. If a REAL external blocker applies, name it and pass --sender-kind system '
+          + 'only if this is a scheduled or system sender.');
+        process.exit(2);
+      }
+    }
+  }
+}
+
 if (!args.agent || !args.chatId || (!args.text && args.files.length === 0)) {
-  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> [--text <message> | --text-file <abs-path> | --text-stdin] [--file <abs-path> ...] [--reply-to <message_id>]');
+  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> [--text <message> | --text-file <abs-path> | --text-stdin] [--sender-kind agent|system] [--file <abs-path> ...] [--reply-to <message_id>]');
   process.exit(1);
 }
 
