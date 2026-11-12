@@ -365,7 +365,7 @@ export async function captureDiscordInboxEntry(
   config: OpenBrainRuntimeConfig,
   entry: CodexBridgeInboxEntry,
 ): Promise<void> {
-  const content = entry.content.trim();
+  const content = redactPayload(entry.content).trim();
   if (!content) return;
 
   await callOpenBrainTool(config, 'capture_agent_memory', {
@@ -625,10 +625,10 @@ export async function captureAgentMailMessage(
   config: OpenBrainRuntimeConfig,
   message: AgentMailMessage,
 ): Promise<void> {
-  const content = [
+  const content = redactPayload([
     message.subject.trim() ? `Subject: ${message.subject.trim()}` : '',
     message.bodyMd.trim(),
-  ].filter(Boolean).join('\n\n');
+  ].filter(Boolean).join('\n\n'));
   if (!content.trim()) return;
 
   await callOpenBrainTool(config, 'capture_agent_memory', {

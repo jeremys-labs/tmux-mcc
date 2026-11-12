@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   callOpenBrainTool,
+  captureAgentMailMessage,
   captureClaudeHookEvent,
   captureClaudePromptEvent,
   captureDiscordInboxEntry,
@@ -275,6 +276,86 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.content).toBe('Proceed');
     expect(body.params.arguments.content).not.toContain('Raw capture candidate');
     expect(body.params.arguments.content).not.toContain('This is a candidate');
+  });
+
+  it('redacts structured and free-text credentials from Discord inbox raw captures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const sha = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const uuid = '123e4567-e89b-12d3-a456-426614174000';
+    const chatId = '1491979880747765810';
+    const url = 'https://example.test/path?mode=safe';
+
+    await captureDiscordInboxEntry(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain' },
+      {
+        id: 'discord-redaction',
+        agentKey: 'eli',
+        channelId: 'c1',
+        author: 'Jeremy',
+        authorId: 'u1',
+        content: `{"api_key":"discord-structured-canary"} Authorization: Bearer DISCORDFREETEXTCANARY123 ${sha} ${uuid} ${chatId} ${url} ordinary prose`,
+        timestamp: '2026-11-12T12:00:00.000Z',
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const content = body.params.arguments.content as string;
+    expect(content).not.toContain('discord-structured-canary');
+    expect(content).not.toContain('DISCORDFREETEXTCANARY123');
+    expect(content.match(/\[REDACTED\]/g)).toHaveLength(2);
+    expect(content).toContain(sha);
+    expect(content).toContain(uuid);
+    expect(content).toContain(chatId);
+    expect(content).toContain(url);
+    expect(content).toContain('ordinary prose');
+  });
+
+  it('redacts structured and free-text credentials from agent-mail raw captures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const sha = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const uuid = '123e4567-e89b-12d3-a456-426614174000';
+    const chatId = '1491979880747765810';
+    const url = 'https://example.test/path?mode=safe';
+
+    await captureAgentMailMessage(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain' },
+      {
+        id: 'msg_redaction',
+        correlationId: 'corr_redaction',
+        fromAgent: 'marcus',
+        toAgent: 'eli',
+        type: 'artifact',
+        priority: 'normal',
+        subject: '{"client_secret":"mail-structured-canary"}',
+        bodyMd: `Authorization: Bearer MAILFREETEXTCANARY12345 ${sha} ${uuid} ${chatId} ${url} ordinary prose`,
+        relatedProject: null,
+        requiresResponse: false,
+        status: 'new',
+        createdAt: '2026-11-12T12:00:00.000Z',
+        ackedAt: null,
+        closedAt: null,
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const content = body.params.arguments.content as string;
+    expect(body.params.arguments.source_ref).toBe('agent-mail:msg_redaction');
+    expect(content).not.toContain('mail-structured-canary');
+    expect(content).not.toContain('MAILFREETEXTCANARY12345');
+    expect(content.match(/\[REDACTED\]/g)).toHaveLength(2);
+    expect(content).toContain(sha);
+    expect(content).toContain(uuid);
+    expect(content).toContain(chatId);
+    expect(content).toContain(url);
+    expect(content).toContain('ordinary prose');
   });
 
   it('captures bounded Claude hook evidence for grooming and validation', async () => {
