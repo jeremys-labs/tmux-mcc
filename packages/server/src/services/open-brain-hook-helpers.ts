@@ -68,14 +68,43 @@ export function inferAgentKey(
 
 const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
-  /\b(?:Bearer|Token|Authorization)\s+[A-Za-z0-9._~+/=-]{16,}\b/gi,
+  /\bAIza[0-9A-Za-z_-]{30,}\b/g,
+  /\b(?:Bearer|Token|Authorization)\s*:?\s+(?:(?:Basic|Bearer|Token)\s+)?[A-Za-z0-9._~+/=-]{16,}\b/gi,
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
+  /\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSPHRASE|SECRET(?:_KEY)?|API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|AUTH_TOKEN|BOT_TOKEN|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?[^\s"',;}\]]{8,}/g,
+  /\b(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|bot[_-]?token)\s*[:=]\s*["']?[^\s"',;}\]]{8,}/gi,
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
 ];
 
 const REDACTION_MARKER = '[REDACTED]';
+
+const SENSITIVE_KEYS = new Set([
+  'authorization',
+  'cookie',
+  'credentials',
+  'credential',
+  'password',
+  'passwd',
+  'passphrase',
+  'privatekey',
+  'pwd',
+  'setcookie',
+  'signingkey',
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (SENSITIVE_KEYS.has(normalized)) return true;
+  if (normalized === 'secret' || normalized.endsWith('secret') || normalized.endsWith('secretkey')) return true;
+  if (normalized.endsWith('apikey') || normalized.endsWith('accesskey')) return true;
+  if (normalized.endsWith('password') || normalized.endsWith('passphrase')) return true;
+  if (normalized.endsWith('credential') || normalized.endsWith('credentials')) return true;
+  return /^(?:api|access|auth|bearer|bot|client|discord|github|id|mcp|refresh|service|session|slack)?token$/.test(normalized);
+}
 
 export function redactString(value: string, patterns: RegExp[] = DEFAULT_REDACTION_PATTERNS): string {
   if (typeof value !== 'string') return value;
@@ -91,7 +120,9 @@ export function redactPayload<T>(payload: T, patterns: RegExp[] = DEFAULT_REDACT
   if (typeof payload === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
-      out[key] = redactPayload(value, patterns);
+      out[key] = isSensitiveKey(key) && value !== undefined && value !== null
+        ? REDACTION_MARKER
+        : redactPayload(value, patterns);
     }
     return out as unknown as T;
   }

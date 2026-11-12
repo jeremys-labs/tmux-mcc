@@ -4,6 +4,7 @@ import path from 'path';
 import type { AgentMailMessage } from '@agent-comms/mailbox';
 import { callAgentMemoryServiceTool } from '@agent-system/agent-memory';
 import type { CodexBridgeInboxEntry } from '../types/codex-bridge.js';
+import { redactPayload } from './open-brain-hook-helpers.js';
 
 const DEFAULT_OPEN_BRAIN_ENV_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/ob1.env';
 const DEFAULT_OPEN_BRAIN_ACCESS_KEY_PATH = '/Volumes/Repo-Drive/src/open-brain/credentials/mcp-access-key.txt';
@@ -534,14 +535,19 @@ export async function captureClaudePromptEvent(
 }
 
 function compactExcerpt(value: unknown, maxLength = 1200): string {
+  // This is the last common boundary for Claude and Codex hook evidence.
+  // Redact the structured value before serialization, whitespace compaction,
+  // and truncation so the cap cannot split a credential into an unrecognizable
+  // (and therefore unredacted) prefix.
+  const redactedValue = redactPayload(value);
   let text = '';
-  if (typeof value === 'string') {
-    text = normalizeCapturedText(value);
-  } else if (value !== undefined && value !== null) {
+  if (typeof redactedValue === 'string') {
+    text = normalizeCapturedText(redactedValue);
+  } else if (redactedValue !== undefined && redactedValue !== null) {
     try {
-      text = JSON.stringify(value);
+      text = JSON.stringify(redactedValue);
     } catch {
-      text = String(value);
+      text = String(redactedValue);
     }
   }
 

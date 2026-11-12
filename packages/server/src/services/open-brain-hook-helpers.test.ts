@@ -53,6 +53,32 @@ describe('open-brain-hook-helpers', () => {
       expect(out.unaffected).toBe(42);
     });
 
+    it('redacts values under sensitive keys without hiding ordinary identifiers', () => {
+      const input = {
+        password: 'not-a-real-password',
+        api_key: 'not-a-real-api-key',
+        SUPABASE_SECRET_KEY: 'not-a-real-service-key',
+        nested: { refreshToken: 'not-a-real-refresh-token' },
+        sha: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        uuid: '123e4567-e89b-12d3-a456-426614174000',
+        chat_id: '1491979880747765810',
+        max_tokens: 4096,
+        url: 'https://example.test/path?mode=safe',
+      };
+
+      expect(redactPayload(input)).toEqual({
+        password: '[REDACTED]',
+        api_key: '[REDACTED]',
+        SUPABASE_SECRET_KEY: '[REDACTED]',
+        nested: { refreshToken: '[REDACTED]' },
+        sha: input.sha,
+        uuid: input.uuid,
+        chat_id: input.chat_id,
+        max_tokens: input.max_tokens,
+        url: input.url,
+      });
+    });
+
     it('returns non-strings unchanged from redactString', () => {
       expect(redactString(42 as unknown as string)).toBe(42);
     });

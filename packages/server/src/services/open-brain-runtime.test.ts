@@ -309,6 +309,85 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.content).not.toContain('This is a candidate');
   });
 
+  it('redacts request-side structured and free-text credentials before compaction and truncation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const capSplitCanary = `sk-cap-${'A'.repeat(40)}`;
+
+    await captureClaudeHookEvent(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        session_id: 'request-redaction',
+        tool_name: 'Write',
+        tool_input: {
+          content: `${'x'.repeat(1185)} ${capSplitCanary}`,
+          message: 'SUPABASE_SECRET_KEY=service-key-canary',
+          edits: [{ api_key: 'structured-request-canary', note: 'ordinary prose' }],
+        },
+        invocation: {
+          server: 'example',
+          tool: 'write',
+          arguments: {
+            text: {
+              authorization: 'Bearer ABCDEFGHIJKLMNOPQRSTUV',
+              note: 'invocation prose',
+            },
+          },
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const content = body.params.arguments.content as string;
+    expect(content).not.toContain(capSplitCanary);
+    expect(content).not.toContain('sk-cap-');
+    expect(content).not.toContain('structured-request-canary');
+    expect(content).not.toContain('service-key-canary');
+    expect(content).not.toContain('ABCDEFGHIJKLMNOPQRSTUV');
+    expect(content).toContain('[REDACTED]');
+    expect(content).toContain('ordinary prose');
+    expect(content).toContain('invocation prose');
+  });
+
+  it('redacts response-side credentials while preserving ordinary hashes, ids, URLs, and prose', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const sha = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const uuid = '123e4567-e89b-12d3-a456-426614174000';
+    const chatId = '1491979880747765810';
+    const url = 'https://example.test/path?mode=safe';
+
+    await captureClaudeHookEvent(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        session_id: 'response-redaction',
+        tool_name: 'Read',
+        tool_response: { client_secret: 'structured-response-canary', sha, uuid },
+        tool_output: `safe prose ${chatId} ${url}`,
+        result: { accessToken: 'result-token-canary', message: 'completed normally' },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    const content = body.params.arguments.content as string;
+    expect(content).not.toContain('structured-response-canary');
+    expect(content).not.toContain('result-token-canary');
+    expect(content).toContain(sha);
+    expect(content).toContain(uuid);
+    expect(content).toContain(chatId);
+    expect(content).toContain(url);
+    expect(content).toContain('safe prose');
+    expect(content).toContain('completed normally');
+  });
+
   it('captures Claude user prompts directly as private_agent context', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -539,6 +618,35 @@ describe('open brain runtime', () => {
     expect(body.params.arguments.content).toContain('Codex MCP tool: reply');
     expect(body.params.arguments.content).toContain('Codex chat ID: 1491979880747765810');
     expect(body.params.arguments.content).toContain('Codex Discord text excerpt: Patch is verified.');
+  });
+
+  it('does not reintroduce raw credentials while extracting a Discord result id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"captured"}]},"jsonrpc":"2.0","id":1}\n\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureClaudeHookEvent(
+      { agentId: 'eli', endpointUrl: 'https://example.test/open-brain', agentMemoryKey: 'agent-secret' },
+      'PostToolUse',
+      {
+        invocation: {
+          server: 'discord-eli',
+          tool: 'reply',
+          arguments: { chat_id: '1491979880747765810', text: 'safe reply' },
+        },
+        result: {
+          access_token: 'discord-result-token-canary',
+          message: 'sent (id: 1499966336564986067)',
+        },
+      },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.params.arguments.source_ref).toBe('discord-reply:1499966336564986067');
+    expect(body.params.arguments.content).not.toContain('discord-result-token-canary');
+    expect(body.params.arguments.content).toContain('[REDACTED]');
   });
 
   it('skips Claude lifecycle captures without substantive evidence', async () => {
