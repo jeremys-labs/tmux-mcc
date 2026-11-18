@@ -693,8 +693,14 @@ export function classifyRecoveryOutcome(input: {
   failureClass: ReplyMissClass;
   ok: boolean;
   action: string;
+  /**
+   * Observed runtime state, independent of the class. It can only ADD a cannot-act, never remove
+   * one: `??` defers to the class map whenever the supervisor had nothing to say, so a class that
+   * already implies a blocked runtime keeps saying so even if the supervisor has since gone quiet.
+   */
+  runtimeCannotAct?: string | null;
 }): { outcome: RecoveryOutcome; cannotAct: string | null } {
-  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  const cannotAct = input.runtimeCannotAct ?? CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
   if (!input.ok) return { outcome: 'failed', cannotAct };
   // THE OBSERVED OUTCOME OUTRANKS THE RUNTIME-STATE EVIDENCE, and this order is the fix for
   // isla's blocker 2 / codex's P2. `ok` with action 'none' is only ever "an outbound reply
@@ -838,8 +844,10 @@ export function decideRecovery(input: {
   recovery?: { ok: boolean; action: 'wake_queued' | 'replay_consumed' | 'none'; reason: string } | null;
   checkedAt: string;
   graceMinutes: number;
+  /** See classifyRecoveryOutcome: observed runtime state, which can only add a cannot-act. */
+  runtimeCannotAct?: string | null;
 }): RecoveryDecision {
-  const cannotAct = CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
+  const cannotAct = input.runtimeCannotAct ?? CANNOT_ACT_BY_FAILURE_CLASS[input.failureClass] ?? null;
   const base = { nextAttempt: null, detail: null, alreadyAnswered: false } as const;
 
   if (input.priorAttempt) {
@@ -881,6 +889,7 @@ export function decideRecovery(input: {
   });
   const { outcome } = classifyRecoveryOutcome({
     failureClass: input.failureClass, ok: input.recovery.ok, action: input.recovery.action,
+    runtimeCannotAct: input.runtimeCannotAct,
   });
   if (outcome === 'failed') {
     return {
@@ -1438,6 +1447,7 @@ export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMon
         recovery,
         checkedAt: inboundResult.checkedAtIso,
         graceMinutes: miss.graceMinutes,
+        runtimeCannotAct: miss.runtimeCannotAct,
       });
 
     const apply = (d: RecoveryDecision, recovery?: { action: string; reason: string }) => {

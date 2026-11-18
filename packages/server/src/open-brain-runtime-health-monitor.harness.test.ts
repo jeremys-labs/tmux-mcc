@@ -82,7 +82,7 @@ function cleanReport(generatedAtIso: string): RuntimeHealthReport {
   } as unknown as RuntimeHealthReport;
 }
 
-function status(progress: 'processing' | 'blocked' | 'idle' | 'hung', process_ = 'running'): SupervisorAgentStatus {
+function status(progress: 'processing' | 'blocked' | 'idle' | 'hung' | 'unknown', process_ = 'running'): SupervisorAgentStatus {
   return {
     agent: SUBJECT,
     process: { status: process_ },
@@ -378,7 +378,7 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     expect(p3.mails[0].body).toContain('inbound=in-1');
   });
 
-  it('(H5) FINDING B, cause 1 of 3 — no inbox_path: a BLOCKED runtime is reported as a replay, not a block', async () => {
+  it('(H5) FINDING B, cause 1 of 3 — no inbox_path: a BLOCKED runtime now alerts and says it cannot answer', async () => {
     const root = tempRoot();
     const statePath = path.join(root, 'state.json');
     // No inbox_path on the expectation. consumptionState() cannot prove consumption, but the
@@ -388,15 +388,70 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
 
     const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('blocked')] });
 
-    // THE DEFECT: the runtime is blocked and the operator is told a replay happened and no reply
-    // has been seen YET -- which reads as self-repair in progress. The remedy for the class it was
-    // given is 'none'; the remedy it needed is 'restart'. Same defect class as blocker 1
+    // FIXED (commit 4). Before this commit the operator was told a replay had happened and no
+    // reply had been seen YET, which reads as self-repair in progress: the remedy for the class it
+    // was given is 'none', the remedy it needed is 'restart'. Same defect class as blocker 1
     // (2026-10-12), one case over.
+    expect(p1.stdout).toContain('inbound recovery inboundAlert');
+    expect(p1.stdout).not.toContain('recoveryNotice');
+    expect(p1.mails).toHaveLength(1);
+    // THE CLASS STAYS HONEST: consumption is still unproven, so we do not claim `consumed_blocked`.
+    expect(p1.mails[0].body).toContain('class=unknown_consumption_no_reply');
+    // The cause is named rather than left as "could not be proven".
+    expect(p1.mails[0].body).toContain('(no inbox_path on the expectation)');
+    // And the block is now STATED, not dropped at the routing layer.
+    expect(p1.mails[0].body).toContain('it will not be answered until that clears');
+    expect(p1.mails[0].body).not.toContain('no reply observed yet');
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('"cannotAct": "blocked"');
+  });
+
+  it('(H10) FINDING B — a DEAD runtime with unproven consumption also alerts, never self-repair', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: null });
+
+    // isla's condition 5 names blocked, dead AND hung. Driven through cause 1, the only cause
+    // where the replay can succeed and therefore the only one that could reach recoveryNotice.
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('processing', 'dead')] });
+
+    expect(p1.stdout).toContain('inbound recovery inboundAlert');
+    expect(p1.stdout).not.toContain('recoveryNotice');
+    expect(p1.mails[0].body).toContain('class=unknown_consumption_no_reply');
+    expect(p1.mails[0].body).toContain('it will not be answered until that clears');
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('"cannotAct": "process dead"');
+  });
+
+  it('(H11) FINDING B — a HUNG runtime with unproven consumption also alerts, never self-repair', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: null });
+
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('hung')] });
+
+    expect(p1.stdout).toContain('inbound recovery inboundAlert');
+    expect(p1.stdout).not.toContain('recoveryNotice');
+    expect(p1.mails[0].body).toContain('class=unknown_consumption_no_reply');
+    expect(p1.mails[0].body).toContain('it will not be answered until that clears');
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('"cannotAct": "hung"');
+  });
+
+  it('(H12) a HEALTHY runtime with unproven consumption still reports a successful replay', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: null });
+
+    // THE CONTROL THAT STOPS FIX B BECOMING "ALWAYS ALERT". If nothing is wrong with the runtime,
+    // an unprovable consumption plus a successful replay IS a repair, and reporting it as a
+    // failure would trade blocker 1 for its mirror image.
+    //
+    // NOT `processing`, which my first version used and which could not reach this path at all:
+    // classifyMiss DEFERS a running+processing runtime, so it never becomes a miss and the
+    // fixture would have passed for the wrong reason had the assertion been weaker.
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('unknown')] });
+
     expect(p1.stdout).toContain('inbound recovery recoveryNotice');
     expect(p1.mails).toHaveLength(1);
     expect(p1.mails[0].body).toContain('no reply observed yet');
-    expect(p1.mails[0].body).not.toContain('blocked');
-    // And the cannot-act evidence is dropped from the recorded attempt.
     expect(fs.readFileSync(statePath, 'utf8')).toContain('"cannotAct": null');
   });
 
@@ -412,8 +467,13 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     // tells the operator the runtime will not answer.
     expect(p1.mails).toHaveLength(1);
     expect(p1.mails[0].body).toContain('class=unknown_consumption_no_reply');
+    expect(p1.mails[0].body).toContain('(message id not present in the inbox file)');
     expect(p1.mails[0].body).toContain('replay refused (not_found)');
-    expect(p1.mails[0].body).not.toContain('will not be answered');
+    // SCOPE, STATED RATHER THAN HIDDEN: the failed-recovery branch builds its own detail and does
+    // not restate the block. The supervisor state is already in the line (progress=blocked), and
+    // rewording that branch would change the text for every failure class, not just this one.
+    // Left for isla to rule on; the routing requirement is met, since this is inboundAlert.
+    expect(p1.mails[0].body).toContain('progress=blocked');
   });
 
   it('(H7) FINDING B, cause 3 of 3 — cursor file with no lineCount: same incidental alert, same missing statement', async () => {
@@ -425,7 +485,8 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
 
     expect(p1.mails).toHaveLength(1);
     expect(p1.mails[0].body).toContain('class=unknown_consumption_no_reply');
+    expect(p1.mails[0].body).toContain('(no runtime cursor)');
     expect(p1.mails[0].body).toContain('replay refused (not_consumed)');
-    expect(p1.mails[0].body).not.toContain('will not be answered');
+    expect(p1.mails[0].body).toContain('progress=blocked');
   });
 });
