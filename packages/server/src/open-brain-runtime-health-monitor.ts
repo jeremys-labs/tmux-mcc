@@ -39,6 +39,12 @@ interface MonitorState {
   lastDeliverySentAt?: string;
   lastInboundReplyFingerprint?: string;
   lastInboundReplySentAt?: string;
+  /**
+   * The miss keys the stored inbound fingerprint describes. Needed because an empty deliverable
+   * set has to be read differently depending on WHY it is empty -- see the clear/retain decision
+   * in the inbound block.
+   */
+  lastInboundReplyKeys?: string[];
   lastSchedulerFingerprint?: string;
   lastSchedulerSentAt?: string;
   // Set of withheld subjects last escalated to the principal. The findings themselves are
@@ -1523,8 +1529,34 @@ export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMon
     })));
   }
 
+  // AN EMPTY SET IS NOT EVIDENCE THE MISS IS OVER. Clearing unconditionally conflated two
+  // states: RESOLVED (the reply landed, so a later recurrence SHOULD alert again -- the property
+  // schedulerFailureFingerprint's note depends on) and NOT JUDGED YET, which is what a pass
+  // inside the replay's fresh grace window produces. In the second case the fingerprint was
+  // dropped and the next pass reported the SAME key and SAME class as new: one logical miss, two
+  // alerts, with a silent window between them that reads like a recovery. (finding A.)
+  //
+  // BOTH ROUTES TO AN EMPTY SET MATTER. Deferral is the one the row names; a
+  // `consumed_idle_no_reply` landing in `undecidable` is a second one, and a fix that handled
+  // only deferral would have been right about the fixture in front of it and wrong about the rule.
+  const undecidedKeysNow = new Set<string>([
+    ...inboundResult.deferredKeys,
+    ...inboundResult.undecidable.map((miss) => miss.key),
+  ]);
+  const keysBehindStoredFingerprint = state.lastInboundReplyKeys;
+  // A state file written before this field existed carries a fingerprint and no keys. Retaining
+  // on ANY undecided key is the conservative read for that single transition: it can only
+  // suppress a duplicate of an IDENTICAL fingerprint, whereas clearing wrongly manufactures the
+  // duplicate this fix removes.
+  const storedMissStillUndecided = keysBehindStoredFingerprint === undefined
+    ? undecidedKeysNow.size > 0
+    : keysBehindStoredFingerprint.some((key) => undecidedKeysNow.has(key));
+
   if (inboundSplit.deliverable.length === 0) {
-    nextState.lastInboundReplyFingerprint = undefined;
+    if (!storedMissStillUndecided) {
+      nextState.lastInboundReplyFingerprint = undefined;
+      nextState.lastInboundReplyKeys = undefined;
+    }
   } else {
     const fingerprint = inboundSplit.fingerprint as string;
     if (state.lastInboundReplyFingerprint === fingerprint && !repeat) {
@@ -1536,6 +1568,7 @@ export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMon
         (miss) => miss.agent,
       ), channel: channelFor('inbound') });
       nextState.lastInboundReplyFingerprint = fingerprint;
+      nextState.lastInboundReplyKeys = inboundSplit.deliverable.map((miss) => miss.key);
       nextState.lastInboundReplySentAt = inboundResult.checkedAtIso;
     }
   }

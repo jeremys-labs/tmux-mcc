@@ -108,6 +108,14 @@ export interface ReplyReconcileResult {
    */
   undecidable: ReplyMiss[];
   misses: ReplyMiss[];
+  /**
+   * Keys this pass declined to judge YET -- inside grace, or deferred because the runtime is
+   * actively processing. Exposed because "no finding" has two very different causes and the
+   * caller's dedup state depends on which: a miss that was RESOLVED should clear the stored
+   * fingerprint so a later recurrence alerts again, while a miss merely NOT YET JUDGED must not,
+   * or the next pass reports it as new. A count cannot answer that; only the keys can.
+   */
+  deferredKeys: string[];
 }
 
 interface InboxLineIndex {
@@ -344,6 +352,7 @@ export function reconcileInboundReplies(input: {
   let matchedCount = 0;
   let skippedCount = 0;
   let deferredCount = 0;
+  const deferredKeys: string[] = [];
   const misses: ReplyMiss[] = [];
   const undecidable: ReplyMiss[] = [];
 
@@ -362,6 +371,7 @@ export function reconcileInboundReplies(input: {
     const grace = graceMinutes(record, policy);
     if (ageMinutes < grace) {
       deferredCount += 1;
+      deferredKeys.push(expectedKey(record));
       continue;
     }
 
@@ -373,6 +383,7 @@ export function reconcileInboundReplies(input: {
     });
     if (classified.deferred || !classified.failureClass) {
       deferredCount += 1;
+      deferredKeys.push(expectedKey(record));
       continue;
     }
 
@@ -404,6 +415,7 @@ export function reconcileInboundReplies(input: {
     skippedCount,
     misses,
     undecidable,
+    deferredKeys,
   };
 }
 

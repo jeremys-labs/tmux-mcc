@@ -192,6 +192,22 @@ function fixture(input: {
   }
 }
 
+function expectationsFile(contentRoot: string): string {
+  return path.join(contentRoot, 'bridge', 'reconcile', 'inbound-expected.jsonl');
+}
+
+/** Appends one more expectation, leaving the replay record the recovery wrote in place. */
+function appendExpectation(contentRoot: string, messageId: string, queuedAt: string): void {
+  fs.appendFileSync(expectationsFile(contentRoot), JSON.stringify({
+    queued_at: queuedAt,
+    agent: SUBJECT,
+    chat_id: 'chat-harness',
+    message_id: messageId,
+    binding: SUBJECT,
+    inbox_path: inboxFileFor(contentRoot),
+  }) + '\n');
+}
+
 function inboxFileFor(contentRoot: string): string {
   return path.join(contentRoot, 'bridge', 'inbox', `${SUBJECT}.jsonl`);
 }
@@ -255,7 +271,7 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     expect(p3.stdout).toContain('duplicate alert suppressed');
   });
 
-  it('(H3) FINDING A via DEFERRAL: a pass inside the replay grace clears the fingerprint and the next pass re-alerts', async () => {
+  it('(H3) FINDING A via DEFERRAL: a pass inside the replay grace keeps the fingerprint, so one miss alerts once', async () => {
     const root = tempRoot();
     const statePath = path.join(root, 'state.json');
     fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root) });
@@ -273,15 +289,15 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     expect(p2.mails).toHaveLength(0);
     expect(p2.stdout).toContain('deferred 1');
 
-    // THE DEFECT: the deferral emptied the deliverable set, which cleared the dedup fingerprint,
-    // so the same logical miss alerts a SECOND time with the same key and the same class.
-    expect(p3.mails).toHaveLength(1);
-    expect(p3.mails[0].body).toContain('class=consumed_blocked');
+    // FIXED (commit 3): the deferral no longer clears the dedup state, so the SAME key and class
+    // are still recognised as already-reported and the second alert never goes out.
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('lastInboundReplyFingerprint');
+    expect(p3.mails).toHaveLength(0);
+    expect(p3.stdout).toContain('duplicate alert suppressed');
     expect(p1.mails[0].body).toContain('inbound=in-1');
-    expect(p3.mails[0].body).toContain('inbound=in-1');
   });
 
-  it('(H4) FINDING A via UNDECIDABLE: blocked then idle also clears the fingerprint, and a recurrence re-alerts', async () => {
+  it('(H4) FINDING A via UNDECIDABLE: blocked then idle also keeps the fingerprint', async () => {
     const root = tempRoot();
     const statePath = path.join(root, 'state.json');
     fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root) });
@@ -296,8 +312,70 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     expect(p1.mails).toHaveLength(1);
     expect(p2.mails).toHaveLength(0);
     expect(p2.stdout).toContain('undecidable 1');
+    // FIXED (commit 3): an undecidable pass is also "not judged yet", not "resolved".
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('lastInboundReplyFingerprint');
+    expect(p3.mails).toHaveLength(0);
+    expect(p3.stdout).toContain('duplicate alert suppressed');
+  });
+
+  it('(H8) a GENUINE resolution still clears the fingerprint, so a later recurrence alerts again', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root) });
+    const outboundFile = path.join(root, 'bridge', 'reconcile', 'outbound-sent.jsonl');
+
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('blocked')] });
+    expect(p1.mails).toHaveLength(1);
+
+    // THE CONTROL THAT STOPS THE FIX BECOMING "ALWAYS RETAIN". A fix that simply never cleared
+    // would pass H3 and H4 and silently suppress every recurrence forever, which is strictly
+    // worse than the duplicate it replaced. A real reply landing is a RESOLUTION, and the
+    // documented behaviour -- recovery followed by a recurrence re-alerts -- has to survive.
+    writeLines(outboundFile, [{ agent: SUBJECT, chat_id: 'chat-harness', sent_at: '2026-11-18T12:40:00.000Z' }]);
+    const p2 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:45:00.000Z', statuses: [status('idle')] });
+    expect(p2.mails).toHaveLength(0);
+    expect(p2.stdout).toContain('matched 1');
+    expect(fs.readFileSync(statePath, 'utf8')).not.toContain('lastInboundReplyFingerprint');
+
+    // The reply is withdrawn and the runtime is blocked again: a fresh incident, and it must page.
+    writeLines(outboundFile, []);
+    const p3 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T13:30:00.000Z', statuses: [status('blocked')] });
     expect(p3.mails).toHaveLength(1);
     expect(p3.mails[0].body).toContain('class=consumed_blocked');
+  });
+
+  it('(H9) coverage is compared by KEY: another key being undecided does not hold a resolved one open', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root) });
+    const outboundFile = path.join(root, 'bridge', 'reconcile', 'outbound-sent.jsonl');
+
+    // Pass 1: in-1 alerts, so the stored fingerprint covers in-1 and nothing else.
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('blocked')] });
+    expect(p1.mails).toHaveLength(1);
+
+    // Pass 2: in-1 is genuinely RESOLVED by a real reply, while an unrelated in-2 is inside its
+    // grace window. The set is empty, but the only undecided key is one the fingerprint never
+    // described, so in-1's fingerprint must still be cleared.
+    //
+    // THIS IS THE ONLY FIXTURE THAT CAN SEE `lastInboundReplyKeys` BEING RECORDED. Without the
+    // recorded keys the code falls back to "any undecided key at all", which is indistinguishable
+    // from the correct answer in every single-key fixture -- so deleting the recording survived
+    // the battery until this case existed.
+    writeLines(outboundFile, [{ agent: SUBJECT, chat_id: 'chat-harness', sent_at: '2026-11-18T12:40:00.000Z' }]);
+    appendExpectation(root, 'in-2', '2026-11-18T12:44:00.000Z');
+    const p2 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:45:00.000Z', statuses: [status('idle')] });
+    expect(p2.mails).toHaveLength(0);
+    expect(p2.stdout).toContain('matched 1');
+    expect(p2.stdout).toContain('deferred 1');
+    expect(fs.readFileSync(statePath, 'utf8')).not.toContain('lastInboundReplyFingerprint');
+
+    // Pass 3: in-1 is a fresh incident again and must page, because its fingerprint was cleared.
+    writeLines(outboundFile, []);
+    appendExpectation(root, 'in-2', '2026-11-18T13:29:00.000Z');
+    const p3 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T13:30:00.000Z', statuses: [status('blocked')] });
+    expect(p3.mails).toHaveLength(1);
+    expect(p3.mails[0].body).toContain('inbound=in-1');
   });
 
   it('(H5) FINDING B, cause 1 of 3 — no inbox_path: a BLOCKED runtime is reported as a replay, not a block', async () => {
