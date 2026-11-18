@@ -81,6 +81,17 @@ export interface ReplyMiss {
   graceMinutes: number;
   failureClass: ReplyMissClass;
   detail: string;
+  /**
+   * Why the RUNTIME cannot answer, read from the supervisor and independent of the failure class:
+   * 'process dead', 'hung', 'blocked', or null.
+   *
+   * It exists because `unknown_consumption_no_reply` is the honest class when consumption cannot
+   * be proven, and that class carries no cannot-act of its own -- so a blocked runtime whose
+   * consumption was unprovable had its blocked-ness dropped at the routing layer and was reported
+   * as a successful self-repair. Keeping the class honest and carrying the evidence separately is
+   * what lets both facts be true at once. (dc-20261102-011, finding B.)
+   */
+  runtimeCannotAct: string | null;
 }
 
 export interface ReplyReconcileResult {
@@ -108,6 +119,14 @@ export interface ReplyReconcileResult {
    */
   undecidable: ReplyMiss[];
   misses: ReplyMiss[];
+  /**
+   * Keys this pass declined to judge YET -- inside grace, or deferred because the runtime is
+   * actively processing. Exposed because "no finding" has two very different causes and the
+   * caller's dedup state depends on which: a miss that was RESOLVED should clear the stored
+   * fingerprint so a later recurrence alerts again, while a miss merely NOT YET JUDGED must not,
+   * or the next pass reports it as new. A count cannot answer that; only the keys can.
+   */
+  deferredKeys: string[];
 }
 
 interface InboxLineIndex {
@@ -239,23 +258,46 @@ function statusForAgent(statuses: SupervisorAgentStatus[], agent: string): Super
   return statuses.find((status) => status.agent === agent);
 }
 
+/**
+ * THREE DIFFERENT THINGS USED TO COLLAPSE INTO ONE 'unknown', and the detail then said only
+ * "consumption could not be proven", which gives whoever reads the alert no way to tell a
+ * misconfigured expectation from a missing inbox line from a stale cursor. They are also not
+ * equally consequential: only the missing inbox_path leaves a forced replay able to SUCCEED,
+ * because recoverInboundMiss reads a fixed <contentRoot>/bridge/inbox/<agent>.jsonl rather than
+ * this field -- so it is the one cause that could reach the self-repair route.
+ */
+type ConsumptionUnknownCause = 'no inbox_path on the expectation'
+  | 'message id not present in the inbox file'
+  | 'no runtime cursor';
+
 function consumptionState(input: {
   record: InboundExpectedRecord;
   contentRoot: string;
   inboxCache: Map<string, InboxLineIndex>;
-}): 'queued' | 'consumed' | 'unknown' {
+}): { state: 'queued' | 'consumed' } | { state: 'unknown'; cause: ConsumptionUnknownCause } {
   const { record, contentRoot, inboxCache } = input;
-  if (!record.inbox_path) return 'unknown';
+  if (!record.inbox_path) return { state: 'unknown', cause: 'no inbox_path on the expectation' };
   let index = inboxCache.get(record.inbox_path);
   if (!index) {
     index = readInboxLineIndex(record.inbox_path);
     inboxCache.set(record.inbox_path, index);
   }
   const lineIndex = index.lineIndexByMessageId.get(record.message_id);
-  if (lineIndex === undefined) return 'unknown';
+  if (lineIndex === undefined) return { state: 'unknown', cause: 'message id not present in the inbox file' };
   const cursor = readRuntimeCursor(contentRoot, record.agent);
-  if (cursor === null) return 'unknown';
-  return cursor > lineIndex ? 'consumed' : 'queued';
+  if (cursor === null) return { state: 'unknown', cause: 'no runtime cursor' };
+  return { state: cursor > lineIndex ? 'consumed' : 'queued' };
+}
+
+/**
+ * Mirrors CANNOT_ACT_BY_FAILURE_CLASS's vocabulary deliberately, so the two cannot disagree about
+ * what a blocked runtime is called.
+ */
+function runtimeCannotActFrom(status?: SupervisorAgentStatus): string | null {
+  if (status?.process?.status === 'dead') return 'process dead';
+  if (status?.progress?.status === 'hung') return 'hung';
+  if (status?.progress?.status === 'blocked') return 'blocked';
+  return null;
 }
 
 function classifyMiss(input: {
@@ -265,7 +307,8 @@ function classifyMiss(input: {
   inboxCache: Map<string, InboxLineIndex>;
 }): { failureClass?: ReplyMissClass; detail: string; deferred: boolean } {
   const { record, contentRoot, status, inboxCache } = input;
-  const consumed = consumptionState({ record, contentRoot, inboxCache });
+  const consumption = consumptionState({ record, contentRoot, inboxCache });
+  const consumed = consumption.state;
   const processStatus = status?.process?.status;
   const progressStatus = status?.progress?.status;
   const progressDetail = status?.progress?.detail;
@@ -286,10 +329,13 @@ function classifyMiss(input: {
     };
   }
 
-  if (consumed === 'unknown') {
+  if (consumption.state === 'unknown') {
     return {
       failureClass: 'unknown_consumption_no_reply',
-      detail: `no outbound reply and consumption could not be proven; ${stateDetail}`,
+      // The CLASS stays honest: with consumption unproven we cannot claim `consumed_blocked`
+      // without asserting evidence we do not have. The runtime's state travels separately, on
+      // `runtimeCannotAct`, so the routing layer stops throwing it away.
+      detail: `no outbound reply and consumption could not be proven (${consumption.cause}); ${stateDetail}`,
       deferred: false,
     };
   }
@@ -344,6 +390,7 @@ export function reconcileInboundReplies(input: {
   let matchedCount = 0;
   let skippedCount = 0;
   let deferredCount = 0;
+  const deferredKeys: string[] = [];
   const misses: ReplyMiss[] = [];
   const undecidable: ReplyMiss[] = [];
 
@@ -362,6 +409,7 @@ export function reconcileInboundReplies(input: {
     const grace = graceMinutes(record, policy);
     if (ageMinutes < grace) {
       deferredCount += 1;
+      deferredKeys.push(expectedKey(record));
       continue;
     }
 
@@ -373,6 +421,7 @@ export function reconcileInboundReplies(input: {
     });
     if (classified.deferred || !classified.failureClass) {
       deferredCount += 1;
+      deferredKeys.push(expectedKey(record));
       continue;
     }
 
@@ -386,6 +435,7 @@ export function reconcileInboundReplies(input: {
       graceMinutes: grace,
       failureClass: classified.failureClass,
       detail: classified.detail,
+      runtimeCannotAct: runtimeCannotActFrom(statusForAgent(supervisorStatuses, record.agent)),
     };
     // Undecidable, not clean and not a finding. See the `undecidable` field for why this one
     // class cannot produce a distinguishable true positive on the current evidence.
@@ -404,6 +454,7 @@ export function reconcileInboundReplies(input: {
     skippedCount,
     misses,
     undecidable,
+    deferredKeys,
   };
 }
 
