@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { assertCheckoutCurrent } from './services/runtime-checkout-assertion.js';
+import { assertCheckoutCurrent, type CheckoutVerdict } from './services/runtime-checkout-assertion.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -1230,36 +1230,72 @@ export function planWithheldEscalation(input: {
   };
 }
 
-async function main(): Promise<void> {
-  const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
-  const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
-  const supervisorUrl = readArg('--supervisor-url') ?? process.env.AGENT_SUPERVISOR_URL ?? DEFAULT_SUPERVISOR_URL;
-  const socketPath = readArg('--socket-path') ?? process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock';
-  const chatId = readArg('--chat-id') ?? DEFAULT_CHAT_ID;
-  const agent = readArg('--agent') ?? DEFAULT_AGENT;
-  const dryRun = hasFlag('--dry-run');
-  // Operator destination is configurable but defaults to the agent who owns fleet
-  // infrastructure. Unlike the Discord flag, this one CAN point somewhere that is not
-  // Jeremy's DM, which is the whole point of the change.
-  const operatorAgent = readArg('--operator-agent') ?? 'isla';
-  const mailDir = readArg('--mail-dir') ?? process.env.AGENT_MAIL_DIR ?? '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
-  // dc-20260925-002. Assert the checkout this process is RUNNING FROM before anything can
-  // reach the principal. On 2026-09-24 17:56 the live checkout was clean, on main, and
-  // simply un-pulled, and a scheduler alert went to Jeremy's DM 41 seconds later from
-  // pre-fix source. The daily drift audit already computes off-trunk and dirty and
-  // classifies them as CONTEXT rather than findings, and runs once a day against what was
-  // a ten-minute window — it could only have caught that by luck.
-  //
-  // The checkout is derived from THIS MODULE'S OWN LOCATION, not cwd: the question is
-  // which source the running process was loaded from, and cwd is whatever the launcher
-  // happened to leave behind.
-  const checkout = assertCheckoutCurrent(dirname(fileURLToPath(import.meta.url)));
-  const report = await buildRuntimeHealthReport({
-    includeOpenBrainSearch: false,
+
+/**
+ * THE MONITOR'S WHOLE ORCHESTRATION, with its dependencies passed in.
+ *
+ * Extracted for dc-20261102-011. Two comments in this file already named
+ * `runOpenBrainRuntimeHealthMonitor` as though it existed -- it never did. The orchestration
+ * lived in an unexported `main()`, reachable only through the `import.meta.url` guard, which is
+ * exactly why every blocker isla found in the recovery loop sat in code no test could address,
+ * and why the pure decisions above (`classifyRecoveryOutcome`, `planPriorAttempt`,
+ * `decideRecovery`, `RECOVERY_OUTCOME_ROUTE`) had to be carved out one at a time instead.
+ *
+ * It could not be tested in place because `main()` ACQUIRED ITS OWN FIXTURE.
+ * `buildRuntimeHealthReport` resolves agentsRoot, schedulerRoot, the disk check, the agent-mail
+ * DB and an OB1 row fetch from module constants that no argv flag can redirect, so a subprocess
+ * harness would assert against live fleet state and be flaky by construction. The report and the
+ * supervisor statuses are therefore values here, not calls.
+ *
+ * The STATE FILE IS DELIBERATELY STILL A FILE. `readMonitorState`/`writeMonitorState` keep their
+ * real implementations and `statePath` is just a path, so a multi-pass harness carries state
+ * between passes the way production does -- which is the half of this that findings A and B live in.
+ *
+ * DEPENDENCIES ARE REQUIRED, NOT DEFAULTED. A default would be a second description of the real
+ * wiring, and then the tested path and the shipped path could disagree while both looked right.
+ * `main()` below is the only place the real wiring is named.
+ */
+export interface RuntimeHealthMonitorOptions {
+  statePath: string;
+  contentRoot: string;
+  socketPath: string;
+  chatId: string;
+  agent: string;
+  operatorAgent: string;
+  mailDir: string;
+  dryRun: boolean;
+  repeat: boolean;
+  /** Already acquired by the caller: see the note above on why these are values. */
+  checkout: CheckoutVerdict;
+  report: RuntimeHealthReport;
+  supervisorStatuses: SupervisorAgentStatus[];
+  restart: (targetAgent: string) => Promise<void>;
+  sendOperatorMail: (input: { to: string; subject: string; body: string; mailDir: string }) => Promise<void>;
+  sendDiscordMessage: (input: { agent: string; chatId: string; text: string; socketPath: string }) => Promise<string>;
+}
+
+export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMonitorOptions): Promise<void> {
+  const {
+    statePath,
     contentRoot,
-  });
+    socketPath,
+    chatId,
+    agent,
+    operatorAgent,
+    mailDir,
+    dryRun,
+    repeat,
+    checkout,
+    report,
+    supervisorStatuses,
+    restart,
+    sendOperatorMail,
+    sendDiscordMessage,
+  } = options;
+  // Moved across the supervisor fetch, which it does not read. `findDeliveryFailures` is pure
+  // and `report` is already resolved, so this is the one line in the extraction whose position
+  // changed; it is called out in the PR rather than left for the reviewer to find.
   const failures = findDeliveryFailures(report);
-  const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
   const state = readMonitorState(statePath);
   const nextState: MonitorState = { ...state };
   // Only ever populated via `alertFrom`, which accepts a branded `Deliverable` that only
@@ -1300,7 +1336,7 @@ async function main(): Promise<void> {
     checkedAt: report.generatedAtIso,
     graceMinutes: 10,
     dryRun,
-    restart: (targetAgent) => restartAgentForDelivery(supervisorUrl, targetAgent, report.generatedAtIso),
+    restart,
   });
   nextState.deliveryRecoveryAttempts = deliveryRecovery.attempts;
   const deliveryAlertFailures = deliveryRecovery.alerts;
@@ -1335,7 +1371,7 @@ async function main(): Promise<void> {
   } else {
     const fingerprint = deliverySplit.fingerprint as string;
     const previous = state.lastDeliveryFingerprint ?? state.lastFingerprint;
-    if (previous === fingerprint && !hasFlag('--repeat')) {
+    if (previous === fingerprint && !repeat) {
       process.stdout.write(`runtime delivery monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
       alerts.push({ ...alertFrom(
@@ -1480,7 +1516,7 @@ async function main(): Promise<void> {
     nextState.lastInboundReplyFingerprint = undefined;
   } else {
     const fingerprint = inboundSplit.fingerprint as string;
-    if (state.lastInboundReplyFingerprint === fingerprint && !hasFlag('--repeat')) {
+    if (state.lastInboundReplyFingerprint === fingerprint && !repeat) {
       process.stdout.write(`inbound reply monitor still failing; duplicate alert suppressed at ${inboundResult.checkedAtIso}\n`);
     } else {
       alerts.push({ ...alertFrom(
@@ -1518,7 +1554,7 @@ async function main(): Promise<void> {
     nextState.lastSchedulerFingerprint = undefined;
   } else {
     const fingerprint = schedulerSplit.fingerprint as string;
-    if (state.lastSchedulerFingerprint === fingerprint && !hasFlag('--repeat')) {
+    if (state.lastSchedulerFingerprint === fingerprint && !repeat) {
       process.stdout.write(`runtime scheduler monitor still failing; duplicate alert suppressed at ${report.generatedAtIso}\n`);
     } else {
       alerts.push({ ...alertFrom(
@@ -1580,7 +1616,7 @@ async function main(): Promise<void> {
       destinationAgent: agent,
       operatorAddressedCount,
       lastFingerprint: state.lastWithheldFingerprint,
-      repeat: hasFlag('--repeat'),
+      repeat,
     });
     nextState.lastWithheldFingerprint = escalation.fingerprint;
     process.stdout.write(`${formatWithheldLogHeader({
@@ -1658,6 +1694,56 @@ async function main(): Promise<void> {
     }
     writeMonitorState(statePath, nextState);
   }
+}
+
+async function main(): Promise<void> {
+  const statePath = readArg('--state-path') ?? DEFAULT_STATE_PATH;
+  const contentRoot = readArg('--content-root') ?? process.env.CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
+  const supervisorUrl = readArg('--supervisor-url') ?? process.env.AGENT_SUPERVISOR_URL ?? DEFAULT_SUPERVISOR_URL;
+  const socketPath = readArg('--socket-path') ?? process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock';
+  const chatId = readArg('--chat-id') ?? DEFAULT_CHAT_ID;
+  const agent = readArg('--agent') ?? DEFAULT_AGENT;
+  const dryRun = hasFlag('--dry-run');
+  // Operator destination is configurable but defaults to the agent who owns fleet
+  // infrastructure. Unlike the Discord flag, this one CAN point somewhere that is not
+  // Jeremy's DM, which is the whole point of the change.
+  const operatorAgent = readArg('--operator-agent') ?? 'isla';
+  const mailDir = readArg('--mail-dir') ?? process.env.AGENT_MAIL_DIR ?? '/Volumes/Repo-Drive/agents/SHARED/agent-mail';
+  // dc-20260925-002. Assert the checkout this process is RUNNING FROM before anything can
+  // reach the principal. On 2026-09-24 17:56 the live checkout was clean, on main, and
+  // simply un-pulled, and a scheduler alert went to Jeremy's DM 41 seconds later from
+  // pre-fix source. The daily drift audit already computes off-trunk and dirty and
+  // classifies them as CONTEXT rather than findings, and runs once a day against what was
+  // a ten-minute window — it could only have caught that by luck.
+  //
+  // The checkout is derived from THIS MODULE'S OWN LOCATION, not cwd: the question is
+  // which source the running process was loaded from, and cwd is whatever the launcher
+  // happened to leave behind.
+  const checkout = assertCheckoutCurrent(dirname(fileURLToPath(import.meta.url)));
+  const report = await buildRuntimeHealthReport({
+    includeOpenBrainSearch: false,
+    contentRoot,
+  });
+  const supervisorStatuses = await fetchSupervisorStatuses(supervisorUrl);
+  await runOpenBrainRuntimeHealthMonitor({
+    statePath,
+    contentRoot,
+    socketPath,
+    chatId,
+    agent,
+    operatorAgent,
+    mailDir,
+    dryRun,
+    repeat: hasFlag('--repeat'),
+    checkout,
+    report,
+    supervisorStatuses,
+    // The identical arrow this call site has always built, relocated verbatim: the body no
+    // longer reaches for `supervisorUrl` or `report` itself.
+    restart: (targetAgent) => restartAgentForDelivery(supervisorUrl, targetAgent, report.generatedAtIso),
+    sendOperatorMail,
+    sendDiscordMessage,
+  });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
