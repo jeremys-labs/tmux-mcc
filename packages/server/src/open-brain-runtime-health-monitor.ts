@@ -22,6 +22,7 @@ import {
   type SupervisorAgentStatus,
 } from './services/inbound-reply-reconcile.js';
 import { recoverInboundMiss } from './services/inbound-miss-recovery.js';
+import type { RuntimeWakeResult } from '@agent-comms/discord-bridge';
 
 const DEFAULT_CHAT_ID = '1491979880747765810';
 const DEFAULT_AGENT = 'eli';
@@ -1272,6 +1273,13 @@ export interface RuntimeHealthMonitorOptions {
   restart: (targetAgent: string) => Promise<void>;
   sendOperatorMail: (input: { to: string; subject: string; body: string; mailDir: string }) => Promise<void>;
   sendDiscordMessage: (input: { agent: string; chatId: string; text: string; socketPath: string }) => Promise<string>;
+  /**
+   * TEST SEAM, and the only optional field. `recoverInboundMiss` already defaults this to the
+   * real `wakeAgentRuntime` inside its own module, so omitting it here keeps the default where
+   * it has always lived rather than describing the wiring a second time. It exists because
+   * waking a runtime is a real side effect against the live fleet, and a harness must not.
+   */
+  wake?: (agent: string) => RuntimeWakeResult;
 }
 
 export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMonitorOptions): Promise<void> {
@@ -1291,6 +1299,7 @@ export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMon
     restart,
     sendOperatorMail,
     sendDiscordMessage,
+    wake,
   } = options;
   // Moved across the supervisor fetch, which it does not read. `findDeliveryFailures` is pure
   // and `report` is already resolved, so this is the one line in the extraction whose position
@@ -1452,7 +1461,9 @@ export async function runOpenBrainRuntimeHealthMonitor(options: RuntimeHealthMon
       miss,
       contentRoot,
       supervisorStatuses,
-      dependencies: { now: new Date(inboundResult.checkedAtIso) },
+      dependencies: wake
+        ? { now: new Date(inboundResult.checkedAtIso), wake }
+        : { now: new Date(inboundResult.checkedAtIso) },
     });
     const second = decide(recovery);
     process.stdout.write(`inbound recovery ${second.route}`
