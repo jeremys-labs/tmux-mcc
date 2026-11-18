@@ -455,6 +455,92 @@ describe('dc-20261102-011 — runOpenBrainRuntimeHealthMonitor, multi-pass on re
     expect(fs.readFileSync(statePath, 'utf8')).toContain('"cannotAct": null');
   });
 
+  it('(H13) queued_not_consumed + blocked never reaches recovery, so it cannot gain a cannot-act', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    // cursor 0 with the message at inbox index 0: `cursor > lineIndex` is false => 'queued'.
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root), cursorLineCount: 0 });
+
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('blocked')] });
+
+    // ISLA'S FINDING B1, MEASURED. `runtimeCannotAct` IS set on this miss -- it is classified in
+    // branch 1, before any runtime check -- so the data does carry 'blocked'. But the recovery
+    // loop FILTERS this class out as the delivery-cursor arm, so nothing consumes it: no recovery
+    // decision, no cannot-act, no inbound alert. The pre-existing comment on
+    // CANNOT_ACT_BY_FAILURE_CLASS already says the null there means "cannot occur here" rather
+    // than "can-act", which is the distinction the finding turned on.
+    //
+    // THIS FIXTURE PINS THE FILTER, which is the thing that actually governs: remove it and
+    // queued misses start reaching recovery and alerting, and this goes red.
+    expect(p1.stdout).toContain('inbound 1 finding(s)');
+    expect(p1.stdout).not.toContain('inbound recovery');
+    expect(p1.mails).toHaveLength(0);
+    expect(fs.readFileSync(statePath, 'utf8')).toContain('"inboundRecoveryAttempts": {}');
+  });
+
+  it('(H14) queued_not_consumed + HEALTHY behaves identically, so H13 is about the filter and not the runtime state', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root), cursorLineCount: 0 });
+
+    // isla's requested control. Without it, H13 would be satisfied by "queued does nothing when
+    // blocked" and could not distinguish that from "queued does nothing, period".
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('unknown')] });
+
+    expect(p1.stdout).toContain('inbound 1 finding(s)');
+    expect(p1.stdout).not.toContain('inbound recovery');
+    expect(p1.mails).toHaveLength(0);
+  });
+
+  it('(H15) N misses for one capped agent are ONE alert per pass, not N', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: null, inboxIds: ['in-1', 'in-2'] });
+    appendExpectation(root, 'in-2', '2026-11-18T12:00:00.000Z');
+    // Both expectations must lack inbox_path so both land in the class this change affects.
+    const file = expectationsFile(root);
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').trim().split('\n')
+      .map((line) => { const row = JSON.parse(line); delete row.inbox_path; return JSON.stringify(row); })
+      .join('\n') + '\n');
+
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('blocked')] });
+
+    // isla's (c), answered from a fixture rather than from reading the code: the fingerprint is
+    // over the whole deliverable SET, and alertFrom builds ONE alert carrying every line, so a
+    // capped agent with N queued messages costs one operator mail per pass.
+    expect(p1.stdout).toContain('inbound 2 finding(s)');
+    expect(p1.mails).toHaveLength(1);
+    expect(p1.mails[0].body).toContain('inbound=in-1');
+    expect(p1.mails[0].body).toContain('inbound=in-2');
+  });
+
+  it('(H16) consumed_unknown_no_reply cannot carry runtime evidence, which is why limiting it to one class is a no-op', async () => {
+    const root = tempRoot();
+    const statePath = path.join(root, 'state.json');
+    // Consumption PROVEN (cursor 99 past index 0) and a runtime that is none of
+    // processing/hung/blocked/idle, so classifyMiss falls through to consumed_unknown_no_reply.
+    fixture({ contentRoot: root, queuedAt: '2026-11-18T12:00:00.000Z', inboxPath: inboxFileFor(root), cursorLineCount: 99 });
+    // A replay of in-1 is already present, so decideReplay refuses and the pass ALERTS instead of
+    // emitting a recovery notice -- which is what puts the class name in the text where it can be
+    // asserted. My first version omitted this, the replay succeeded, and the mail was a recovery
+    // notice that never names the class: the expectation was wrong, not the code.
+    fs.appendFileSync(inboxFileFor(root), JSON.stringify({
+      id: 'in-1-replay', agentKey: SUBJECT, channelId: 'chat-harness', bindingName: SUBJECT,
+      text: 'harness inbound', replayed_from: 'in-1',
+    }) + '\n');
+
+    const p1 = await runPass({ contentRoot: root, statePath, nowIso: '2026-11-18T12:30:00.000Z', statuses: [status('unknown')] });
+
+    // Measured rather than argued. This is the last reachable class with a null map entry, and it
+    // can only be reached when dead/hung/blocked did NOT classify -- so the runtime has no
+    // cannot-act to contribute. Together with H13/H14 (queued is filtered) and H2/H10/H11 (the
+    // three non-null classes get the identical value either way), this is why restricting
+    // runtimeCannotAct to unknown_consumption_no_reply changes nothing anywhere.
+    expect(p1.mails).toHaveLength(1);
+    expect(p1.mails[0].body).toContain('class=consumed_unknown_no_reply');
+    expect(p1.mails[0].body).not.toContain('will not be answered');
+  });
+
   it('(H6) FINDING B, cause 2 of 3 — message id absent from the inbox: alerts, but never says the runtime cannot answer', async () => {
     const root = tempRoot();
     const statePath = path.join(root, 'state.json');
