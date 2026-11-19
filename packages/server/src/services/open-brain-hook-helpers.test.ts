@@ -69,6 +69,40 @@ describe('open-brain-hook-helpers', () => {
       // leave for a third party via getEmbedding and could not be recalled. MONKEY is the cost.
       [`APIKEY: ${SYNTH}`, 'REQUIRED: all-caps compound with no delimiter'],
       ['MONKEY: Curious77', 'ACCEPTED RESIDUAL: all-caps prose, indistinguishable from APIKEY'],
+      // CLOSED STEM LIST (isla, 2026-11-19): delimiter-or-hump alone regressed in the LEAK
+      // direction for lowercase compounds with neither. One row per stem.
+      [`secretkey: Abcdefg123`, 'closed stem list: secret'],
+      [`accesskey: Abcdefg123`, 'closed stem list: access'],
+      [`privatekey: Abcdefg123`, 'closed stem list: private'],
+      [`signingkey: Abcdefg123`, 'closed stem list: signing'],
+      [`masterkey: Abcdefg123`, 'closed stem list: master'],
+      [`encryptionkey: Abcdefg123`, 'closed stem list: encryption'],
+      [`licensekey: Abcdefg123`, 'closed stem list: license'],
+      [`clientkey: Abcdefg123`, 'closed stem list: client'],
+      [`sshkey: Abcdefg123`, 'closed stem list: ssh'],
+      [`sessionkey: Abcdefg123`, 'closed stem list: session'],
+      [`authkey: Abcdefg123`, 'closed stem list: auth'],
+      [`appkey: Abcdefg123`, 'closed stem list: app'],
+      [`servicekey: Abcdefg123`, 'closed stem list: service'],
+      [`deploykey: Abcdefg123`, 'closed stem list: deploy'],
+      [`webhookkey: Abcdefg123`, 'closed stem list: webhook'],
+      [`accountkey: Abcdefg123`, 'closed stem list: account'],
+      [`rootkey: Abcdefg123`, 'closed stem list: root'],
+      [`consumerkey: Abcdefg123`, 'closed stem list: consumer'],
+      [`passkey: Abcdefg123`, 'closed stem list: pass'],
+      [`publickey: Abcdefg123`, 'closed stem list: public'],
+      [`pubkey: Abcdefg123`, 'closed stem list: pub'],
+      [`hostkey: Abcdefg123`, 'closed stem list: host'],
+      [`gpgkey: Abcdefg123`, 'closed stem list: gpg'],
+      [`hmackey: Abcdefg123`, 'closed stem list: hmac'],
+      [`cipherkey: Abcdefg123`, 'closed stem list: cipher'],
+      [`symmetrickey: Abcdefg123`, 'closed stem list: symmetric'],
+      [`apikey: Abcdefg123`, 'closed stem list: api'],
+      [`botkey: Abcdefg123`, 'closed stem list: bot'],
+      [`sharedkey: Abcdefg123`, 'closed stem list: shared'],
+      [`mysecretkey: ${SYNTH}`, 'prefix before the stem'],
+      [`appsecretkey: ${SYNTH}`, 'prefix that is itself a stem'],
+      ['Secretkey: Abcdefg123', 'capitalised stem'],
     ];
     const MUST_NOT_REDACT: Array<[string, string]> = [
       ['token budget: 5', 'value too short'],
@@ -101,6 +135,10 @@ describe('open-brain-hook-helpers', () => {
       ['mickey: Mouse1234', 'mine'],
       ['Monkey: Curious77', 'capitalised prose: a leading capital is not a camel hump'],
       ['The monkey: Curious77 was noted', 'mid-sentence: destroys prose, not just a line'],
+      ['latchkey: Curious77', 'real word ending in `key`, no stem before it'],
+      ['flunkey: Curious77', 'real word ending in `key`, no stem before it'],
+      ['smokey: Curious77', 'real word ending in `key`, no stem before it'],
+      ['lowkey: Curious77', 'real word ending in `key`, no stem before it'],
     ];
 
     // ONE TEST PER ROW, not one over the table: a single test means every vocabulary mutation
@@ -117,8 +155,8 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(22);
-      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(23);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(54);
+      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(27);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
     });
