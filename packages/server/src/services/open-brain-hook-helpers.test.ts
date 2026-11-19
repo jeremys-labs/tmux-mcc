@@ -31,6 +31,69 @@ describe('open-brain-hook-helpers', () => {
   });
 
   describe('redaction', () => {
+    /**
+     * THE TIER-B TABLES, mirrored from OB1's vendored copy (dc-20261119-007). This file is the
+     * SOURCE OF TRUTH for the detector, so the policy table belongs here too -- a widened
+     * vocabulary that only one copy's tests describe is a vocabulary that can drift in meaning
+     * while both pattern blocks stay byte-identical.
+     *
+     * All values are SHAPE-MATCHING SYNTHETIC. The test suite for a redactor is a leak surface.
+     */
+    const SYNTH = 'SYNTHxQ7mK2pL9vR4tW8yZ3n';
+    const MUST_REDACT: Array<[string, string]> = [
+      ['db_password=correcthorsebattery', "isla's case: the commonest real password shape"],
+      ['password: hunter2horse', 'a memory does not need to keep the value'],
+      ['client_secret: alllowercasesecret', 'no digit, no uppercase, still a secret'],
+      [`GITHUB_TOKEN=${SYNTH}`, 'bare TOKEN was not in the old vocabulary'],
+      [`SECRET_KEY=${SYNTH}`, 'the old UPPER pattern required a char BEFORE the keyword'],
+      [`private_key=${SYNTH}`, 'compound strong key'],
+      // DISCRIMINATING ROW: no uppercase and no digit, so B2 cannot reach it and only B1's
+      // `private_key` alternative can. The battery showed the row above is caught by B2 too.
+      ['private_key: alllowercasekeyvalue', "B1-only: B2's value rule excludes this"],
+      [`aws_secret_access_key=${SYNTH}`, 'deep compound, matched on `secret`'],
+      [`webhook_secret=${SYNTH}`, 'suffix `_secret`'],
+      [`session_token: ${SYNTH}`, 'suffix `_token`, colon separator'],
+      [`credentials=${SYNTH}`, 'lowercase `credentials` was UPPER-only before'],
+      [`signing_key=${SYNTH}`, 'ambiguous key, credential-shaped value'],
+      [`access_key: ${SYNTH}`, 'ambiguous key, colon separator'],
+      [`jwt=${SYNTH}`, 'ordinary word as a key, credential-shaped value'],
+      [`pat: ${SYNTH}`, 'given name as a key, credential-shaped value'],
+    ];
+    const MUST_NOT_REDACT: Array<[string, string]> = [
+      ['token budget: 5', 'value too short'],
+      ['the key: idea', 'bare `key` is not in the vocabulary'],
+      ['password reset email', 'no separator at all'],
+      ['primary_key: customer_identifier', "isla's case: schema talk, no uppercase and no digit"],
+      ['foreign_key: orders_customer_id', 'schema talk'],
+      ['primary_key: CUSTOMER_ID', 'uppercase but NO DIGIT -- why the rule needs both'],
+      ['sort_key: ts_bucket_2024', 'digit but NO UPPERCASE -- the other half'],
+      ['signing_key: rotated_last_week', 'ambiguous key, prose value'],
+      ['Pat: Christopher Lahners', 'a person, not a credential'],
+      ['jwt: structure has three parts', 'prose about a format'],
+      ['we discussed the access_key naming convention', 'no separator'],
+      ['the api_key rotation is scheduled', 'no separator'],
+    ];
+
+    // ONE TEST PER ROW, not one over the table: a single test means every vocabulary mutation
+    // reddens the SAME test, so deleting it would unpin the whole vocabulary at once.
+    it.each(MUST_REDACT)('tier B redacts: %s', (input, why) => {
+      const out = redactString(input);
+      expect(out, why).toContain('[REDACTED]');
+      const value = input.split(/[:=]/).slice(1).join('').trim().replace(/^["']/, '');
+      expect(out.includes(value), `${why}: value survived`).toBe(false);
+    });
+
+    it.each(MUST_NOT_REDACT)('tier B leaves alone: %s', (input, why) => {
+      expect(redactString(input), `${why}: wrongly redacted`).toBe(input);
+    });
+
+    it('tier B tables are non-vacuous and disjoint', () => {
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(14);
+      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(12);
+      const pos = new Set(MUST_REDACT.map(([i]) => i));
+      for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
+    });
+
     it('redacts secrets in nested payload structures', () => {
       const input = {
         prompt: 'use sk-test-AAAAAAAAAAAAAAAAAAAAAAAA to call the API',

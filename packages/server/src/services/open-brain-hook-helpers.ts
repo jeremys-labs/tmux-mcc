@@ -66,6 +66,45 @@ export function inferAgentKey(
   return options.env?.AGENT_KEY ?? process.env.AGENT_KEY ?? 'unknown';
 }
 
+/**
+ * TIER B, added 2026-11-19 (dc-20261119-007). isla measured 35 of 46 synthetic shapes leaking:
+ * the original key:value patterns require the key to be EXACTLY `secret`, `api_key`,
+ * `password` and so on, anchored on \b -- and `_` IS a word character, so `\bpassword` never
+ * matches inside `db_password`. GITHUB_TOKEN=, SECRET_KEY=, private_key=,
+ * aws_secret_access_key= and db_password= all survived.
+ *
+ * ADDITIVE ON PURPOSE: the original patterns are untouched, so nothing that redacts today can
+ * stop redacting. Measured: 11 of isla's 46 redact before this change and 0 regress.
+ *
+ * THE VALUE RULE IS TIERED BY KEY STRENGTH (isla's call, and it corrected mine).
+ *
+ * B1, STRONG key words -- password, passphrase, passwd, pwd, secret, credential(s), token, api_key and
+ * private_key. These signal secrecy wherever they appear, so ANY opaque value of 8+ chars with
+ * no whitespace is redacted, lowercase dictionary words included. An earlier version of this
+ * exempted "bare lowercase identifiers" and would have let `db_password=correcthorsebattery`
+ * through -- the most common real password shape there is. A memory saying
+ * `password: hunter2horse` does not need to keep the value.
+ *
+ * B2, AMBIGUOUS keys -- any OTHER compound ending in `key`, plus `jwt` and `pat`.
+ * `primary_key`, `foreign_key`, `sort_key` and `partition_key` are schema vocabulary; `jwt`
+ * and `pat` are ordinary words and `Pat` is a given name. Breadth here is where the
+ * FALSE-POSITIVE risk lives, and a false positive at this boundary is irreversible: the raw
+ * text is overwritten before anything stores it, nothing logs the substitution, and the agent
+ * whose memory it was cannot notice. So B2 requires a credential-LOOKING value: an uppercase
+ * letter AND a digit.
+ *
+ * Both conditions, not either, and the negative set is why: `primary_key: CUSTOMER_ID` has no
+ * digit, `sort_key: ts_bucket_2024` has no uppercase, `signing_key: rotated_last_week` has
+ * neither. All three are prose and all three survive.
+ *
+ * B2 IS CASE-SENSITIVE ON PURPOSE. Under the `i` flag `[A-Z]` also matches lowercase, which
+ * would make the value test vacuous, so its key words are spelled by character class.
+ *
+ * NOTHING BUT REGEX LITERALS GOES INSIDE THE ARRAY BELOW. The drift test renders the array
+ * from the runtime regex objects and compares that against the SIBLING COPY'S SOURCE TEXT, so
+ * a comment between the brackets breaks the byte-identity check that keeps the two copies
+ * honest. Documentation lives here instead.
+ */
 const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{20,}\b/g,
   /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g,
@@ -77,6 +116,8 @@ const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
   /\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSPHRASE|SECRET(?:_KEY)?|API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|AUTH_TOKEN|BOT_TOKEN|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?[^\s"',;}\]]{8,}/g,
   /\b(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|bot[_-]?token)\s*["']?\s*[:=]\s*["']?[^\s"',;}\]]{8,}/gi,
+  /\b[A-Za-z0-9_.-]*(?:password|passphrase|passwd|pwd|secret|credentials?|token|api[_-]?key|private[_-]?key)\s*["']?\s*[:=]\s*["']?[^\s"',;}\]]{8,}/gi,
+  /\b(?:[A-Za-z0-9][A-Za-z0-9_.-]*[Kk][Ee][Yy]|[Jj][Ww][Tt]|[Pp][Aa][Tt])\s*["']?\s*[:=]\s*["']?(?=[^\s"',;}\]]*[A-Z])(?=[^\s"',;}\]]*[0-9])[^\s"',;}\]]{8,}/g,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
 ];
 
