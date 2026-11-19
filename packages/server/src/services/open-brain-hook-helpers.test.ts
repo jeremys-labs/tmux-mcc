@@ -167,15 +167,26 @@ describe('open-brain-hook-helpers', () => {
     // a key-boundary discriminator only if swapping its key for a known-good key makes it redact
     // -- a property of the row, checked here, not a claim in a comment.
     it('the negative table actually exercises the key boundary', () => {
+      // THE SENTINEL MUST BE MATCHED BY B2 ALONE, and `api_key` is not: patterns 10 and 11 redact
+      // it WITHOUT requiring an uppercase and a digit, so every row counted -- including seven
+      // pre-existing rows that cannot exercise B2 -- and all-lowercase values still produced 24.
+      // The control written to detect vacuous coverage was itself vacuous. Codex, fe5b34a2.
+      const B2_ONLY_KEY = 'signing_key';
+      expect(
+        redactString(`${B2_ONLY_KEY}: lowercasevalue`),
+        'sentinel is not B2-only: another pattern redacts it regardless of value shape, which ' +
+          'makes every discriminator count below meaningless',
+      ).toBe(`${B2_ONLY_KEY}: lowercasevalue`);
+
       const discriminators = MUST_NOT_REDACT.filter(([input]) => {
-        const swapped = input.replace(/[A-Za-z0-9_.-]+(\s*["']?\s*[:=])/, 'api_key$1');
+        const swapped = input.replace(/[A-Za-z0-9_.-]+(\s*["']?\s*[:=])/, `${B2_ONLY_KEY}$1`);
         return swapped !== input && redactString(swapped) !== swapped;
       });
       expect(
         discriminators.length,
-        'negative rows that would be redacted under a wrong key boundary; the rest pass for an ' +
-          'unrelated reason and prove nothing about it',
-      ).toBeGreaterThanOrEqual(9);
+        "negative rows whose value satisfies B2's value guard; the rest pass for an unrelated " +
+          'reason and prove nothing about the key boundary',
+      ).toBeGreaterThanOrEqual(15);
     });
 
     it('redacts secrets in nested payload structures', () => {
