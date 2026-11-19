@@ -58,6 +58,17 @@ describe('open-brain-hook-helpers', () => {
       [`access_key: ${SYNTH}`, 'ambiguous key, colon separator'],
       [`jwt=${SYNTH}`, 'ordinary word as a key, credential-shaped value'],
       [`pat: ${SYNTH}`, 'given name as a key, credential-shaped value'],
+      // COMPOUND-BOUNDARY POSITIVES (dc-20261119-010): what the narrowed B2 must still reach.
+      [`apiKey: ${SYNTH}`, 'camel-case hump'],
+      [`SigningKey: ${SYNTH}`, 'camel hump after a capitalised word'],
+      [`x-api-key: ${SYNTH}`, 'hyphen delimiter, the HTTP header spelling'],
+      [`my.key: ${SYNTH}`, 'dot delimiter'],
+      [`session-key=${SYNTH}`, 'hyphen delimiter with `=`'],
+      // ACCEPTED RESIDUAL, PINNED BOTH WAYS (isla, 2026-11-19): all-caps has no delimiter and no
+      // case hump, so these two are indistinguishable BY SHAPE. APIKEY is REQUIRED -- it would
+      // leave for a third party via getEmbedding and could not be recalled. MONKEY is the cost.
+      [`APIKEY: ${SYNTH}`, 'REQUIRED: all-caps compound with no delimiter'],
+      ['MONKEY: Curious77', 'ACCEPTED RESIDUAL: all-caps prose, indistinguishable from APIKEY'],
     ];
     const MUST_NOT_REDACT: Array<[string, string]> = [
       ['token budget: 5', 'value too short'],
@@ -72,6 +83,24 @@ describe('open-brain-hook-helpers', () => {
       ['jwt: structure has three parts', 'prose about a format'],
       ['we discussed the access_key naming convention', 'no separator'],
       ['the api_key rotation is scheduled', 'no separator'],
+      // KEY-BOUNDARY ROWS (dc-20261119-010). THIS COPY HAD NONE, and it is the copy the capture
+      // path actually runs -- for this defect class it was pinned only by the byte-identity test
+      // in the open-brain repo, which swallows NotFound and therefore passes when it cannot find
+      // this file at all. Every value below is 8+ chars with an uppercase AND a digit, so it
+      // SATISFIES B2's value guard and the row can only pass if the KEY boundary holds. Every
+      // pre-existing row above is excluded by the value rule, the separator rule or length, so
+      // not one of them could exercise the boundary, and `monkey: Curious77` redacted on main.
+      ['monkey: Curious77', "eli's case: an ordinary word ending in `key`"],
+      ['turkey: Dinner99', "eli's case"],
+      ['hockey: League88', "eli's case"],
+      ['donkey: Animal77', "eli's case"],
+      ['whiskey: Barrel77', 'mine: found by probing past the reported four'],
+      ['lackey: Servant99', 'mine'],
+      ['jockey: Rider888', 'mine: 8-char value ON PURPOSE -- `Rider88` is 7 and passes vacuously'],
+      ['malarkey: Nonsense8', 'mine'],
+      ['mickey: Mouse1234', 'mine'],
+      ['Monkey: Curious77', 'capitalised prose: a leading capital is not a camel hump'],
+      ['The monkey: Curious77 was noted', 'mid-sentence: destroys prose, not just a line'],
     ];
 
     // ONE TEST PER ROW, not one over the table: a single test means every vocabulary mutation
@@ -88,10 +117,27 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(14);
-      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(12);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(22);
+      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(23);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
+    });
+
+    // A long, disjoint negative table can still be entirely non-discriminating: a row is "not
+    // redacted" if ANY of B2's conditions fails, so a table whose every row fails the VALUE rule
+    // says nothing about the KEY boundary. That is exactly how this defect reached main. A row is
+    // a key-boundary discriminator only if swapping its key for a known-good key makes it redact
+    // -- a property of the row, checked here, not a claim in a comment.
+    it('the negative table actually exercises the key boundary', () => {
+      const discriminators = MUST_NOT_REDACT.filter(([input]) => {
+        const swapped = input.replace(/[A-Za-z0-9_.-]+(\s*["']?\s*[:=])/, 'api_key$1');
+        return swapped !== input && redactString(swapped) !== swapped;
+      });
+      expect(
+        discriminators.length,
+        'negative rows that would be redacted under a wrong key boundary; the rest pass for an ' +
+          'unrelated reason and prove nothing about it',
+      ).toBeGreaterThanOrEqual(9);
     });
 
     it('redacts secrets in nested payload structures', () => {

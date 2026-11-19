@@ -117,7 +117,7 @@ const DEFAULT_REDACTION_PATTERNS: RegExp[] = [
   /\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSPHRASE|SECRET(?:_KEY)?|API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|AUTH_TOKEN|BOT_TOKEN|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?[^\s"',;}\]]{8,}/g,
   /\b(?:password|passwd|pwd|passphrase|secret|client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|bot[_-]?token)\s*["']?\s*[:=]\s*["']?[^\s"',;}\]]{8,}/gi,
   /\b[A-Za-z0-9_.-]*(?:password|passphrase|passwd|pwd|secret|credentials?|token|api[_-]?key|private[_-]?key)\s*["']?\s*[:=]\s*["']?[^\s"',;}\]]{8,}/gi,
-  /\b(?:[A-Za-z0-9][A-Za-z0-9_.-]*[Kk][Ee][Yy]|[Jj][Ww][Tt]|[Pp][Aa][Tt])\s*["']?\s*[:=]\s*["']?(?=[^\s"',;}\]]*[A-Z])(?=[^\s"',;}\]]*[0-9])[^\s"',;}\]]{8,}/g,
+  /\b(?:[A-Za-z0-9][A-Za-z0-9_.-]*[_.-][Kk][Ee][Yy]|[A-Za-z0-9][A-Za-z0-9_.-]*K[Ee][Yy]|[Jj][Ww][Tt]|[Pp][Aa][Tt])\s*["']?\s*[:=]\s*["']?(?=[^\s"',;}\]]*[A-Z])(?=[^\s"',;}\]]*[0-9])[^\s"',;}\]]{8,}/g,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
 ];
 
