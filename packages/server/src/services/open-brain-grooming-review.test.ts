@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import classifierEval from './fixtures/open-brain-classifier-eval.json' with { type: 'json' };
 import {
   buildPromotedContent,
@@ -7,6 +7,7 @@ import {
   groupRawCaptures,
   isFinalGroomingStatus,
   parseClassifierJson,
+  patchRawCaptureMetadataById,
   reviewedMetadata,
   type GroomingReviewRow,
 } from './open-brain-grooming-review.js';
@@ -36,6 +37,30 @@ describe('open brain grooming review', () => {
       action: 'auto_ignore',
       reason: 'transient',
     });
+  });
+
+  it('patches the exact raw-capture id when source refs are duplicated', async () => {
+    let capturedUrl = '';
+    let capturedInit: RequestInit | undefined;
+    const fetchFn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedInit = init;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await patchRawCaptureMetadataById(
+      'row-exact',
+      { source_ref: 'duplicate-ref', grooming_status: 'auto_ignored' },
+      { projectUrl: 'https://example.supabase.co', serviceKey: 'test-key' },
+      fetchFn,
+    );
+
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(capturedUrl).toContain('/rest/v1/thoughts?id=eq.row-exact');
+    expect(capturedInit).toMatchObject({ method: 'PATCH' });
+    expect(capturedInit?.body).toBe(JSON.stringify({
+      metadata: { source_ref: 'duplicate-ref', grooming_status: 'auto_ignored' },
+    }));
   });
 
   it('uses explicit content override when provided', () => {

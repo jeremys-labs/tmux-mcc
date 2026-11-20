@@ -376,6 +376,28 @@ export async function fetchRawCaptureBySourceRef(sourceRef: string): Promise<Gro
   return JSON.parse(result.text) as GroomingReviewRow | null;
 }
 
+export async function patchRawCaptureMetadataById(
+  id: string,
+  metadata: Record<string, unknown>,
+  rest: { projectUrl: string; serviceKey: string },
+  fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  const url = new URL('/rest/v1/thoughts', rest.projectUrl);
+  url.searchParams.set('id', `eq.${id}`);
+  const response = await fetchFn(url, {
+    method: 'PATCH',
+    headers: {
+      apikey: rest.serviceKey,
+      Authorization: `Bearer ${rest.serviceKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ metadata }),
+  });
+  if (!response.ok) {
+    throw new Error(`Raw capture metadata patch failed for ${id}: ${response.status} ${await response.text()}`);
+  }
+}
+
 export async function patchThoughtMetadata(id: string, metadata: Record<string, unknown>): Promise<void> {
   const groomingConfig = resolveOpenBrainGroomingConfig();
   if (!groomingConfig) {
@@ -383,28 +405,15 @@ export async function patchThoughtMetadata(id: string, metadata: Record<string, 
   }
   const sourceRef = typeof metadata.source_ref === 'string' ? metadata.source_ref : '';
   if (!sourceRef) throw new Error(`Cannot patch raw_capture ${id}: missing metadata.source_ref`);
+  const rest = readOpenBrainRestConfig();
+  if (rest) {
+    await patchRawCaptureMetadataById(id, metadata, rest);
+    return;
+  }
   await callOpenBrainTool(groomingConfig, 'patch_agent_raw_capture_metadata', {
     agent_id: groomingConfig.agentId,
     source_ref: sourceRef,
     metadata_patch: metadata,
-  }).catch(async (error) => {
-    if (!String(error).includes('No raw_capture found')) throw error;
-    const rest = readOpenBrainRestConfig();
-    if (!rest) throw error;
-    const url = new URL('/rest/v1/thoughts', rest.projectUrl);
-    url.searchParams.set('id', `eq.${id}`);
-    const response = await fetch(url, {
-      method: 'PATCH',
-      headers: {
-        apikey: rest.serviceKey,
-        Authorization: `Bearer ${rest.serviceKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ metadata }),
-    });
-    if (!response.ok) {
-      throw new Error(`Fallback raw_capture metadata patch failed for ${sourceRef}: ${response.status} ${await response.text()}`);
-    }
   });
 }
 
