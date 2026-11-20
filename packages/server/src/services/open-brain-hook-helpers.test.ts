@@ -124,6 +124,16 @@ describe('open-brain-hook-helpers', () => {
       ['\u00f8donkey: Abcdefg123', 'same class, a different allowlist entry'],
       ['\u0436turkey: Abcdefg123', 'same class, non-Latin script'],
       ['\u00e9-monkey: Abcdefg123', 'mine: hyphen after a non-ASCII letter, also intact before the fix'],
+      // UNICODE CONTINUATION CLASSES (eli, 2026-11-20, round 3). Letters were not the whole boundary:
+      // combining marks, connector punctuation and join controls are all valid identifier continuation
+      // and `\b` ignores them too. EVERY row here removed the value on origin/main and left it
+      // byte-for-byte INTACT under the letters-only and letters-and-numbers boundaries.
+      ['e\u0301monkey: Abcdefg123', 'DECOMPOSED e-acute: the NFD twin of the precomposed row above'],
+      ['\u0301monkey: Abcdefg123', 'bare combining mark, no base letter at all'],
+      ['a\u203Fmonkey: Abcdefg123', 'U+203F undertie, connector punctuation'],
+      ['a\u2040monkey: Abcdefg123', 'U+2040 character tie -- mine, found by probing the category'],
+      ['a\u200Cmonkey: Abcdefg123', 'U+200C ZWNJ, a join control'],
+      ['a\u200Dmonkey: Abcdefg123', "U+200D ZWJ -- mine, same category as the ZWNJ case eli reported"],
       ['monkey_key: Abcdefg123', 'allowlisted word must END the token to be exempt'],
       [`mysecretkey: ${SYNTH}`, 'prefix before the stem'],
       [`appsecretkey: ${SYNTH}`, 'prefix that is itself a stem'],
@@ -187,7 +197,7 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(72);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(78);
       expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(31);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
