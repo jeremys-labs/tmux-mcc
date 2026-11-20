@@ -58,6 +58,86 @@ describe('open-brain-hook-helpers', () => {
       [`access_key: ${SYNTH}`, 'ambiguous key, colon separator'],
       [`jwt=${SYNTH}`, 'ordinary word as a key, credential-shaped value'],
       [`pat: ${SYNTH}`, 'given name as a key, credential-shaped value'],
+      // COMPOUND-BOUNDARY POSITIVES (dc-20261119-010): what the narrowed B2 must still reach.
+      [`apiKey: ${SYNTH}`, 'camel-case hump'],
+      [`SigningKey: ${SYNTH}`, 'camel hump after a capitalised word'],
+      [`x-api-key: ${SYNTH}`, 'hyphen delimiter, the HTTP header spelling'],
+      [`my.key: ${SYNTH}`, 'dot delimiter'],
+      [`session-key=${SYNTH}`, 'hyphen delimiter with `=`'],
+      // ACCEPTED RESIDUAL, PINNED BOTH WAYS (isla, 2026-11-19): all-caps has no delimiter and no
+      // case hump, so these two are indistinguishable BY SHAPE. APIKEY is REQUIRED -- it would
+      // leave for a third party via getEmbedding and could not be recalled. MONKEY is the cost.
+      [`APIKEY: ${SYNTH}`, 'REQUIRED: all-caps compound with no delimiter'],
+      ['MONKEY: Curious77', 'ACCEPTED RESIDUAL: all-caps prose, indistinguishable from APIKEY'],
+      // INVERTED TO AN ALLOWLIST (isla, 2026-11-20). These are not covered by a list of credential
+      // stems any more -- a word ending in `key` redacts BY DEFAULT and only the prose allowlist is
+      // exempt, so a credential compound nobody wrote down is covered without being named. The seven
+      // below are eli's: every one redacted on origin/main and leaked under the closed stem list.
+      // One row each so each is separately deletable and separately named in a failure.
+      [`secretkey: Abcdefg123`, 'credential compound, redacts by default: secret'],
+      [`accesskey: Abcdefg123`, 'credential compound, redacts by default: access'],
+      [`privatekey: Abcdefg123`, 'credential compound, redacts by default: private'],
+      [`signingkey: Abcdefg123`, 'credential compound, redacts by default: signing'],
+      [`masterkey: Abcdefg123`, 'credential compound, redacts by default: master'],
+      [`encryptionkey: Abcdefg123`, 'credential compound, redacts by default: encryption'],
+      [`licensekey: Abcdefg123`, 'credential compound, redacts by default: license'],
+      [`clientkey: Abcdefg123`, 'credential compound, redacts by default: client'],
+      [`sshkey: Abcdefg123`, 'credential compound, redacts by default: ssh'],
+      [`sessionkey: Abcdefg123`, 'credential compound, redacts by default: session'],
+      [`authkey: Abcdefg123`, 'credential compound, redacts by default: auth'],
+      [`appkey: Abcdefg123`, 'credential compound, redacts by default: app'],
+      [`servicekey: Abcdefg123`, 'credential compound, redacts by default: service'],
+      [`deploykey: Abcdefg123`, 'credential compound, redacts by default: deploy'],
+      [`webhookkey: Abcdefg123`, 'credential compound, redacts by default: webhook'],
+      [`accountkey: Abcdefg123`, 'credential compound, redacts by default: account'],
+      [`rootkey: Abcdefg123`, 'credential compound, redacts by default: root'],
+      [`consumerkey: Abcdefg123`, 'credential compound, redacts by default: consumer'],
+      [`passkey: Abcdefg123`, 'credential compound, redacts by default: pass'],
+      [`publickey: Abcdefg123`, 'credential compound, redacts by default: public'],
+      [`pubkey: Abcdefg123`, 'credential compound, redacts by default: pub'],
+      [`hostkey: Abcdefg123`, 'credential compound, redacts by default: host'],
+      [`gpgkey: Abcdefg123`, 'credential compound, redacts by default: gpg'],
+      [`hmackey: Abcdefg123`, 'credential compound, redacts by default: hmac'],
+      [`cipherkey: Abcdefg123`, 'credential compound, redacts by default: cipher'],
+      [`symmetrickey: Abcdefg123`, 'credential compound, redacts by default: symmetric'],
+      [`apikey: Abcdefg123`, 'credential compound, redacts by default: api'],
+      [`botkey: Abcdefg123`, 'credential compound, redacts by default: bot'],
+      [`sharedkey: Abcdefg123`, 'credential compound, redacts by default: shared'],
+      ['databasekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['dbkey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['storagekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['cloudkey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['kmskey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['recoverykey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['devicekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['latchkey: Curious77', 'DELIBERATELY NOT EXEMPT: a house key is still a key name'],
+      ['turnkey: Curious77', 'DELIBERATELY NOT EXEMPT: prose as `turnkey solution`, but it is a key name'],
+      ['passkey: Curious77', 'DELIBERATELY NOT EXEMPT: in the dictionary AND a key name'],
+      ['monkeyKey: Abcdefg123', 'allowlisted word must END the token to be exempt'],
+      // NON-ASCII LEFT ADJACENCY (eli, 2026-11-20). `\b` is ASCII-word-based, so matching can begin
+      // after an accented letter and the guard then exempts the allowlisted word as though it were the
+      // whole token. All of these redact on origin/main, so intact here is a LEAK. This copy is the one
+      // the capture path runs, so the rows live here too and not only in the open-brain suite.
+      ['\u00e9monkey: Abcdefg123', "eli 2026-11-20: accented letter before an allowlisted word"],
+      ['\u00f1monkey: Abcdefg123', 'same class, different letter'],
+      ['\u00c9monkey: Abcdefg123', 'same class, capitalised accented letter'],
+      ['\u00f8donkey: Abcdefg123', 'same class, a different allowlist entry'],
+      ['\u0436turkey: Abcdefg123', 'same class, non-Latin script'],
+      ['\u00e9-monkey: Abcdefg123', 'mine: hyphen after a non-ASCII letter, also intact before the fix'],
+      // UNICODE CONTINUATION CLASSES (eli, 2026-11-20, round 3). Letters were not the whole boundary:
+      // combining marks, connector punctuation and join controls are all valid identifier continuation
+      // and `\b` ignores them too. EVERY row here removed the value on origin/main and left it
+      // byte-for-byte INTACT under the letters-only and letters-and-numbers boundaries.
+      ['e\u0301monkey: Abcdefg123', 'DECOMPOSED e-acute: the NFD twin of the precomposed row above'],
+      ['\u0301monkey: Abcdefg123', 'bare combining mark, no base letter at all'],
+      ['a\u203Fmonkey: Abcdefg123', 'U+203F undertie, connector punctuation'],
+      ['a\u2040monkey: Abcdefg123', 'U+2040 character tie -- mine, found by probing the category'],
+      ['a\u200Cmonkey: Abcdefg123', 'U+200C ZWNJ, a join control'],
+      ['a\u200Dmonkey: Abcdefg123', "U+200D ZWJ -- mine, same category as the ZWNJ case eli reported"],
+      ['monkey_key: Abcdefg123', 'allowlisted word must END the token to be exempt'],
+      [`mysecretkey: ${SYNTH}`, 'prefix before the stem'],
+      [`appsecretkey: ${SYNTH}`, 'prefix that is itself a stem'],
+      ['Secretkey: Abcdefg123', 'capitalised stem'],
     ];
     const MUST_NOT_REDACT: Array<[string, string]> = [
       ['token budget: 5', 'value too short'],
@@ -72,6 +152,35 @@ describe('open-brain-hook-helpers', () => {
       ['jwt: structure has three parts', 'prose about a format'],
       ['we discussed the access_key naming convention', 'no separator'],
       ['the api_key rotation is scheduled', 'no separator'],
+      // KEY-BOUNDARY ROWS (dc-20261119-010). THIS COPY HAD NONE, and it is the copy the capture
+      // path actually runs -- for this defect class it was pinned only by the byte-identity test
+      // in the open-brain repo, which swallows NotFound and therefore passes when it cannot find
+      // this file at all. Every value below is 8+ chars with an uppercase AND a digit, so it
+      // SATISFIES B2's value guard and the row can only pass if the KEY boundary holds. Every
+      // pre-existing row above is excluded by the value rule, the separator rule or length, so
+      // not one of them could exercise the boundary, and `monkey: Curious77` redacted on main.
+      ['monkey: Curious77', "eli's case: an ordinary word ending in `key`"],
+      ['turkey: Dinner99', "eli's case"],
+      ['hockey: League88', "eli's case"],
+      ['donkey: Animal77', "eli's case"],
+      ['whiskey: Barrel77', 'mine: found by probing past the reported four'],
+      ['lackey: Servant99', 'mine'],
+      ['jockey: Rider888', 'mine: 8-char value ON PURPOSE -- `Rider88` is 7 and passes vacuously'],
+      ['malarkey: Nonsense8', 'mine'],
+      ['mickey: Mouse1234', 'mine'],
+      ['Monkey: Curious77', 'capitalised prose: a leading capital is not a camel hump'],
+      ['The monkey: Curious77 was noted', 'mid-sentence: destroys prose, not just a line'],
+      // THE PROSE ALLOWLIST, and the direction of its residual is the point: an entry nobody added
+      // is an OVER-redaction, never a leak. No entry may be the name of a key -- `latchkey`,
+      // `turnkey` and `passkey` are in the dictionary and are deliberately in the positive table.
+      ['hickey: Blemish77', 'prose allowlist member'],
+      ['dickey: Shirt9999', 'prose allowlist member'],
+      ['pokey: Slowly777', 'prose allowlist member'],
+      ['hokey: Cheesy888', 'prose allowlist member'],
+      ['doohickey: Gadget777', 'prose allowlist member'],
+      ['flunkey: Curious77', 'real word ending in `key`, no stem before it'],
+      ['smokey: Curious77', 'real word ending in `key`, no stem before it'],
+      ['lowkey: Curious77', 'real word ending in `key`, no stem before it'],
     ];
 
     // ONE TEST PER ROW, not one over the table: a single test means every vocabulary mutation
@@ -88,10 +197,38 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(14);
-      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(12);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(78);
+      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(31);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
+    });
+
+    // A long, disjoint negative table can still be entirely non-discriminating: a row is "not
+    // redacted" if ANY of B2's conditions fails, so a table whose every row fails the VALUE rule
+    // says nothing about the KEY boundary. That is exactly how this defect reached main. A row is
+    // a key-boundary discriminator only if swapping its key for a known-good key makes it redact
+    // -- a property of the row, checked here, not a claim in a comment.
+    it('the negative table actually exercises the key boundary', () => {
+      // THE SENTINEL MUST BE MATCHED BY B2 ALONE, and `api_key` is not: patterns 10 and 11 redact
+      // it WITHOUT requiring an uppercase and a digit, so every row counted -- including seven
+      // pre-existing rows that cannot exercise B2 -- and all-lowercase values still produced 24.
+      // The control written to detect vacuous coverage was itself vacuous. Codex, fe5b34a2.
+      const B2_ONLY_KEY = 'signing_key';
+      expect(
+        redactString(`${B2_ONLY_KEY}: lowercasevalue`),
+        'sentinel is not B2-only: another pattern redacts it regardless of value shape, which ' +
+          'makes every discriminator count below meaningless',
+      ).toBe(`${B2_ONLY_KEY}: lowercasevalue`);
+
+      const discriminators = MUST_NOT_REDACT.filter(([input]) => {
+        const swapped = input.replace(/[A-Za-z0-9_.-]+(\s*["']?\s*[:=])/, `${B2_ONLY_KEY}$1`);
+        return swapped !== input && redactString(swapped) !== swapped;
+      });
+      expect(
+        discriminators.length,
+        "negative rows whose value satisfies B2's value guard; the rest pass for an unrelated " +
+          'reason and prove nothing about the key boundary',
+      ).toBeGreaterThanOrEqual(19);
     });
 
     it('redacts secrets in nested payload structures', () => {
