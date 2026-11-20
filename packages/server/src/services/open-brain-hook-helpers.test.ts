@@ -114,6 +114,16 @@ describe('open-brain-hook-helpers', () => {
       ['turnkey: Curious77', 'DELIBERATELY NOT EXEMPT: prose as `turnkey solution`, but it is a key name'],
       ['passkey: Curious77', 'DELIBERATELY NOT EXEMPT: in the dictionary AND a key name'],
       ['monkeyKey: Abcdefg123', 'allowlisted word must END the token to be exempt'],
+      // NON-ASCII LEFT ADJACENCY (eli, 2026-11-20). `\b` is ASCII-word-based, so matching can begin
+      // after an accented letter and the guard then exempts the allowlisted word as though it were the
+      // whole token. All of these redact on origin/main, so intact here is a LEAK. This copy is the one
+      // the capture path runs, so the rows live here too and not only in the open-brain suite.
+      ['\u00e9monkey: Abcdefg123', "eli 2026-11-20: accented letter before an allowlisted word"],
+      ['\u00f1monkey: Abcdefg123', 'same class, different letter'],
+      ['\u00c9monkey: Abcdefg123', 'same class, capitalised accented letter'],
+      ['\u00f8donkey: Abcdefg123', 'same class, a different allowlist entry'],
+      ['\u0436turkey: Abcdefg123', 'same class, non-Latin script'],
+      ['\u00e9-monkey: Abcdefg123', 'mine: hyphen after a non-ASCII letter, also intact before the fix'],
       ['monkey_key: Abcdefg123', 'allowlisted word must END the token to be exempt'],
       [`mysecretkey: ${SYNTH}`, 'prefix before the stem'],
       [`appsecretkey: ${SYNTH}`, 'prefix that is itself a stem'],
@@ -177,7 +187,7 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(66);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(72);
       expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(31);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
