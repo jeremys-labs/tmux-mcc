@@ -69,37 +69,52 @@ describe('open-brain-hook-helpers', () => {
       // leave for a third party via getEmbedding and could not be recalled. MONKEY is the cost.
       [`APIKEY: ${SYNTH}`, 'REQUIRED: all-caps compound with no delimiter'],
       ['MONKEY: Curious77', 'ACCEPTED RESIDUAL: all-caps prose, indistinguishable from APIKEY'],
-      // CLOSED STEM LIST (isla, 2026-11-19): delimiter-or-hump alone regressed in the LEAK
-      // direction for lowercase compounds with neither. One row per stem.
-      [`secretkey: Abcdefg123`, 'closed stem list: secret'],
-      [`accesskey: Abcdefg123`, 'closed stem list: access'],
-      [`privatekey: Abcdefg123`, 'closed stem list: private'],
-      [`signingkey: Abcdefg123`, 'closed stem list: signing'],
-      [`masterkey: Abcdefg123`, 'closed stem list: master'],
-      [`encryptionkey: Abcdefg123`, 'closed stem list: encryption'],
-      [`licensekey: Abcdefg123`, 'closed stem list: license'],
-      [`clientkey: Abcdefg123`, 'closed stem list: client'],
-      [`sshkey: Abcdefg123`, 'closed stem list: ssh'],
-      [`sessionkey: Abcdefg123`, 'closed stem list: session'],
-      [`authkey: Abcdefg123`, 'closed stem list: auth'],
-      [`appkey: Abcdefg123`, 'closed stem list: app'],
-      [`servicekey: Abcdefg123`, 'closed stem list: service'],
-      [`deploykey: Abcdefg123`, 'closed stem list: deploy'],
-      [`webhookkey: Abcdefg123`, 'closed stem list: webhook'],
-      [`accountkey: Abcdefg123`, 'closed stem list: account'],
-      [`rootkey: Abcdefg123`, 'closed stem list: root'],
-      [`consumerkey: Abcdefg123`, 'closed stem list: consumer'],
-      [`passkey: Abcdefg123`, 'closed stem list: pass'],
-      [`publickey: Abcdefg123`, 'closed stem list: public'],
-      [`pubkey: Abcdefg123`, 'closed stem list: pub'],
-      [`hostkey: Abcdefg123`, 'closed stem list: host'],
-      [`gpgkey: Abcdefg123`, 'closed stem list: gpg'],
-      [`hmackey: Abcdefg123`, 'closed stem list: hmac'],
-      [`cipherkey: Abcdefg123`, 'closed stem list: cipher'],
-      [`symmetrickey: Abcdefg123`, 'closed stem list: symmetric'],
-      [`apikey: Abcdefg123`, 'closed stem list: api'],
-      [`botkey: Abcdefg123`, 'closed stem list: bot'],
-      [`sharedkey: Abcdefg123`, 'closed stem list: shared'],
+      // INVERTED TO AN ALLOWLIST (isla, 2026-11-20). These are not covered by a list of credential
+      // stems any more -- a word ending in `key` redacts BY DEFAULT and only the prose allowlist is
+      // exempt, so a credential compound nobody wrote down is covered without being named. The seven
+      // below are eli's: every one redacted on origin/main and leaked under the closed stem list.
+      // One row each so each is separately deletable and separately named in a failure.
+      [`secretkey: Abcdefg123`, 'credential compound, redacts by default: secret'],
+      [`accesskey: Abcdefg123`, 'credential compound, redacts by default: access'],
+      [`privatekey: Abcdefg123`, 'credential compound, redacts by default: private'],
+      [`signingkey: Abcdefg123`, 'credential compound, redacts by default: signing'],
+      [`masterkey: Abcdefg123`, 'credential compound, redacts by default: master'],
+      [`encryptionkey: Abcdefg123`, 'credential compound, redacts by default: encryption'],
+      [`licensekey: Abcdefg123`, 'credential compound, redacts by default: license'],
+      [`clientkey: Abcdefg123`, 'credential compound, redacts by default: client'],
+      [`sshkey: Abcdefg123`, 'credential compound, redacts by default: ssh'],
+      [`sessionkey: Abcdefg123`, 'credential compound, redacts by default: session'],
+      [`authkey: Abcdefg123`, 'credential compound, redacts by default: auth'],
+      [`appkey: Abcdefg123`, 'credential compound, redacts by default: app'],
+      [`servicekey: Abcdefg123`, 'credential compound, redacts by default: service'],
+      [`deploykey: Abcdefg123`, 'credential compound, redacts by default: deploy'],
+      [`webhookkey: Abcdefg123`, 'credential compound, redacts by default: webhook'],
+      [`accountkey: Abcdefg123`, 'credential compound, redacts by default: account'],
+      [`rootkey: Abcdefg123`, 'credential compound, redacts by default: root'],
+      [`consumerkey: Abcdefg123`, 'credential compound, redacts by default: consumer'],
+      [`passkey: Abcdefg123`, 'credential compound, redacts by default: pass'],
+      [`publickey: Abcdefg123`, 'credential compound, redacts by default: public'],
+      [`pubkey: Abcdefg123`, 'credential compound, redacts by default: pub'],
+      [`hostkey: Abcdefg123`, 'credential compound, redacts by default: host'],
+      [`gpgkey: Abcdefg123`, 'credential compound, redacts by default: gpg'],
+      [`hmackey: Abcdefg123`, 'credential compound, redacts by default: hmac'],
+      [`cipherkey: Abcdefg123`, 'credential compound, redacts by default: cipher'],
+      [`symmetrickey: Abcdefg123`, 'credential compound, redacts by default: symmetric'],
+      [`apikey: Abcdefg123`, 'credential compound, redacts by default: api'],
+      [`botkey: Abcdefg123`, 'credential compound, redacts by default: bot'],
+      [`sharedkey: Abcdefg123`, 'credential compound, redacts by default: shared'],
+      ['databasekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['dbkey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['storagekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['cloudkey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['kmskey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['recoverykey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['devicekey: Abcdefg123', 'eli 2026-11-20: leaked under the closed stem list'],
+      ['latchkey: Curious77', 'DELIBERATELY NOT EXEMPT: a house key is still a key name'],
+      ['turnkey: Curious77', 'DELIBERATELY NOT EXEMPT: prose as `turnkey solution`, but it is a key name'],
+      ['passkey: Curious77', 'DELIBERATELY NOT EXEMPT: in the dictionary AND a key name'],
+      ['monkeyKey: Abcdefg123', 'allowlisted word must END the token to be exempt'],
+      ['monkey_key: Abcdefg123', 'allowlisted word must END the token to be exempt'],
       [`mysecretkey: ${SYNTH}`, 'prefix before the stem'],
       [`appsecretkey: ${SYNTH}`, 'prefix that is itself a stem'],
       ['Secretkey: Abcdefg123', 'capitalised stem'],
@@ -135,7 +150,14 @@ describe('open-brain-hook-helpers', () => {
       ['mickey: Mouse1234', 'mine'],
       ['Monkey: Curious77', 'capitalised prose: a leading capital is not a camel hump'],
       ['The monkey: Curious77 was noted', 'mid-sentence: destroys prose, not just a line'],
-      ['latchkey: Curious77', 'real word ending in `key`, no stem before it'],
+      // THE PROSE ALLOWLIST, and the direction of its residual is the point: an entry nobody added
+      // is an OVER-redaction, never a leak. No entry may be the name of a key -- `latchkey`,
+      // `turnkey` and `passkey` are in the dictionary and are deliberately in the positive table.
+      ['hickey: Blemish77', 'prose allowlist member'],
+      ['dickey: Shirt9999', 'prose allowlist member'],
+      ['pokey: Slowly777', 'prose allowlist member'],
+      ['hokey: Cheesy888', 'prose allowlist member'],
+      ['doohickey: Gadget777', 'prose allowlist member'],
       ['flunkey: Curious77', 'real word ending in `key`, no stem before it'],
       ['smokey: Curious77', 'real word ending in `key`, no stem before it'],
       ['lowkey: Curious77', 'real word ending in `key`, no stem before it'],
@@ -155,8 +177,8 @@ describe('open-brain-hook-helpers', () => {
     });
 
     it('tier B tables are non-vacuous and disjoint', () => {
-      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(54);
-      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(27);
+      expect(MUST_REDACT.length).toBeGreaterThanOrEqual(66);
+      expect(MUST_NOT_REDACT.length).toBeGreaterThanOrEqual(31);
       const pos = new Set(MUST_REDACT.map(([i]) => i));
       for (const [input] of MUST_NOT_REDACT) expect(pos.has(input)).toBe(false);
     });
@@ -186,7 +208,7 @@ describe('open-brain-hook-helpers', () => {
         discriminators.length,
         "negative rows whose value satisfies B2's value guard; the rest pass for an unrelated " +
           'reason and prove nothing about the key boundary',
-      ).toBeGreaterThanOrEqual(15);
+      ).toBeGreaterThanOrEqual(19);
     });
 
     it('redacts secrets in nested payload structures', () => {
