@@ -6,6 +6,9 @@ import {
   classifyRawCaptureCluster,
   clusterSummaryContent,
   groupRawCaptures,
+  isFinalGroomingStatus,
+  patchThoughtMetadata,
+  reviewedMetadata,
   type GroomingClassification,
   type GroomingCluster,
   type GroomingClusterClassification,
@@ -16,12 +19,14 @@ import {
   fetchRawCapturesBySourceRefs,
   fetchRawCapturesSince,
   readDigestState,
+  type GroomingRetryEntry,
   type GroomingDigestOptions,
   type RawCaptureRow,
 } from './open-brain-grooming-digest.js';
 import { filterRestrictedRows } from './open-brain-restrictions.js';
 
 export const DEFAULT_SCHEDULED_GROOMING_LIMIT = 10;
+export const MAX_GROOMING_ATTEMPTS = 3;
 
 export interface GroomingItemPlan {
   row: GroomingReviewRow;
@@ -74,6 +79,8 @@ export interface GroomingScheduledResult {
   classifierFailureCount: number;
   classifierFailureCycles: number;
   applyFailureCount: number;
+  retryQueue: GroomingRetryEntry[];
+  terminalFailureCount: number;
   /**
    * Highest `created_at` observed in the fetched batch, when any rows were
    * fetched. Callers should advance the digest state's `lastRunIso` to this
@@ -93,6 +100,50 @@ export interface GroomingScheduleOptions {
   limit?: number;
   maxItems?: number;
   dryRun?: boolean;
+  dependencies?: Partial<GroomingScheduleDependencies>;
+}
+
+export interface GroomingScheduleDependencies {
+  readState: typeof readDigestState;
+  fetchSince: typeof fetchRawCapturesSince;
+  fetchBySourceRefs: typeof fetchRawCapturesBySourceRefs;
+  classifyWithOpenBrain: typeof classifyRawCaptureWithOpenBrain;
+  applyItem: typeof applyGroomingClassification;
+  applyCluster: typeof applyGroomingClusterClassification;
+  patchMetadata: typeof patchThoughtMetadata;
+}
+
+const defaultDependencies: GroomingScheduleDependencies = {
+  readState: readDigestState,
+  fetchSince: fetchRawCapturesSince,
+  fetchBySourceRefs: fetchRawCapturesBySourceRefs,
+  classifyWithOpenBrain: classifyRawCaptureWithOpenBrain,
+  applyItem: applyGroomingClassification,
+  applyCluster: applyGroomingClusterClassification,
+  patchMetadata: patchThoughtMetadata,
+};
+
+function retryEntry(
+  prior: GroomingRetryEntry | undefined,
+  sourceRef: string,
+  stage: GroomingRetryEntry['stage'],
+  error: unknown,
+): GroomingRetryEntry {
+  return {
+    sourceRef,
+    attempts: Math.min((prior?.attempts ?? 0) + 1, MAX_GROOMING_ATTEMPTS),
+    stage,
+    lastError: String(error),
+  };
+}
+
+function uniqueRows(rows: RawCaptureRow[]): RawCaptureRow[] {
+  const byKey = new Map<string, RawCaptureRow>();
+  for (const row of rows) {
+    const sourceRef = typeof row.metadata?.source_ref === 'string' ? row.metadata.source_ref : '';
+    byKey.set(sourceRef || row.id || `${row.created_at}:${byKey.size}`, row);
+  }
+  return [...byKey.values()];
 }
 
 function compactText(text: string, maxLength: number): string {
@@ -408,6 +459,8 @@ export function buildScheduledGroomingDigest(
   summary: GroomingActionSummary,
   reviewCandidates: GroomingScheduledCandidate[],
   classifierFailureCycles = 0,
+  failureCount = 0,
+  terminalFailureCount = 0,
 ): string {
   // Restricted data must never reach a Discord-posted digest: filter both the raw
   // rows and any restricted review candidates before rendering.
@@ -425,7 +478,15 @@ export function buildScheduledGroomingDigest(
 
   if (classifierFailureCycles >= 3) {
     lines.push('');
-    lines.push(`Classifier alert: OB1 classifier failed ${classifierFailureCycles} consecutive grooming cycles. Rows are staying in raw_capture and will retry.`);
+    lines.push(`Classifier alert: OB1 classifier failed ${classifierFailureCycles} consecutive grooming cycles. Failed rows remain in the persisted retry queue.`);
+  }
+
+  if (failureCount > 0) {
+    lines.push('');
+    lines.push(`Grooming failures: ${failureCount}. Failed rows remain queued and retry up to ${MAX_GROOMING_ATTEMPTS} attempts.`);
+  }
+  if (terminalFailureCount > 0) {
+    lines.push(`Terminal grooming failures: ${terminalFailureCount}. These rows reached the attempt cap and were marked grooming_failed.`);
   }
 
   if (visibleCandidates.length > 0) {
@@ -509,9 +570,17 @@ export async function runScheduledGrooming(
 ): Promise<GroomingScheduledResult> {
   const now = new Date(options.generatedAtIso ?? new Date().toISOString());
   const generatedAtIso = options.generatedAtIso ?? now.toISOString();
-  const state = readDigestState();
+  const dependencies = { ...defaultDependencies, ...options.dependencies };
+  const state = dependencies.readState();
   const sinceIso = options.sinceIso ?? defaultSinceIso(now, state);
-  const rawCaptureRows = await fetchRawCapturesSince(sinceIso, options.limit ?? 80);
+  const newRawCaptureRows = await dependencies.fetchSince(sinceIso, options.limit ?? 80);
+  const previousRetryQueue = state.retryQueue ?? [];
+  const retryRows = options.dryRun || previousRetryQueue.length === 0
+    ? []
+    : await dependencies.fetchBySourceRefs(previousRetryQueue.map((entry) => entry.sourceRef));
+  const rawCaptureRows = uniqueRows([...retryRows, ...newRawCaptureRows]).filter(
+    (row) => !isFinalGroomingStatus(row.metadata?.grooming_status),
+  );
   const rows: GroomingReviewRow[] = rawCaptureRows
     .map((row) => ({
       id: row.id ?? '',
@@ -522,14 +591,47 @@ export async function runScheduledGrooming(
 
   const itemPlans: GroomingItemPlan[] = [];
   let classifierFailureCount = 0;
+  let terminalFailureCount = 0;
+  const retryBySourceRef = new Map(previousRetryQueue.map((entry) => [entry.sourceRef, entry] as const));
+  const nextRetryBySourceRef = new Map<string, GroomingRetryEntry>();
+
+  const recordFailure = async (
+    row: GroomingReviewRow,
+    stage: GroomingRetryEntry['stage'],
+    error: unknown,
+  ): Promise<void> => {
+    const sourceRef = rowSourceRef(row);
+    const entry = retryEntry(retryBySourceRef.get(sourceRef), sourceRef, stage, error);
+    if (entry.attempts < MAX_GROOMING_ATTEMPTS) {
+      nextRetryBySourceRef.set(sourceRef, entry);
+      return;
+    }
+    if (options.dryRun) return;
+    try {
+      await dependencies.patchMetadata(row.id, reviewedMetadata(row, 'grooming_failed', options.actorAgent, {
+        grooming_failure_stage: stage,
+        grooming_failure_attempts: entry.attempts,
+        grooming_failure_reason: entry.lastError,
+      }));
+      terminalFailureCount += 1;
+    } catch (terminalError) {
+      nextRetryBySourceRef.set(sourceRef, {
+        ...entry,
+        stage: 'terminal_patch',
+        lastError: String(terminalError),
+      });
+    }
+  };
+
   for (const row of rows) {
     let classification: GroomingClassification;
     try {
       classification = options.dryRun || !openBrainClassifierEnabled()
         ? classifyRawCapture(row)
-        : await classifyRawCaptureWithOpenBrain(row);
+        : await dependencies.classifyWithOpenBrain(row);
     } catch (error) {
       classifierFailureCount += 1;
+      await recordFailure(row, 'classifier', error);
       process.stderr.write(`[open-brain-grooming] classifier failed for ${String(row.metadata.source_ref ?? row.id)}: ${String(error)}\n`);
       continue;
     }
@@ -537,7 +639,7 @@ export async function runScheduledGrooming(
     if (classification.classifier) row.metadata.classifier = classification.classifier;
     itemPlans.push({ row, classification });
   }
-  const clusterPlans: GroomingClusterPlan[] = groupRawCaptures(rows).map((cluster) => ({
+  const clusterPlans: GroomingClusterPlan[] = groupRawCaptures(itemPlans.map((plan) => plan.row)).map((cluster) => ({
     cluster,
     classification: classifyRawCaptureCluster(cluster),
   }));
@@ -554,22 +656,24 @@ export async function runScheduledGrooming(
     for (const plan of clusterPlans) {
       if (!clusterHandled(plan)) continue;
       try {
-        await applyGroomingClusterClassification(plan.cluster, plan.classification, options.actorAgent);
+        await dependencies.applyCluster(plan.cluster, plan.classification, options.actorAgent);
       } catch (error) {
         // Fail-soft: one missing/poisoned raw_capture must not stall the whole
         // batch. Earlier code threw the whole digest on a single 'No raw_capture
         // found' from patch_agent_raw_capture_metadata and left the pipeline
         // dead for ~18 days (2026-05-05 → 2026-05-23). Log and continue.
         applyFailureCount += 1;
+        for (const row of plan.cluster.rows) await recordFailure(row, 'apply', error);
         process.stderr.write(`[open-brain-grooming] cluster classification failed for ${plan.cluster.key}: ${String(error)}\n`);
       }
     }
     for (const plan of itemPlans) {
       if (itemHandledByCluster(plan, clusterPlansByKey)) continue;
       try {
-        await applyGroomingClassification(plan.row, plan.classification, options.actorAgent);
+        await dependencies.applyItem(plan.row, plan.classification, options.actorAgent);
       } catch (error) {
         applyFailureCount += 1;
+        await recordFailure(plan.row, 'apply', error);
         process.stderr.write(`[open-brain-grooming] item classification failed for ${String(plan.row.metadata.source_ref ?? plan.row.id)}: ${String(error)}\n`);
       }
     }
@@ -582,8 +686,11 @@ export async function runScheduledGrooming(
       classifierFailureCount,
       classifierFailureCycles,
       applyFailureCount,
+      retryQueue: [...nextRetryBySourceRef.values()],
+      terminalFailureCount,
       sinceIso,
       generatedAtIso,
+      newRawCaptureRows,
       maxItems: options.maxItems,
       dryRun: options.dryRun,
     });
@@ -598,8 +705,11 @@ export async function runScheduledGrooming(
     classifierFailureCount,
     classifierFailureCycles,
     applyFailureCount: 0,
+    retryQueue: previousRetryQueue,
+    terminalFailureCount: 0,
     sinceIso,
     generatedAtIso,
+    newRawCaptureRows,
     maxItems: options.maxItems,
     dryRun: options.dryRun,
   });
@@ -614,8 +724,11 @@ function buildGroomingScheduledResult(args: {
   classifierFailureCount: number;
   classifierFailureCycles: number;
   applyFailureCount: number;
+  retryQueue: GroomingRetryEntry[];
+  terminalFailureCount: number;
   sinceIso: string;
   generatedAtIso: string;
+  newRawCaptureRows: RawCaptureRow[];
   maxItems?: number;
   dryRun?: boolean;
 }): GroomingScheduledResult {
@@ -633,10 +746,12 @@ function buildGroomingScheduledResult(args: {
     args.summary,
     args.reviewCandidates,
     args.classifierFailureCycles,
+    args.classifierFailureCount + args.applyFailureCount,
+    args.terminalFailureCount,
   );
 
-  const maxProcessedCreatedAt = args.rawCaptureRows.length > 0
-    ? args.rawCaptureRows.reduce((max, row) => (row.created_at > max ? row.created_at : max), args.rawCaptureRows[0]!.created_at)
+  const maxProcessedCreatedAt = args.newRawCaptureRows.length > 0
+    ? args.newRawCaptureRows.reduce((max, row) => (row.created_at > max ? row.created_at : max), args.newRawCaptureRows[0]!.created_at)
     : undefined;
 
   return {
@@ -651,6 +766,8 @@ function buildGroomingScheduledResult(args: {
     classifierFailureCount: args.classifierFailureCount,
     classifierFailureCycles: args.classifierFailureCycles,
     applyFailureCount: args.applyFailureCount,
+    retryQueue: args.retryQueue,
+    terminalFailureCount: args.terminalFailureCount,
     ...(maxProcessedCreatedAt !== undefined ? { maxProcessedCreatedAt } : {}),
   };
 }

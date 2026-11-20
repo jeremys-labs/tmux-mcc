@@ -6,6 +6,7 @@ import {
   classifyRawCaptureCluster,
   groupRawCaptures,
   isFinalGroomingStatus,
+  parseClassifierJson,
   reviewedMetadata,
   type GroomingReviewRow,
 } from './open-brain-grooming-review.js';
@@ -28,6 +29,13 @@ describe('open brain grooming review', () => {
 
   it('builds promoted content from the useful body of a raw capture', () => {
     expect(buildPromotedContent(row)).toBe('At 2026-04-28T00:00:00Z, Jeremy wrote:\nDurable decision text.');
+  });
+
+  it('parses classifier JSON wrapped in a markdown fence', () => {
+    expect(parseClassifierJson('```json\n{"action":"auto_ignore","reason":"transient"}\n```')).toEqual({
+      action: 'auto_ignore',
+      reason: 'transient',
+    });
   });
 
   it('uses explicit content override when provided', () => {

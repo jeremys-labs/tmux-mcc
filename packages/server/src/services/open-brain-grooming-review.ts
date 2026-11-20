@@ -175,6 +175,16 @@ function applyClassifierPolicy(classification: GroomingClassification): Grooming
   return classification;
 }
 
+export function parseClassifierJson(text: string): Record<string, unknown> {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const parsed = JSON.parse(fenced?.[1] ?? trimmed) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('OB1 classifier returned a non-object JSON value');
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export async function classifyRawCaptureWithOpenBrain(row: GroomingReviewRow): Promise<GroomingClassification> {
   const fastPath = classifyRawCapture(row);
   if (fastPath.action === 'auto_ignore' || fastPath.action === 'needs_review') return fastPath;
@@ -188,7 +198,7 @@ export async function classifyRawCaptureWithOpenBrain(row: GroomingReviewRow): P
     content: row.content,
     metadata: row.metadata,
   });
-  const parsed = JSON.parse(result.text) as {
+  const parsed = parseClassifierJson(result.text) as {
     action?: GroomingClassificationAction;
     scope?: PromotionScope;
     confidence?: number;

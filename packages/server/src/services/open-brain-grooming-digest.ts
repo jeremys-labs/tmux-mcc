@@ -35,8 +35,16 @@ export interface GroomingDigestOptions {
 export interface GroomingDigestState {
   lastRunIso?: string;
   classifierFailureCycles?: number;
+  retryQueue?: GroomingRetryEntry[];
   pendingReviewCandidates?: unknown[];
   lastDecisionDigestIso?: string;
+}
+
+export interface GroomingRetryEntry {
+  sourceRef: string;
+  attempts: number;
+  stage: 'classifier' | 'apply' | 'terminal_patch';
+  lastError: string;
 }
 
 function parseEnvFile(text: string): Record<string, string> {

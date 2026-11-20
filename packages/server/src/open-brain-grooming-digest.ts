@@ -112,6 +112,7 @@ async function main(): Promise<void> {
     ...state,
     lastRunIso,
     classifierFailureCycles: result.classifierFailureCycles,
+    retryQueue: result.retryQueue,
     pendingReviewCandidates: mergeReviewCandidates(
       state.pendingReviewCandidates,
       result.reviewCandidates,
@@ -124,11 +125,14 @@ async function main(): Promise<void> {
     pendingReviewCount: nextState.pendingReviewCandidates.length,
     dryRun,
   }));
+  const failureSummary = result.classifierFailureCount + result.applyFailureCount > 0
+    ? ` ${result.classifierFailureCount + result.applyFailureCount} failed this run; ${result.retryQueue.length} queued for retry; ${result.terminalFailureCount} reached terminal grooming_failed.`
+    : '';
 
   if (suppressReviewDigest) {
     writeDigestState(nextState);
     process.stdout.write(
-      `Groomed ${result.rawCaptureCount} raw captures silently; queued ${result.reviewCandidates.length} decision candidates for daily digest. Measurements: ${measurementPath}\n`,
+      `Groomed ${result.rawCaptureCount} raw captures silently; queued ${result.reviewCandidates.length} decision candidates for daily digest.${failureSummary} Measurements: ${measurementPath}\n`,
     );
     return;
   }
@@ -136,14 +140,14 @@ async function main(): Promise<void> {
   if (silentWhenClean && needsReviewCount === 0) {
     writeDigestState(nextState);
     process.stdout.write(
-      `Groomed ${result.rawCaptureCount} raw captures silently (no human review needed). Measurements: ${measurementPath}\n`,
+      `Groomed ${result.rawCaptureCount} raw captures silently (no human review needed).${failureSummary} Measurements: ${measurementPath}\n`,
     );
     return;
   }
 
   if (!hasAnyActivity) {
     writeDigestState(nextState);
-    process.stdout.write(`No raw captures since previous run; skipping Discord digest. Measurements: ${measurementPath}\n`);
+    process.stdout.write(`No raw captures since previous run; skipping Discord digest.${failureSummary} Measurements: ${measurementPath}\n`);
     return;
   }
 
