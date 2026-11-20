@@ -42,6 +42,8 @@ function baseResult(overrides: Partial<GroomingScheduledResult> = {}): GroomingS
     classifierFailureCount: 0,
     classifierFailureCycles: 0,
     applyFailureCount: 0,
+    retryQueue: [],
+    terminalFailureCount: 0,
     ...overrides,
   };
 }
