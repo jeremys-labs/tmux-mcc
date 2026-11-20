@@ -41,6 +41,7 @@ export interface GroomingDigestState {
 }
 
 export interface GroomingRetryEntry {
+  rowId: string;
   sourceRef: string;
   attempts: number;
   stage: 'classifier' | 'apply' | 'terminal_patch';

@@ -5,9 +5,9 @@ import {
   runScheduledGrooming,
   type GroomingActionSummary,
 } from './open-brain-grooming-schedule.js';
-import type { RawCaptureRow } from './open-brain-grooming-digest.js';
+import type { GroomingRawCaptureRow } from './open-brain-grooming-review.js';
 
-const row: RawCaptureRow = {
+const row: GroomingRawCaptureRow = {
   id: 'row-1',
   created_at: '2026-11-03T12:00:00.000Z',
   content: 'A durable project decision that requires classification.',
@@ -37,7 +37,7 @@ function dependencies(overrides: Partial<TestDependencies> = {}): TestDependenci
   return {
     readState: () => ({}),
     fetchSince: async () => [row],
-    fetchBySourceRefs: async () => [],
+    fetchByIds: async () => [],
     classifyWithOpenBrain: async () => ({
       action: 'auto_promote_private' as const,
       scope: 'private_agent' as const,
@@ -68,6 +68,7 @@ describe('open brain grooming retry queue', () => {
     expect(result.maxProcessedCreatedAt).toBe(row.created_at);
     expect(result.classifierFailureCount).toBe(1);
     expect(result.retryQueue).toEqual([{
+      rowId: 'row-1',
       sourceRef: 'manual:retry-1',
       attempts: 1,
       stage: 'classifier',
@@ -93,6 +94,22 @@ describe('open brain grooming retry queue', () => {
     });
   });
 
+  it('processes distinct rows that share a source reference', async () => {
+    process.env.OPEN_BRAIN_GROOMING_CLASSIFIER_ENABLED = '1';
+    const applyItem = vi.fn(async () => 'promoted');
+    const result = await runScheduledGrooming({
+      actorAgent: 'zara',
+      generatedAtIso: '2026-11-03T13:00:00.000Z',
+      dependencies: dependencies({
+        fetchSince: async () => [row, { ...row, id: 'row-2' }],
+        applyItem,
+      }),
+    });
+
+    expect(result.rawCaptureCount).toBe(2);
+    expect(applyItem).toHaveBeenCalledTimes(2);
+  });
+
   it('marks a row grooming_failed when the retry cap is reached', async () => {
     process.env.OPEN_BRAIN_GROOMING_CLASSIFIER_ENABLED = '1';
     const patchMetadata = vi.fn(async () => undefined);
@@ -102,6 +119,7 @@ describe('open brain grooming retry queue', () => {
       dependencies: dependencies({
         readState: () => ({
           retryQueue: [{
+            rowId: 'row-1',
             sourceRef: 'manual:retry-1',
             attempts: MAX_GROOMING_ATTEMPTS - 1,
             stage: 'classifier' as const,
@@ -109,7 +127,7 @@ describe('open brain grooming retry queue', () => {
           }],
         }),
         fetchSince: async () => [],
-        fetchBySourceRefs: async () => [row],
+        fetchByIds: async () => [row],
         classifyWithOpenBrain: async () => { throw new Error('classifier unavailable'); },
         patchMetadata,
       }),

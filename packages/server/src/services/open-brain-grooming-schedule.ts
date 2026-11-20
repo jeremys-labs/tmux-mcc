@@ -5,6 +5,7 @@ import {
   classifyRawCaptureWithOpenBrain,
   classifyRawCaptureCluster,
   clusterSummaryContent,
+  fetchRawCapturesByIds,
   groupRawCaptures,
   isFinalGroomingStatus,
   patchThoughtMetadata,
@@ -106,7 +107,7 @@ export interface GroomingScheduleOptions {
 export interface GroomingScheduleDependencies {
   readState: typeof readDigestState;
   fetchSince: typeof fetchRawCapturesSince;
-  fetchBySourceRefs: typeof fetchRawCapturesBySourceRefs;
+  fetchByIds: typeof fetchRawCapturesByIds;
   classifyWithOpenBrain: typeof classifyRawCaptureWithOpenBrain;
   applyItem: typeof applyGroomingClassification;
   applyCluster: typeof applyGroomingClusterClassification;
@@ -116,7 +117,7 @@ export interface GroomingScheduleDependencies {
 const defaultDependencies: GroomingScheduleDependencies = {
   readState: readDigestState,
   fetchSince: fetchRawCapturesSince,
-  fetchBySourceRefs: fetchRawCapturesBySourceRefs,
+  fetchByIds: fetchRawCapturesByIds,
   classifyWithOpenBrain: classifyRawCaptureWithOpenBrain,
   applyItem: applyGroomingClassification,
   applyCluster: applyGroomingClusterClassification,
@@ -125,11 +126,13 @@ const defaultDependencies: GroomingScheduleDependencies = {
 
 function retryEntry(
   prior: GroomingRetryEntry | undefined,
+  rowId: string,
   sourceRef: string,
   stage: GroomingRetryEntry['stage'],
   error: unknown,
 ): GroomingRetryEntry {
   return {
+    rowId,
     sourceRef,
     attempts: Math.min((prior?.attempts ?? 0) + 1, MAX_GROOMING_ATTEMPTS),
     stage,
@@ -141,7 +144,7 @@ function uniqueRows(rows: RawCaptureRow[]): RawCaptureRow[] {
   const byKey = new Map<string, RawCaptureRow>();
   for (const row of rows) {
     const sourceRef = typeof row.metadata?.source_ref === 'string' ? row.metadata.source_ref : '';
-    byKey.set(sourceRef || row.id || `${row.created_at}:${byKey.size}`, row);
+    byKey.set(row.id || sourceRef || `${row.created_at}:${byKey.size}`, row);
   }
   return [...byKey.values()];
 }
@@ -577,7 +580,7 @@ export async function runScheduledGrooming(
   const previousRetryQueue = state.retryQueue ?? [];
   const retryRows = options.dryRun || previousRetryQueue.length === 0
     ? []
-    : await dependencies.fetchBySourceRefs(previousRetryQueue.map((entry) => entry.sourceRef));
+    : await dependencies.fetchByIds(previousRetryQueue.map((entry) => entry.rowId));
   const rawCaptureRows = uniqueRows([...retryRows, ...newRawCaptureRows]).filter(
     (row) => !isFinalGroomingStatus(row.metadata?.grooming_status),
   );
@@ -592,8 +595,8 @@ export async function runScheduledGrooming(
   const itemPlans: GroomingItemPlan[] = [];
   let classifierFailureCount = 0;
   let terminalFailureCount = 0;
-  const retryBySourceRef = new Map(previousRetryQueue.map((entry) => [entry.sourceRef, entry] as const));
-  const nextRetryBySourceRef = new Map<string, GroomingRetryEntry>();
+  const retryByRowId = new Map(previousRetryQueue.map((entry) => [entry.rowId, entry] as const));
+  const nextRetryByRowId = new Map<string, GroomingRetryEntry>();
 
   const recordFailure = async (
     row: GroomingReviewRow,
@@ -601,9 +604,9 @@ export async function runScheduledGrooming(
     error: unknown,
   ): Promise<void> => {
     const sourceRef = rowSourceRef(row);
-    const entry = retryEntry(retryBySourceRef.get(sourceRef), sourceRef, stage, error);
+    const entry = retryEntry(retryByRowId.get(row.id), row.id, sourceRef, stage, error);
     if (entry.attempts < MAX_GROOMING_ATTEMPTS) {
-      nextRetryBySourceRef.set(sourceRef, entry);
+      nextRetryByRowId.set(row.id, entry);
       return;
     }
     if (options.dryRun) return;
@@ -615,7 +618,7 @@ export async function runScheduledGrooming(
       }));
       terminalFailureCount += 1;
     } catch (terminalError) {
-      nextRetryBySourceRef.set(sourceRef, {
+      nextRetryByRowId.set(row.id, {
         ...entry,
         stage: 'terminal_patch',
         lastError: String(terminalError),
@@ -686,7 +689,7 @@ export async function runScheduledGrooming(
       classifierFailureCount,
       classifierFailureCycles,
       applyFailureCount,
-      retryQueue: [...nextRetryBySourceRef.values()],
+      retryQueue: [...nextRetryByRowId.values()],
       terminalFailureCount,
       sinceIso,
       generatedAtIso,

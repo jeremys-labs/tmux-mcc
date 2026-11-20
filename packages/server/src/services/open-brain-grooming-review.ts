@@ -14,6 +14,10 @@ export interface GroomingReviewRow {
   metadata: Record<string, unknown>;
 }
 
+export interface GroomingRawCaptureRow extends GroomingReviewRow {
+  created_at: string;
+}
+
 export interface GroomingReviewOptions {
   action: GroomingReviewAction;
   sourceRef: string;
@@ -396,6 +400,29 @@ export async function patchRawCaptureMetadataById(
   if (!response.ok) {
     throw new Error(`Raw capture metadata patch failed for ${id}: ${response.status} ${await response.text()}`);
   }
+}
+
+export async function fetchRawCapturesByIds(
+  ids: string[],
+  rest = readOpenBrainRestConfig(),
+  fetchFn: typeof fetch = fetch,
+): Promise<GroomingRawCaptureRow[]> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (uniqueIds.length === 0) return [];
+  if (!rest) throw new Error('Open Brain REST config is missing for exact-id grooming retries.');
+  const url = new URL('/rest/v1/thoughts', rest.projectUrl);
+  url.searchParams.set('select', 'id,created_at,content,metadata');
+  url.searchParams.set('id', `in.(${uniqueIds.join(',')})`);
+  const response = await fetchFn(url, {
+    headers: {
+      apikey: rest.serviceKey,
+      Authorization: `Bearer ${rest.serviceKey}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Raw capture retry fetch failed: ${response.status} ${await response.text()}`);
+  }
+  return await response.json() as GroomingRawCaptureRow[];
 }
 
 export async function patchThoughtMetadata(id: string, metadata: Record<string, unknown>): Promise<void> {

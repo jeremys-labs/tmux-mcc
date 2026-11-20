@@ -4,6 +4,7 @@ import {
   buildPromotedContent,
   classifyRawCapture,
   classifyRawCaptureCluster,
+  fetchRawCapturesByIds,
   groupRawCaptures,
   isFinalGroomingStatus,
   parseClassifierJson,
@@ -61,6 +62,23 @@ describe('open brain grooming review', () => {
     expect(capturedInit?.body).toBe(JSON.stringify({
       metadata: { source_ref: 'duplicate-ref', grooming_status: 'auto_ignored' },
     }));
+  });
+
+  it('fetches queued retries by exact row ids', async () => {
+    let capturedUrl = '';
+    const fetchFn = vi.fn(async (input: string | URL | Request) => {
+      capturedUrl = String(input);
+      return new Response(JSON.stringify([{ id: 'row-a' }, { id: 'row-b' }]), { status: 200 });
+    }) as typeof fetch;
+
+    const rows = await fetchRawCapturesByIds(
+      ['row-a', 'row-b'],
+      { projectUrl: 'https://example.supabase.co', serviceKey: 'test-key' },
+      fetchFn,
+    );
+
+    expect(rows.map((item) => item.id)).toEqual(['row-a', 'row-b']);
+    expect(capturedUrl).toContain('id=in.%28row-a%2Crow-b%29');
   });
 
   it('uses explicit content override when provided', () => {
