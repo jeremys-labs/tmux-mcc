@@ -5,6 +5,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { normalizeInlineDiscordText } from './services/discord-reply-text.js';
 import {
+  decideOutboundClass,
   formatPolicyRefusal,
   isOutboundClass,
   OUTBOUND_CLASSES,
@@ -44,7 +45,7 @@ type Args = {
    * same shape as `--sender-kind` above: the safe state is the default, and the
    * exemption is opted into by name.
    */
-  outboundClass: OutboundClass;
+  outboundClass?: OutboundClass;
 };
 
 type BridgeSendResponse = {
@@ -59,7 +60,6 @@ function parseArgs(argv: string[]): Args {
     files: [],
     textStdin: false,
     senderKind: 'agent',
-    outboundClass: 'interactive_reply',
     socketPath: process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock',
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -286,10 +286,34 @@ for (const filePath of args.files) {
   }
 }
 
+// Resolved ONCE, so the value journalled and the value sent cannot diverge.
+const classDecision = decideOutboundClass(args.outboundClass, process.env);
+try {
+  const classJournal = process.env.OUTBOUND_CLASS_JOURNAL
+    ?? '/Volumes/Repo-Drive/agents/SHARED/reports/outbound-class.jsonl';
+  fs.mkdirSync(path.dirname(classJournal), { recursive: true });
+  fs.appendFileSync(classJournal, `${JSON.stringify({
+    ts: Date.now() / 1000,
+    agent: args.agent ?? 'unknown',
+    chat_id: args.chatId ?? '',
+    outbound_class: classDecision.outboundClass,
+    origin: classDecision.origin,
+    scheduled_job_id: classDecision.scheduledJobId ?? null,
+    sender_kind: args.senderKind,
+    declared_source: args.source ?? process.env.SCHEDULED_DISCORD_SOURCE ?? null,
+    // Isla's reviewer note (1): the class is SELF-DECLARED, so the gate is
+    // honour-system -- a sender can skip the plain-English check by declaring a
+    // non-interactive class. Flagging a DECLARED non-interactive send makes that
+    // misuse auditable instead of invisible.
+    declared_non_interactive:
+      classDecision.origin === 'declared' && classDecision.outboundClass !== 'interactive_reply',
+  })}\n`);
+} catch { /* journalling must never block a send */ }
+
 const payloadObject = {
   agentKey: args.agent,
   chat_id: args.chatId,
-  outboundClass: args.outboundClass,
+  outboundClass: classDecision.outboundClass,
   ...(args.text ? { text: args.text } : {}),
   ...(args.files.length > 0 ? { files: args.files } : {}),
   ...(args.replyTo ? { reply_to: args.replyTo } : {}),
