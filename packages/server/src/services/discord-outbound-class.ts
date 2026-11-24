@@ -64,3 +64,44 @@ export function formatPolicyRefusal(refusal: PolicyRefusal): string {
   if (refusal.limitation) lines.push(`Known limitation: ${refusal.limitation}`);
   return lines.join('\n');
 }
+
+
+export type ClassDecision = {
+  outboundClass: OutboundClass;
+  /** 'declared' = a human or caller passed --outbound-class. 'inferred' = derived from the environment. */
+  origin: 'declared' | 'inferred';
+  /** The scheduler job id the inference was based on, when there was one. */
+  scheduledJobId?: string;
+};
+
+/**
+ * Decide the class, and SAY WHICH WAY IT WAS DECIDED.
+ *
+ * Isla's ruling (msg_6cec94e6) after I measured that 15 of 17 live scheduled
+ * jobs bake the CLI command into their own prompt text: an explicit flag would
+ * need 15 prompt edits across four owners, and ANY ONE MISSED refuses its send
+ * silently -- starting with the 07:45 newsletter. So an absent flag infers
+ * `scheduled_digest` when the scheduler's own SCHEDULED_JOB_ID is in the
+ * environment, which `scheduler-firing.ts:1188` sets on the single agent-turn
+ * spawn that every scheduled job passes through.
+ *
+ * THE COST, STATED RATHER THAN SOFTENED: this is identity-from-environment. An
+ * agent woken BY a cron that then answers a live Discord message in the same
+ * turn would have that interactive reply classed as a digest and skip the
+ * plain-English check. That case is NARROW but real, which is why `origin` is
+ * returned and journalled: an inferred classification is visible rather than
+ * silent, the same bargain already accepted for `--sender-kind system`.
+ */
+export function decideOutboundClass(
+  declared: OutboundClass | undefined,
+  env: { SCHEDULED_JOB_ID?: string } = {},
+): ClassDecision {
+  if (declared) {
+    return { outboundClass: declared, origin: 'declared' };
+  }
+  const jobId = (env.SCHEDULED_JOB_ID ?? '').trim();
+  if (jobId) {
+    return { outboundClass: 'scheduled_digest', origin: 'inferred', scheduledJobId: jobId };
+  }
+  return { outboundClass: 'interactive_reply', origin: 'inferred' };
+}
