@@ -366,6 +366,11 @@ async function sendDiscordMessage(input: {
     agentKey: input.agent,
     chat_id: input.chatId,
     text: input.text,
+    // This monitor posts automated runtime-health alerts, not a reply to anyone.
+    // Declaring the class keeps it out of the interactive-reply ELI5 gate, which
+    // it would otherwise fail on shape alone -- and the bridge refuses an
+    // undeclared send outright once the policy gate is live.
+    outboundClass: 'system_monitor',
   });
   return new Promise<string>((resolve, reject) => {
     const request = http.request({

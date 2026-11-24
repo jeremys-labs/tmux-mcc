@@ -4,6 +4,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { normalizeInlineDiscordText } from './services/discord-reply-text.js';
+import {
+  formatPolicyRefusal,
+  isOutboundClass,
+  OUTBOUND_CLASSES,
+  parsePolicyRefusal,
+  type OutboundClass,
+} from './services/discord-outbound-class.js';
 
 type Args = {
   agent?: string;
@@ -25,6 +32,19 @@ type Args = {
    * so a new call site is covered rather than quietly exempt.
    */
   senderKind: 'agent' | 'system';
+  /**
+   * What KIND of message this is, for the bridge's outbound policy gate.
+   *
+   * Defaults to `interactive_reply`, which is the STRICTEST class: it is the only
+   * one the policy registry carries rows for, so an un-migrated caller gets MORE
+   * checking rather than less. A default of `scheduled_digest` would fail open on
+   * exactly the interactive replies the gate exists to govern.
+   *
+   * A scheduled sender must therefore declare its class explicitly. That is the
+   * same shape as `--sender-kind` above: the safe state is the default, and the
+   * exemption is opted into by name.
+   */
+  outboundClass: OutboundClass;
 };
 
 type BridgeSendResponse = {
@@ -39,6 +59,7 @@ function parseArgs(argv: string[]): Args {
     files: [],
     textStdin: false,
     senderKind: 'agent',
+    outboundClass: 'interactive_reply',
     socketPath: process.env.DISCORD_BRIDGE_SOCKET_PATH ?? '/tmp/agent-discord-bridge.sock',
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -62,6 +83,13 @@ function parseArgs(argv: string[]): Args {
         process.exit(1);
       }
       args.senderKind = next;
+      index += 1;
+    } else if (item === '--outbound-class' || item === '--outbound_class') {
+      if (!isOutboundClass(next)) {
+        console.error(`--outbound-class must be one of ${OUTBOUND_CLASSES.join(', ')}: ${next}`);
+        process.exit(1);
+      }
+      args.outboundClass = next;
       index += 1;
     } else if (item === '--text-stdin') {
       args.textStdin = true;
@@ -232,7 +260,7 @@ if (args.text) {
 }
 
 if (!args.agent || !args.chatId || (!args.text && args.files.length === 0)) {
-  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> [--text <message> | --text-file <abs-path> | --text-stdin] [--sender-kind agent|system] [--file <abs-path> ...] [--reply-to <message_id>]');
+  console.error('Usage: discord-bridge-reply --agent <agent> --chat-id <channel> [--text <message> | --text-file <abs-path> | --text-stdin] [--sender-kind agent|system] [--outbound-class interactive_reply|scheduled_digest|alert|system_monitor] [--file <abs-path> ...] [--reply-to <message_id>]');
   process.exit(1);
 }
 
@@ -261,6 +289,7 @@ for (const filePath of args.files) {
 const payloadObject = {
   agentKey: args.agent,
   chat_id: args.chatId,
+  outboundClass: args.outboundClass,
   ...(args.text ? { text: args.text } : {}),
   ...(args.files.length > 0 ? { files: args.files } : {}),
   ...(args.replyTo ? { reply_to: args.replyTo } : {}),
@@ -286,6 +315,18 @@ const body = await new Promise<string>((resolve, reject) => {
     res.on('data', (chunk) => { responseBody += chunk; });
     res.on('end', () => {
       if ((res.statusCode ?? 500) < 200 || (res.statusCode ?? 500) >= 300) {
+        // A POLICY REFUSAL IS NOT A CRASH. Without this branch the rejection below
+        // surfaces as an unhandled promise rejection: a stack trace, a JSON blob,
+        // and exit 1 -- the same shape a broken socket produces. The sender then
+        // cannot tell "rewrite this message" from "the bridge is down", which is
+        // the one distinction a refusal exists to communicate. Exit 3 is the
+        // fleet's refusal code (agent-mail, dc-20261122-102); a genuine failure
+        // keeps its stack and its exit 1, because that IS a thing to debug.
+        const refusal = parsePolicyRefusal(responseBody);
+        if (refusal) {
+          console.error(formatPolicyRefusal(refusal));
+          process.exit(3);
+        }
         reject(new Error(responseBody));
         return;
       }
