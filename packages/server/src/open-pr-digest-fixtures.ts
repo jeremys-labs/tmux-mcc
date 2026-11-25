@@ -205,7 +205,12 @@ const bf = argv[argv.indexOf('--body-file') + 1];
 if (bf) require('fs').appendFileSync(${JSON.stringify(log)} + '.bodies',
   '=== ' + argv.join(' ') + '\\n' + require('fs').readFileSync(bf, 'utf8') + '\\n');
 const failFor = ${JSON.stringify(failFor ?? null)};
-if (failFor && argv.includes(failFor)) process.exit(1);
+if (failFor && argv.includes(failFor)) {
+  // IT SAYS WHY, like the real binary does. A stub that fails silently cannot prove the runner
+  // records a reason, and "a stub easier to satisfy than its subject" is this file's own lesson.
+  process.stderr.write('stub refused: no mailbox for ' + failFor + '\\n');
+  process.exit(1);
+}
 `);
   fs.chmodSync(p, 0o755);
   return p;

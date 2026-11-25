@@ -149,6 +149,26 @@ describe('dc-20261021-001 — open-PR digest flags — routing', () => {
     expect(lines.filter((l) => l.includes('--to marcus'))).toHaveLength(1);
   });
 
+  it('(9b) A FAILED SEND RECORDS WHY, not just that it failed', () => {
+    // isla, dc-20261125-vitest-worker. `routing.failed` held `tmux-mcc#36 -> isla` and nothing
+    // else, so a REAL defect -- a body file two concurrent runs shared, ENOENT on the second
+    // send -- was indistinguishable from a flaky test, and we chased it for an afternoon. The
+    // mail binary had been saying ENOENT the whole time on a stderr nobody captured. Same
+    // "absence of a reason is not a reason" class as the artifact `skipped` field in (18).
+    const root = tempDir();
+    const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
+    const env = baseEnv(root, { 'jeremys-labs/tmux-mcc': [pr()] }, src);
+    sweep(env);
+    const log = path.join(root, 'mail.log');
+    runRunnerExpectFail(runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
+      OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log, 'isla'),
+    }));
+    const failed = status(root).routing.failed;
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain('tmux-mcc#36 -> isla');   // who, as before
+    expect(failed[0]).toContain('no mailbox for isla');   // AND WHY, which is the new part
+  });
+
   it('(5b) a FAILED send does not advance state, so the transition is not lost', () => {
     const root = tempDir();
     const src = makeCheckouts(root, '2026-10-29T18:00:00Z');
