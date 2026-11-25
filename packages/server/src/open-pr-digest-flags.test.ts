@@ -989,10 +989,10 @@ process.exit(1);
     const sup = path.join(src, 'agent-supervisor');
     const one = git(sup, ['rev-parse', 'HEAD']).trim();                 // does NOT contain 'two'
     const two = git(sup, ['rev-parse', 'refs/remotes/origin/main']).trim();
-    // 102 DISTINCT shas, not 102 updates to the same one: `update-ref` writes NO reflog entry
-    // when the value is unchanged, so my first fixture produced two entries and asserted its
-    // way to a red. Each pad commit is an empty commit off `one`, so none of them contains
-    // `two` and every update really moves the ref.
+    // EVERY ENTRY MUST REALLY MOVE THE REF: `update-ref` writes NO reflog entry when the value
+    // is unchanged, so the first version of this fixture produced two entries and asserted its
+    // way to a red. That is a constraint on MOVEMENT, not on uniqueness -- see below, where two
+    // alternating shas satisfy it. Neither pad value contains `two`.
     // SPEED, and the property is unchanged (dc-20261125-digest-red). This used to make 102
     // empty commits and then 102 `update-ref` calls -- 204 git processes, 7.5s, over the 5s
     // limit. Two changes, neither of which touches what is asserted:
