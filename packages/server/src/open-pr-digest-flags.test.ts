@@ -228,12 +228,59 @@ function runnerEnv(root: string, findingsPath: string, over: Record<string, stri
   } as Record<string, string>;
 }
 
-function runRunner(env: Record<string, string>, args: string[] = []) {
-  return spawnSync('node', [RUNNER, ...args], { encoding: 'utf8', env });
+/**
+ * THE RUNNER'S EXIT STATUS IS ASSERTED, NEVER DISCARDED (dc-20261125-vitest-worker).
+ *
+ * There were 26 call sites and exactly ONE captured the result. So a runner that died left the
+ * test asserting against an empty mail log, and `(15b)` failed with
+ * `expected '' to contain 'it is for an OLDER head'` -- which reads as "the mail had the wrong
+ * words" when the truth may be "no runner ran at all". The fixture was strict about git (see
+ * `git()`, which throws on non-zero) and silent about the runner. Absence of a reason is not a
+ * reason, which is the defect this whole file exists to pin, reproduced in its own fixture.
+ *
+ * `expectStatus` is an ASSERTION, not an opt-out: a caller that accepts any status is the same
+ * blind spot moved three lines down (isla). Pass the exact code you expect. The runner exits
+ * `status === 'ok' ? 0 : 1` (run-open-pr-digest.mjs:347), so 0 or 1 are the only valid values.
+ */
+function runRunner(env: Record<string, string>, args: string[] = [],
+                   { expectStatus = 0 }: { expectStatus?: 0 | 1 } = {}) {
+  const r = spawnSync('node', [RUNNER, ...args], { encoding: 'utf8', env });
+  if (r.status !== expectStatus) {
+    throw new Error(
+      `runner exited ${r.status} (expected ${expectStatus}), signal=${r.signal}\n`
+      + `--- runner stderr ---\n${r.stderr ?? ''}\n--- runner stdout ---\n${r.stdout ?? ''}`,
+    );
+  }
+  return r;
 }
+/**
+ * For the scenarios whose whole POINT is a failing run -- a stale or missing artifact, a dead
+ * mail binary, a send that fails. Measured per call site rather than assumed: the runner exits
+ * `status === 'ok' ? 0 : 1`, so these are exactly 1, and asserting 1 keeps the `expectStatus`
+ * contract an assertion instead of an opt-out (isla).
+ */
+function runRunnerExpectFail(env: Record<string, string>, args: string[] = []) {
+  return runRunner(env, args, { expectStatus: 1 });
+}
+
+/**
+ * status.json IS VALIDATED, because reading it blind is the other half of the same blind spot.
+ * A flaky run produced `Cannot read properties of undefined (reading 'recipients')` -- the
+ * runner had written an incomplete file and the test reported a property access instead of the
+ * real fault. Name what is missing and show the file.
+ */
 function status(root: string) {
-  return JSON.parse(fs.readFileSync(path.join(root, 'status.json'), 'utf8'));
+  const file = path.join(root, 'status.json');
+  const raw = fs.readFileSync(file, 'utf8');
+  const parsed = JSON.parse(raw);
+  for (const key of ['status', 'routing'] as const) {
+    if (parsed[key] === undefined) {
+      throw new Error(`status.json has no \`${key}\`; the runner wrote an incomplete file.\n${raw}`);
+    }
+  }
+  return parsed;
 }
+
 function mailLines(log: string): string[] {
   return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : [];
 }
@@ -551,7 +598,7 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     const renv = runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log),
     });
-    runRunner(renv);
+    runRunnerExpectFail(renv);
     expect(mailLines(log)).toHaveLength(0);
     expect(status(root).routing.skipped).toContain('another run');
     expect(status(root).findingsFresh).toBe(false);
@@ -596,14 +643,14 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, log, 'isla'),   // isla always fails
     });
 
-    runRunner(renv);
+    runRunnerExpectFail(renv);
     expect(mailLines(log)).toHaveLength(2);                    // both attempted
     const first = JSON.parse(fs.readFileSync(path.join(root, 'notified.json'), 'utf8'));
     expect(Object.keys(first['tmux-mcc#36'].recipients)).toEqual(['marcus']);  // only the delivered one
     expect(first['tmux-mcc#36'].head).toBe(HEAD_OID);                          // and the head it was for
 
     // Second run: marcus is NOT re-mailed, isla IS re-attempted.
-    runRunner(renv);
+    runRunnerExpectFail(renv);
     const lines = mailLines(log);
     expect(lines).toHaveLength(3);
     expect(lines[2]).toContain('--to isla');
@@ -618,7 +665,7 @@ describe('dc-20261021-001 — open-PR digest flags', () => {
     const renv = runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
       OPEN_PR_DIGEST_MAIL_BIN: '/usr/bin/false',
     });
-    runRunner(renv);
+    runRunnerExpectFail(renv);
     expect(JSON.parse(fs.readFileSync(path.join(root, 'notified.json'), 'utf8'))).toEqual({});
     expect(status(root).routing.delivered).toBe(0);
     expect(status(root).routing.failed.length).toBeGreaterThan(0);   // visible, not swallowed
@@ -786,11 +833,13 @@ process.stdout.write(JSON.stringify(fixtures[argv[i + 1]] ?? []));
     const renv = runnerEnv(root, env.OPEN_PR_DIGEST_FINDINGS_PATH, {
       OPEN_PR_DIGEST_MAIL_BIN: '/usr/bin/false',
     });
-    const r = runRunner(renv);
+    // EXACT, not `not.toBe(0)`: "some failure" would have been satisfied by the runner dying
+    // for an unrelated reason, which is the blind spot this row is about.
+    const r = runRunner(renv, [], { expectStatus: 1 });
     expect(status(root).routing.failed.length).toBeGreaterThan(0);
     expect(status(root).status).toBe('fail');
     expect(status(root).reason).toBe('routing_failed');
-    expect(r.status).not.toBe(0);
+    expect(r.status).toBe(1);
   });
 
   it('(5c) an unresolvable author routes to the operator and SAYS it is unresolved', () => {
@@ -933,7 +982,7 @@ process.exit(1);
       runId: 'yesterday', undispositioned: [], drifts: [],
       sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'clean', driftProblems: [],
     }));
-    runRunner(runnerEnv(root, findings, {
+    runRunnerExpectFail(runnerEnv(root, findings, {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
     }));
     const st = status(root);
@@ -965,7 +1014,7 @@ process.exit(1);
     // sweep died before writing" and "there was nothing to route" read identically in the
     // status file -- and only the first one needs a human. Absence of a reason is not a reason.
     const root = tempDir();
-    runRunner(runnerEnv(root, path.join(root, 'nope.json'), {
+    runRunnerExpectFail(runnerEnv(root, path.join(root, 'nope.json'), {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
     }));
     const st = status(root);
@@ -1041,7 +1090,7 @@ process.exit(1);
     // `skipped` reason this round -- said WHY while still reporting ok. A reason in a field
     // nobody alerts on is still silent, so author delivery could be broken every day for ever.
     const root = tempDir();
-    runRunner(runnerEnv(root, path.join(root, 'never-written.json'), {
+    runRunnerExpectFail(runnerEnv(root, path.join(root, 'never-written.json'), {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
     }));
     const st = status(root);
@@ -1125,7 +1174,7 @@ process.stdout.write('[]');
       runId: 'yesterday', undispositioned: [], drifts: [],
       sweptRepos: ['tmux-mcc'], failedRepos: [], driftStatus: 'clean', driftProblems: [],
     }));
-    runRunner(runnerEnv(root, findings, {
+    runRunnerExpectFail(runnerEnv(root, findings, {
       OPEN_PR_DIGEST_MAIL_BIN: mailStub(root, path.join(root, 'mail.log')),
     }));
     const st = status(root);
