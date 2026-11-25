@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 const enqueueDiscord = vi.fn();
 const enqueueAgentMail = vi.fn();
+const enqueueRestartAgentMail = vi.fn();
+const listRestartAgentMail = vi.fn((_store: unknown, _agent: unknown) => []);
 const enqueueBlueBubbles = vi.fn();
 const injectHandoff = vi.fn();
 const enqueueEventInbox = vi.fn();
@@ -11,6 +13,8 @@ vi.mock('./runtime-discord-inbox.js', () => ({
 }));
 vi.mock('./runtime-agent-mail.js', () => ({
   enqueuePendingRuntimeAgentMail: (input: unknown) => enqueueAgentMail(input),
+  enqueueRuntimeAgentMailMessages: (input: unknown) => enqueueRestartAgentMail(input),
+  listRestartRecoveryAgentMail: (store: unknown, agent: unknown) => listRestartAgentMail(store, agent),
 }));
 vi.mock('./runtime-bluebubbles-inbox.js', () => ({
   enqueuePendingRuntimeBlueBubblesInbox: (input: unknown) => enqueueBlueBubbles(input),
@@ -50,12 +54,14 @@ describe('startRuntimeInboxPollers', () => {
   it('schedules a periodic tick that invokes all pollers', () => {
     enqueueDiscord.mockClear();
     enqueueAgentMail.mockClear();
+    enqueueRestartAgentMail.mockClear();
+    listRestartAgentMail.mockClear();
     enqueueBlueBubbles.mockClear();
     enqueueEventInbox.mockClear();
 
     let registered: (() => void) | null = null;
     const fakeHandle = {} as NodeJS.Timeout;
-    const setIntervalImpl = vi.fn((handler: () => void) => {
+    const setIntervalImpl = vi.fn((handler: () => void, _ms: number) => {
       registered = handler;
       return fakeHandle;
     });
@@ -73,12 +79,17 @@ describe('startRuntimeInboxPollers', () => {
     expect(enqueueBlueBubbles).toHaveBeenCalledTimes(1);
     expect(enqueueDiscord).toHaveBeenCalledTimes(1);
     expect(enqueueAgentMail).toHaveBeenCalledTimes(1);
+    expect(enqueueRestartAgentMail).toHaveBeenCalledTimes(1);
+    expect(listRestartAgentMail).toHaveBeenCalledTimes(1);
     expect(enqueueEventInbox).toHaveBeenCalledTimes(1);
 
     handle.tick();
     expect(enqueueBlueBubbles).toHaveBeenCalledTimes(2);
     expect(enqueueDiscord).toHaveBeenCalledTimes(2);
     expect(enqueueAgentMail).toHaveBeenCalledTimes(2);
+    expect(enqueueRestartAgentMail).toHaveBeenCalledTimes(2);
+    // Restart recovery is a process-start snapshot, not a perpetual ACKED scan.
+    expect(listRestartAgentMail).toHaveBeenCalledTimes(1);
     expect(enqueueEventInbox).toHaveBeenCalledTimes(2);
 
     handle.stop();
@@ -88,6 +99,8 @@ describe('startRuntimeInboxPollers', () => {
   it('threads agentKey + contentRoot + runtimeLogPath + openBrainConfig into each poller', () => {
     enqueueDiscord.mockClear();
     enqueueAgentMail.mockClear();
+    enqueueRestartAgentMail.mockClear();
+    listRestartAgentMail.mockClear();
     enqueueBlueBubbles.mockClear();
     enqueueEventInbox.mockClear();
 

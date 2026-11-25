@@ -32,6 +32,12 @@ export interface EnqueuePendingRuntimeAgentMailInput extends Omit<RuntimeAgentMa
   enqueue: (task: () => Promise<void>, opts?: EnqueueOptions) => void;
 }
 
+export interface EnqueueRuntimeAgentMailMessagesInput extends Omit<EnqueuePendingRuntimeAgentMailInput, 'mailStore'> {
+  mailStore: Pick<AgentMailStore, 'ackMessage'>;
+  messages: AgentMailMessage[];
+  onDelivered?: (message: AgentMailMessage) => void;
+}
+
 function appendRuntimeLog(runtimeLogPath: string, line: string): void {
   appendRuntimeLogLine(runtimeLogPath, line);
 }
@@ -79,9 +85,24 @@ export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInp
   });
 }
 
-export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgentMailInput): void {
-  const pendingMail = input.mailStore.listInbox({ agent: input.agentKey, status: 'new' });
-  for (const message of pendingMail) {
+/**
+ * Requests acknowledged by the old runtime but never answered remain work after a restart.
+ * They are intentionally separate from the normal NEW inbox: acknowledgement records prompt
+ * delivery, not completion of a requires-response obligation.
+ */
+export function listRestartRecoveryAgentMail(
+  mailStore: Pick<AgentMailStore, 'listInbox' | 'listEvents'>,
+  agentKey: string,
+): AgentMailMessage[] {
+  return mailStore.listInbox({ agent: agentKey, status: 'acked' }).filter((message) =>
+    message.requiresResponse
+    && message.fromAgent !== agentKey
+    && !mailStore.listEvents(message.id).some((event) => event.eventType === 'replied')
+  );
+}
+
+export function enqueueRuntimeAgentMailMessages(input: EnqueueRuntimeAgentMailMessagesInput): void {
+  for (const message of input.messages) {
     // Self-mail is durable journal state, not work for the sender to process again.
     if (message.fromAgent === input.agentKey) {
       input.mailStore.ackMessage(input.agentKey, message.id);
@@ -93,8 +114,11 @@ export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgent
     input.enqueue(async () => {
       try {
         await deliverRuntimeAgentMail({ ...input, message });
-        // Delivered and acked (no longer 'new') — safe to let the cap evict this id.
+        // Delivered and acked (or deliberately re-injected after restart) — safe to let the
+        // cap evict this id. The restart controller separately removes recovered work from
+        // its process-local retry map only after this delivery succeeds.
         input.deliveredIds.settle?.(message.id);
+        input.onDelivered?.(message);
       } catch (error) {
         input.deliveredIds.delete(message.id);
         appendRuntimeLog(input.runtimeLogPath, `mail inject error ${message.id}: ${String(error)}`);
@@ -107,4 +131,11 @@ export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgent
       },
     });
   }
+}
+
+export function enqueuePendingRuntimeAgentMail(input: EnqueuePendingRuntimeAgentMailInput): void {
+  enqueueRuntimeAgentMailMessages({
+    ...input,
+    messages: input.mailStore.listInbox({ agent: input.agentKey, status: 'new' }),
+  });
 }

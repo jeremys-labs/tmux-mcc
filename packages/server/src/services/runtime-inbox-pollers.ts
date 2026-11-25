@@ -1,5 +1,7 @@
 import {
   enqueuePendingRuntimeAgentMail,
+  enqueueRuntimeAgentMailMessages,
+  listRestartRecoveryAgentMail,
   type EnqueuePendingRuntimeAgentMailInput,
 } from './runtime-agent-mail.js';
 import {
@@ -19,12 +21,15 @@ import {
   enqueuePendingRuntimeEventInbox,
   type EnqueuePendingRuntimeEventInboxInput,
 } from './runtime-event-inbox.js';
+import type { AgentMailStore } from '@agent-comms/mailbox';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
 export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
-type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
+type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'submitPrompt'> & {
+  mailStore: EnqueuePendingRuntimeAgentMailInput['mailStore'] & Pick<AgentMailStore, 'listEvents'>;
+};
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
 type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
 type EventInboxPollerArgs = Pick<EnqueuePendingRuntimeEventInboxInput, 'eventInbox' | 'submitPrompt'>;
@@ -80,6 +85,11 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredAgentMailIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+
+  // Snapshot once per process start. Successful deliveries leave the map; failed or timed-out
+  // deliveries remain and retry on the next tick. Querying ACKED rows forever would eventually
+  // replay ancient work after the bounded delivered-id set evicts it.
+  let restartRecoveryMail: Map<string, ReturnType<typeof listRestartRecoveryAgentMail>[number]> | null = null;
 
   let handoffSettled = false;
   let handoffInFlight = false;
@@ -143,6 +153,25 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       runtimeLogPath,
       submitPrompt: agentMail.submitPrompt,
       enqueue,
+    });
+
+    if (restartRecoveryMail === null) {
+      restartRecoveryMail = new Map(
+        listRestartRecoveryAgentMail(agentMail.mailStore, agentKey)
+          .map((message) => [message.id, message]),
+      );
+    }
+    enqueueRuntimeAgentMailMessages({
+      agentKey,
+      mailStore: agentMail.mailStore,
+      deliveredIds: deliveredAgentMailIds,
+      events,
+      openBrainConfig,
+      runtimeLogPath,
+      submitPrompt: agentMail.submitPrompt,
+      enqueue,
+      messages: [...restartRecoveryMail.values()],
+      onDelivered: (message) => restartRecoveryMail?.delete(message.id),
     });
 
     if (eventInbox) {
