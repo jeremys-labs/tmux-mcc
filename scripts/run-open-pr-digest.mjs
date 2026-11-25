@@ -190,6 +190,15 @@ if (routable) {
   // Eleven lines above, `tempTextFile` already did this right with `${process.pid}`. One temp
   // file got a unique name and the other did not, in the same script.
   const bodyDir = fs.mkdtempSync(path.join(os.tmpdir(), `pr-unreviewed-${process.pid}-`));
+  // CLEANUP ON EVERY EXIT PATH, not just the happy one (isla's nit on 27c9f65). A throw inside
+  // the recipient loop used to leak this directory in tmpdir, once per crashed run, invisibly.
+  // An exit handler rather than a `finally` for two reasons: it also covers the `process.exit`
+  // at the foot of this script and any future early return, and wrapping the ~100-line loop in
+  // `try` would re-indent all of it for a one-line change, which costs more in review than it
+  // buys. `rmSync` is sync, which is what an exit handler requires.
+  process.on('exit', () => {
+    try { fs.rmSync(bodyDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
   const open = new Set(findings.undispositioned.map((f) => `${f.repo}#${f.number}`));
   // TRIM ONLY WHAT WAS ACTUALLY SWEPT (review finding 4). The intersection bounds the state
   // against its subject, but intersecting against a repo that FAILED to sweep erases the
@@ -288,8 +297,6 @@ if (routable) {
     }
     if (Object.keys(already).length > 0) notified[key] = { head, recipients: already };
   }
-  // One removal for the whole run, so there is no per-file unlink to race against.
-  try { fs.rmSync(bodyDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   try {
     fs.mkdirSync(path.dirname(notifiedPath), { recursive: true });
     fs.writeFileSync(notifiedPath, `${JSON.stringify(notified, null, 2)}\n`);
