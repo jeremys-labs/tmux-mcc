@@ -46,7 +46,10 @@ describe('agent-mail restart recovery', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function startPoller(submitted: string[]) {
+  function startPoller(
+    submitted: string[],
+    afterSubmit?: (prompt: string) => Promise<void>,
+  ) {
     const tasks: Array<() => Promise<void>> = [];
     const handle = startRuntimeInboxPollers({
       agentKey: 'enzo',
@@ -58,7 +61,10 @@ describe('agent-mail restart recovery', () => {
       discord: { submitPrompt: async () => undefined },
       agentMail: {
         mailStore: store,
-        submitPrompt: async (prompt) => { submitted.push(prompt); },
+        submitPrompt: async (prompt) => {
+          submitted.push(prompt);
+          await afterSubmit?.(prompt);
+        },
       },
       blueBubbles: { submitPrompt: async () => undefined },
       setIntervalImpl: () => ({} as NodeJS.Timeout),
@@ -117,9 +123,58 @@ describe('agent-mail restart recovery', () => {
       messageId: request.id,
       bodyMd: 'Answered.',
     });
+    expect(store.listEvents(request.id).map((event) => event.eventType)).toContain('replied');
     const afterReply = startPoller([]);
     afterReply.handle.tick();
     expect(afterReply.tasks).toHaveLength(0);
     afterReply.handle.stop();
   });
+
+  it.each(['reply', 'close'] as const)(
+    'drops recovered work when a %s lands after a failed delivery but before its retry',
+    async (resolution) => {
+      const request = store.send({
+        fromAgent: 'marcus',
+        toAgent: 'enzo',
+        type: 'question',
+        subject: 'Resolve during retry window',
+        bodyMd: 'Do not inject this after it is resolved.',
+        requiresResponse: true,
+      });
+      store.ackMessage('enzo', request.id);
+
+      let failFirstDelivery = true;
+      const submitted: string[] = [];
+      const restarted = startPoller(submitted, async () => {
+        if (failFirstDelivery) {
+          failFirstDelivery = false;
+          throw new Error('runtime temporarily unavailable');
+        }
+      });
+
+      restarted.handle.tick();
+      expect(restarted.tasks).toHaveLength(1);
+      await restarted.tasks.shift()!();
+      expect(submitted).toHaveLength(1);
+
+      if (resolution === 'reply') {
+        store.reply({ actorAgent: 'enzo', messageId: request.id, bodyMd: 'Resolved.' });
+        expect(store.listEvents(request.id).map((event) => event.eventType)).toContain('replied');
+      } else {
+        store.closeMessage('enzo', request.id);
+        expect(store.getMessage(request.id)?.status).toBe('closed');
+      }
+
+      // The retry is still queued from the startup snapshot, but execution-time validation
+      // consumes it without a second prompt submission.
+      restarted.handle.tick();
+      expect(restarted.tasks).toHaveLength(1);
+      await restarted.tasks.shift()!();
+      expect(submitted).toHaveLength(1);
+
+      restarted.handle.tick();
+      expect(restarted.tasks).toHaveLength(0);
+      restarted.handle.stop();
+    },
+  );
 });

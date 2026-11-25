@@ -171,6 +171,8 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       submitPrompt: agentMail.submitPrompt,
       enqueue,
       messages: [...restartRecoveryMail.values()],
+      shouldDeliver: (message) => listRestartRecoveryAgentMail(agentMail.mailStore, agentKey)
+        .some((eligible) => eligible.id === message.id),
       onDelivered: (message) => restartRecoveryMail?.delete(message.id),
     });
 

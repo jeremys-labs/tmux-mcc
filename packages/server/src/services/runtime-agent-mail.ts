@@ -35,6 +35,7 @@ export interface EnqueuePendingRuntimeAgentMailInput extends Omit<RuntimeAgentMa
 export interface EnqueueRuntimeAgentMailMessagesInput extends Omit<EnqueuePendingRuntimeAgentMailInput, 'mailStore'> {
   mailStore: Pick<AgentMailStore, 'ackMessage'>;
   messages: AgentMailMessage[];
+  shouldDeliver?: (message: AgentMailMessage) => boolean;
   onDelivered?: (message: AgentMailMessage) => void;
 }
 
@@ -113,6 +114,14 @@ export function enqueueRuntimeAgentMailMessages(input: EnqueueRuntimeAgentMailMe
     input.deliveredIds.add(message.id);
     input.enqueue(async () => {
       try {
+        // Recovery work can be answered or closed while a prior delivery attempt is failing
+        // or waiting in the queue. Revalidate at execution time, not only at process startup.
+        if (input.shouldDeliver && !input.shouldDeliver(message)) {
+          input.deliveredIds.settle?.(message.id);
+          input.onDelivered?.(message);
+          appendRuntimeLog(input.runtimeLogPath, `skipped resolved mail ${message.id}`);
+          return;
+        }
         await deliverRuntimeAgentMail({ ...input, message });
         // Delivered and acked (or deliberately re-injected after restart) — safe to let the
         // cap evict this id. The restart controller separately removes recovered work from
