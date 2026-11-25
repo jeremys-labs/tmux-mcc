@@ -140,10 +140,17 @@ function readJson(file, fallback) {
 }
 
 function sendMail(to, subject, bodyFile) {
-  return run(mailBin, [
+  const r = run(mailBin, [
     'send', '--from', agent, '--to', to, '--type', 'note',
     '--subject', subject, '--body-file', bodyFile,
-  ], { AGENT_MAIL_DIR: mailDir }).status === 0;
+  ], { AGENT_MAIL_DIR: mailDir });
+  // WHY IT FAILED, NOT JUST THAT IT DID (isla, dc-20261125-vitest-worker). `routing.failed`
+  // recorded `tmux-mcc#36 -> isla` and nothing else, so a real ENOENT on the body file read as
+  // a flaky test for an afternoon -- the mail binary had been saying so on a stderr nobody
+  // captured. Same "absence of a reason is not a reason" class as the artifact `skipped` field.
+  const why = String(r.stderr ?? '').trim().split('\n')[0]
+    || (r.error ? String(r.error.message) : `exit ${r.status}`);
+  return { ok: r.status === 0, why };
 }
 
 const routing = {
@@ -171,6 +178,18 @@ else if (staleFindings) {
 }
 
 if (routable) {
+  // A BODY PATH TWO RUNS SHARE IS A RACE, AND IT BIT (isla's catch, dc-20261125-vitest-worker).
+  // This was `path.join(os.tmpdir(), `pr-unreviewed-${repo}-${number}.md`)` -- no pid, no
+  // randomness -- written once per finding and unlinked after the recipient loop. Two runners
+  // on the same PR (the scheduled run plus a manual one, or two test workers) meant one
+  // process's unlink landing BETWEEN the other's two sends: first recipient delivered, second
+  // ENOENT, marked failed, state not advanced for them. PROVEN with two concurrent runners on
+  // one fixture: 7 collisions in 24 invocations, stub reporting
+  // `ENOENT .../pr-unreviewed-tmux-mcc-36.md`.
+  //
+  // Eleven lines above, `tempTextFile` already did this right with `${process.pid}`. One temp
+  // file got a unique name and the other did not, in the same script.
+  const bodyDir = fs.mkdtempSync(path.join(os.tmpdir(), `pr-unreviewed-${process.pid}-`));
   const open = new Set(findings.undispositioned.map((f) => `${f.repo}#${f.number}`));
   // TRIM ONLY WHAT WAS ACTUALLY SWEPT (review finding 4). The intersection bounds the state
   // against its subject, but intersecting against a repo that FAILED to sweep erases the
@@ -239,7 +258,7 @@ if (routable) {
          '',
          'Nothing merges on an unread or un-dispositioned review. Either get a verdict on the exact',
          'head, or close the PR if it is abandoned.'];
-    const body = path.join(os.tmpdir(), `pr-unreviewed-${f.repo}-${f.number}.md`);
+    const body = path.join(bodyDir, `pr-unreviewed-${f.repo}-${f.number}.md`);
     fs.writeFileSync(body, [
       headline,
       '',
@@ -257,18 +276,20 @@ if (routable) {
       : `No review verdict after ${f.hoursSinceHead}h: ${f.repo} #${f.number}`;
     for (const to of pending) {
       routing.attempted += 1;
-      if (sendMail(to, subject, body)) {
+      const sent = sendMail(to, subject, body);
+      if (sent.ok) {
         routing.delivered += 1;
         // Recorded per recipient, so a failure to one never re-mails the other.
         already[to] = new Date().toISOString();
         routing.notifiedNow.push(`${key} -> ${to}`);
       } else {
-        routing.failed.push(`${key} -> ${to}`);
+        routing.failed.push(`${key} -> ${to}: ${sent.why}`);
       }
     }
-    try { fs.unlinkSync(body); } catch { /* best-effort */ }
     if (Object.keys(already).length > 0) notified[key] = { head, recipients: already };
   }
+  // One removal for the whole run, so there is no per-file unlink to race against.
+  try { fs.rmSync(bodyDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   try {
     fs.mkdirSync(path.dirname(notifiedPath), { recursive: true });
     fs.writeFileSync(notifiedPath, `${JSON.stringify(notified, null, 2)}\n`);
