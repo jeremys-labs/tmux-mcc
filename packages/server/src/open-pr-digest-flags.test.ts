@@ -993,19 +993,37 @@ process.exit(1);
     // when the value is unchanged, so my first fixture produced two entries and asserted its
     // way to a red. Each pad commit is an empty commit off `one`, so none of them contains
     // `two` and every update really moves the ref.
+    // SPEED, and the property is unchanged (dc-20261125-digest-red). This used to make 102
+    // empty commits and then 102 `update-ref` calls -- 204 git processes, 7.5s, over the 5s
+    // limit. Two changes, neither of which touches what is asserted:
+    //   1. ONE extra commit instead of 102. The pad entries only have to NOT contain `two`,
+    //      and they must each really MOVE the ref (`update-ref` writes no entry when the value
+    //      is unchanged -- the original fixture's own hard-won note). ALTERNATING two shas
+    //      moves it every time, so distinctness was never the requirement.
+    //   2. Write the reflog file directly instead of spawning 102 `update-ref`s. The fixture
+    //      already deletes and rebuilds this exact file, so this is the same act with one
+    //      write; and the 103-entry assertion below is the format's own check -- if the lines
+    //      are malformed, `git reflog show` cannot parse them and the fixture fails loudly
+    //      instead of passing for the wrong reason.
     const branch = git(sup, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
     git(sup, ['checkout', '-q', '-b', 'pad']);
-    const pad: string[] = [];
-    for (let i = 0; i < 102; i += 1) {
-      git(sup, ['commit', '-q', '--allow-empty', '-m', `pad ${i}`], '2026-10-20T13:00:00Z');
-      pad.push(git(sup, ['rev-parse', 'HEAD']).trim());
-    }
+    git(sup, ['commit', '-q', '--allow-empty', '-m', 'pad'], '2026-10-20T13:00:00Z');
+    const padSha = git(sup, ['rev-parse', 'HEAD']).trim();   // empty commit off `one`
     git(sup, ['checkout', '-q', branch]);
-    fs.rmSync(path.join(sup, '.git/logs/refs/remotes/origin/main'));
-    for (const sha of pad) {
-      git(sup, ['update-ref', 'refs/remotes/origin/main', sha], '2026-10-20T13:00:00Z');
+
+    const logPath = path.join(sup, '.git/logs/refs/remotes/origin/main');
+    const who = 'Fixture <fixture@example.com>';
+    const padTs = Math.floor(Date.parse('2026-10-20T13:00:00Z') / 1000);
+    const twoTs = Math.floor(Date.parse('2026-10-30T11:00:00Z') / 1000);
+    const lines: string[] = [];
+    let prev = one;
+    for (let i = 0; i < 102; i += 1) {
+      const next = i % 2 === 0 ? padSha : one;   // alternate: every update really moves it
+      lines.push(`${prev} ${next} ${who} ${padTs} +0000\tupdate-ref: pad ${i}`);
+      prev = next;
     }
-    git(sup, ['update-ref', 'refs/remotes/origin/main', two], '2026-10-30T11:00:00Z');
+    lines.push(`${prev} ${two} ${who} ${twoTs} +0000\tupdate-ref: learned two`);
+    fs.writeFileSync(logPath, `${lines.join('\n')}\n`);
     expect(git(sup, ['reflog', 'show', '--format=%H', 'refs/remotes/origin/main'])
       .trim().split('\n')).toHaveLength(103);        // the fixture really is past the cap
 
