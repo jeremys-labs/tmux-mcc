@@ -1,5 +1,8 @@
 import {
   enqueuePendingRuntimeAgentMail,
+  enqueueRuntimeAgentMailMessages,
+  isRestartRecoveryAgentMail,
+  listRestartRecoveryAgentMail,
   type EnqueuePendingRuntimeAgentMailInput,
 } from './runtime-agent-mail.js';
 import {
@@ -19,12 +22,17 @@ import {
   enqueuePendingRuntimeEventInbox,
   type EnqueuePendingRuntimeEventInboxInput,
 } from './runtime-event-inbox.js';
+import type { AgentMailStore } from '@agent-comms/mailbox';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
+export const RESTART_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+export const RESTART_RECOVERY_LIMIT = 10;
 export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
-type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'mailStore' | 'submitPrompt'>;
+type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'submitPrompt'> & {
+  mailStore: EnqueuePendingRuntimeAgentMailInput['mailStore'] & Pick<AgentMailStore, 'getMessage' | 'listEvents'>;
+};
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
 type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
 type EventInboxPollerArgs = Pick<EnqueuePendingRuntimeEventInboxInput, 'eventInbox' | 'submitPrompt'>;
@@ -80,6 +88,16 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredAgentMailIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
+
+  // The recovery window starts at the first acknowledgement, which redelivery leaves intact.
+  // Use the startup time for both selection and revalidation so queue delays cannot age out work.
+  const restartRecoveryOptions = {
+    nowMs: Date.now(),
+    maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS,
+  };
+  // Snapshot recent, newest-first obligations once per process start. Successful delivery
+  // removes an entry; a timeout keeps its id claimed because the detached task may still submit.
+  let restartRecoveryMail: Map<string, ReturnType<typeof listRestartRecoveryAgentMail>[number]> | null = null;
 
   let handoffSettled = false;
   let handoffInFlight = false;
@@ -143,6 +161,45 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       runtimeLogPath,
       submitPrompt: agentMail.submitPrompt,
       enqueue,
+    });
+
+    if (restartRecoveryMail === null) {
+      restartRecoveryMail = new Map(
+        listRestartRecoveryAgentMail(agentMail.mailStore, agentKey, {
+          ...restartRecoveryOptions,
+          limit: RESTART_RECOVERY_LIMIT,
+        })
+          .map((message) => [message.id, message]),
+      );
+    }
+    enqueueRuntimeAgentMailMessages({
+      agentKey,
+      mailStore: agentMail.mailStore,
+      deliveredIds: deliveredAgentMailIds,
+      events,
+      openBrainConfig,
+      runtimeLogPath,
+      submitPrompt: agentMail.submitPrompt,
+      enqueue,
+      messages: [...restartRecoveryMail.values()],
+      shouldDeliver: (message) => isRestartRecoveryAgentMail(
+        agentMail.mailStore,
+        agentKey,
+        message.id,
+        restartRecoveryOptions,
+      ),
+      deliveryNoticeForMessage: (message) => [
+        '[Restart Recovery] This request was delivered before the runtime restarted and still appears unanswered.',
+        `Originally created: ${message.createdAt}`,
+        'Treat it as recovered work, not a brand-new message.',
+      ].join('\n'),
+      // A timed-out task keeps running detached. Releasing its id would let the next tick submit
+      // the same prompt concurrently. A later process restart can recover a genuinely stuck item.
+      releaseOnTimeout: false,
+      // Once submitPrompt resolves, retrying after an acknowledgement/logging error duplicates a
+      // prompt the runtime already received. Remove it from this process-local recovery snapshot.
+      settleAfterSubmitError: true,
+      onDelivered: (message) => restartRecoveryMail?.delete(message.id),
     });
 
     if (eventInbox) {
