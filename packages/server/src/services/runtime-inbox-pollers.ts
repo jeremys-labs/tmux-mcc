@@ -89,8 +89,13 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
 
-  // Snapshot only recent, newest-first obligations once per process start. The age window and cap
-  // keep historical mailbox debt from monopolizing the serial runtime queue. Successful delivery
+  // The recovery window starts at the first acknowledgement, which redelivery leaves intact.
+  // Use the startup time for both selection and revalidation so queue delays cannot age out work.
+  const restartRecoveryOptions = {
+    nowMs: Date.now(),
+    maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS,
+  };
+  // Snapshot recent, newest-first obligations once per process start. Successful delivery
   // removes an entry; a timeout keeps its id claimed because the detached task may still submit.
   let restartRecoveryMail: Map<string, ReturnType<typeof listRestartRecoveryAgentMail>[number]> | null = null;
 
@@ -161,7 +166,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
     if (restartRecoveryMail === null) {
       restartRecoveryMail = new Map(
         listRestartRecoveryAgentMail(agentMail.mailStore, agentKey, {
-          maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS,
+          ...restartRecoveryOptions,
           limit: RESTART_RECOVERY_LIMIT,
         })
           .map((message) => [message.id, message]),
@@ -181,7 +186,7 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
         agentMail.mailStore,
         agentKey,
         message.id,
-        { maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS },
+        restartRecoveryOptions,
       ),
       deliveryNoticeForMessage: (message) => [
         '[Restart Recovery] This request was delivered before the runtime restarted and still appears unanswered.',

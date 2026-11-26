@@ -261,6 +261,26 @@ describe('runtime agent-mail delivery', () => {
     expect(mailStore.listEvents).toHaveBeenCalledWith(eligible.id);
   });
 
+  it.each([
+    ['another recipient', { toAgent: 'someone-else' }],
+    ['a future acknowledgement', { ackedAt: '2026-11-25T18:01:00.000Z' }],
+  ])('rejects recovery by id for %s', (_description, overrides) => {
+    const candidate = message({
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: '2026-11-25T17:59:00.000Z',
+      ...overrides,
+    });
+    const mailStore = {
+      getMessage: vi.fn(() => candidate),
+      listEvents: vi.fn(() => []),
+    };
+
+    expect(isRestartRecoveryAgentMail(mailStore, 'enzo', candidate.id, {
+      nowMs: Date.parse('2026-11-25T18:00:00.000Z'),
+    })).toBe(false);
+  });
+
   it('settles recovered work after submit succeeds even if acknowledgement throws', async () => {
     const queued: Array<() => Promise<void>> = [];
     const deliveredIds = createBoundedIdSet(100);

@@ -122,7 +122,6 @@ function isRestartRecoveryMessage(
     && message.status === 'acked'
     && message.requiresResponse
     && message.fromAgent !== agentKey
-    && Number.isFinite(ackedMs)
     && ageMs >= 0
     && ageMs <= maxAgeMs
     && !listEvents(message.id).some((event) => event.eventType === 'replied');
