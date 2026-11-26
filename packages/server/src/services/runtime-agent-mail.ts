@@ -24,6 +24,8 @@ export interface RuntimeAgentMailDeliveryInput {
   submitPrompt: (prompt: string, message: AgentMailMessage) => Promise<void>;
   runtimeLogPath: string;
   openBrainConfig?: OpenBrainRuntimeConfig | null;
+  deliveryNotice?: string;
+  onSubmitted?: () => void;
 }
 
 export interface EnqueuePendingRuntimeAgentMailInput extends Omit<RuntimeAgentMailDeliveryInput, 'message'> {
@@ -36,6 +38,9 @@ export interface EnqueueRuntimeAgentMailMessagesInput extends Omit<EnqueuePendin
   mailStore: Pick<AgentMailStore, 'ackMessage'>;
   messages: AgentMailMessage[];
   shouldDeliver?: (message: AgentMailMessage) => boolean;
+  deliveryNoticeForMessage?: (message: AgentMailMessage) => string;
+  settleAfterSubmitError?: boolean;
+  releaseOnTimeout?: boolean;
   onDelivered?: (message: AgentMailMessage) => void;
 }
 
@@ -44,7 +49,17 @@ function appendRuntimeLog(runtimeLogPath: string, line: string): void {
 }
 
 export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInput): Promise<void> {
-  const { agentKey, message, mailStore, events, submitPrompt, runtimeLogPath, openBrainConfig } = input;
+  const {
+    agentKey,
+    message,
+    mailStore,
+    events,
+    submitPrompt,
+    runtimeLogPath,
+    openBrainConfig,
+    deliveryNotice,
+    onSubmitted,
+  } = input;
 
   await runInboundRuntimeTurn({
     emit: events.emit,
@@ -76,9 +91,12 @@ export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInp
         appendRuntimeLog(runtimeLogPath, `built answer-context for mail ${message.id}`);
       }
 
-      return [answerContext, formatAgentMailForRuntime(message)].filter(Boolean).join('\n\n');
+      return [deliveryNotice, answerContext, formatAgentMailForRuntime(message)].filter(Boolean).join('\n\n');
     },
-    submitPrompt: (prompt) => submitPrompt(prompt, message),
+    submitPrompt: async (prompt) => {
+      await submitPrompt(prompt, message);
+      onSubmitted?.();
+    },
     acknowledgeDelivery: () => {
       mailStore.ackMessage(agentKey, message.id);
       appendRuntimeLog(runtimeLogPath, `acknowledged mail ${message.id}`);
@@ -91,15 +109,63 @@ export async function deliverRuntimeAgentMail(input: RuntimeAgentMailDeliveryInp
  * They are intentionally separate from the normal NEW inbox: acknowledgement records prompt
  * delivery, not completion of a requires-response obligation.
  */
+function isRestartRecoveryMessage(
+  message: AgentMailMessage,
+  agentKey: string,
+  listEvents: (messageId: string) => ReturnType<AgentMailStore['listEvents']>,
+  nowMs: number,
+  maxAgeMs: number,
+): boolean {
+  const ackedMs = message.ackedAt ? Date.parse(message.ackedAt) : Number.NaN;
+  const ageMs = nowMs - ackedMs;
+  return message.toAgent === agentKey
+    && message.status === 'acked'
+    && message.requiresResponse
+    && message.fromAgent !== agentKey
+    && Number.isFinite(ackedMs)
+    && ageMs >= 0
+    && ageMs <= maxAgeMs
+    && !listEvents(message.id).some((event) => event.eventType === 'replied');
+}
+
 export function listRestartRecoveryAgentMail(
   mailStore: Pick<AgentMailStore, 'listInbox' | 'listEvents'>,
   agentKey: string,
+  options: {
+    nowMs?: number;
+    maxAgeMs?: number;
+    limit?: number;
+  } = {},
 ): AgentMailMessage[] {
-  return mailStore.listInbox({ agent: agentKey, status: 'acked' }).filter((message) =>
-    message.requiresResponse
-    && message.fromAgent !== agentKey
-    && !mailStore.listEvents(message.id).some((event) => event.eventType === 'replied')
-  );
+  const nowMs = options.nowMs ?? Date.now();
+  const maxAgeMs = options.maxAgeMs ?? Number.POSITIVE_INFINITY;
+  const limit = options.limit ?? Number.POSITIVE_INFINITY;
+  return mailStore.listInbox({ agent: agentKey, status: 'acked' })
+    .filter((message) => isRestartRecoveryMessage(
+      message,
+      agentKey,
+      (messageId) => mailStore.listEvents(messageId),
+      nowMs,
+      maxAgeMs,
+    ))
+    .sort((a, b) => Date.parse(b.ackedAt!) - Date.parse(a.ackedAt!))
+    .slice(0, limit);
+}
+
+export function isRestartRecoveryAgentMail(
+  mailStore: Pick<AgentMailStore, 'getMessage' | 'listEvents'>,
+  agentKey: string,
+  messageId: string,
+  options: { nowMs?: number; maxAgeMs?: number } = {},
+): boolean {
+  const message = mailStore.getMessage(messageId);
+  return Boolean(message && isRestartRecoveryMessage(
+    message,
+    agentKey,
+    (id) => mailStore.listEvents(id),
+    options.nowMs ?? Date.now(),
+    options.maxAgeMs ?? Number.POSITIVE_INFINITY,
+  ));
 }
 
 export function enqueueRuntimeAgentMailMessages(input: EnqueueRuntimeAgentMailMessagesInput): void {
@@ -113,6 +179,7 @@ export function enqueueRuntimeAgentMailMessages(input: EnqueueRuntimeAgentMailMe
     if (input.deliveredIds.has(message.id)) continue;
     input.deliveredIds.add(message.id);
     input.enqueue(async () => {
+      let submitted = false;
       try {
         // Recovery work can be answered or closed while a prior delivery attempt is failing
         // or waiting in the queue. Revalidate at execution time, not only at process startup.
@@ -122,21 +189,36 @@ export function enqueueRuntimeAgentMailMessages(input: EnqueueRuntimeAgentMailMe
           appendRuntimeLog(input.runtimeLogPath, `skipped resolved mail ${message.id}`);
           return;
         }
-        await deliverRuntimeAgentMail({ ...input, message });
+        await deliverRuntimeAgentMail({
+          ...input,
+          message,
+          deliveryNotice: input.deliveryNoticeForMessage?.(message),
+          onSubmitted: () => { submitted = true; },
+        });
         // Delivered and acked (or deliberately re-injected after restart) — safe to let the
         // cap evict this id. The restart controller separately removes recovered work from
         // its process-local retry map only after this delivery succeeds.
         input.deliveredIds.settle?.(message.id);
         input.onDelivered?.(message);
       } catch (error) {
-        input.deliveredIds.delete(message.id);
-        appendRuntimeLog(input.runtimeLogPath, `mail inject error ${message.id}: ${String(error)}`);
+        if (submitted && input.settleAfterSubmitError) {
+          input.deliveredIds.settle?.(message.id);
+          input.onDelivered?.(message);
+          appendRuntimeLog(input.runtimeLogPath, `mail post-submit error ${message.id}; treating prompt as delivered: ${String(error)}`);
+        } else {
+          input.deliveredIds.delete(message.id);
+          appendRuntimeLog(input.runtimeLogPath, `mail inject error ${message.id}: ${String(error)}`);
+        }
       }
     }, {
       onTimeout: () => {
-        // Timed-out delivery never acked (still 'new'); release the id so it is retried.
-        input.deliveredIds.delete(message.id);
-        appendRuntimeLog(input.runtimeLogPath, `mail inject timeout ${message.id}; releasing for retry`);
+        if (input.releaseOnTimeout === false) {
+          appendRuntimeLog(input.runtimeLogPath, `mail inject timeout ${message.id}; retaining id while detached delivery may finish`);
+        } else {
+          // NEW mail remains eligible after a pre-submit timeout, so release it for retry.
+          input.deliveredIds.delete(message.id);
+          appendRuntimeLog(input.runtimeLogPath, `mail inject timeout ${message.id}; releasing for retry`);
+        }
       },
     });
   }

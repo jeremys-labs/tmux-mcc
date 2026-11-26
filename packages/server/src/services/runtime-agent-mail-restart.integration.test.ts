@@ -91,6 +91,17 @@ describe('agent-mail restart recovery', () => {
     expect(store.getMessage(request.id)?.status).toBe('acked');
     firstRuntime.handle.stop();
 
+    // ACK alone is not an obligation: requiresResponse is the canonical recovery discriminator.
+    const informational = store.send({
+      fromAgent: 'marcus',
+      toAgent: 'enzo',
+      type: 'note',
+      subject: 'Informational only',
+      bodyMd: 'Informational only; no answer requested.',
+      requiresResponse: false,
+    });
+    store.ackMessage('enzo', informational.id);
+
     // pending_mail_count deliberately describes only undelivered NEW mail.
     const handoff = buildRuntimeHandoff({
       agent: 'enzo',
@@ -111,6 +122,9 @@ describe('agent-mail restart recovery', () => {
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toContain('[Agent Mail] New message from marcus');
     expect(submitted[0]).toContain('Old unanswered request');
+    expect(submitted[0]).toContain('[Restart Recovery]');
+    expect(submitted[0]).toContain(`Originally created: ${request.createdAt}`);
+    expect(submitted[0]).not.toContain('Informational only');
 
     // Recovery is once per restart, not every poll tick.
     restarted.handle.tick();

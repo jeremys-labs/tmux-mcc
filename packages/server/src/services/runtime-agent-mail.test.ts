@@ -3,6 +3,9 @@ import type { AgentMailMessage } from '@agent-comms/mailbox';
 import {
   deliverRuntimeAgentMail,
   enqueuePendingRuntimeAgentMail,
+  enqueueRuntimeAgentMailMessages,
+  isRestartRecoveryAgentMail,
+  listRestartRecoveryAgentMail,
 } from './runtime-agent-mail.js';
 import { createRuntimeEventEmitter } from './runtime-events.js';
 import { createRuntimeTaskQueue } from './runtime-task-queue.js';
@@ -192,4 +195,130 @@ describe('runtime agent-mail delivery', () => {
     expect(queued).toHaveLength(1);
     expect(deliveredIds.has('msg_1')).toBe(true);
   }, 1000);
+
+  it('bounds restart recovery by age and count, newest first, and excludes non-obligations', () => {
+    const nowMs = Date.parse('2026-11-25T18:00:00.000Z');
+    const recent = Array.from({ length: 12 }, (_, index) => message({
+      id: `msg_recent_${index}`,
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: new Date(nowMs - index * 1_000).toISOString(),
+    }));
+    const informational = message({
+      id: 'msg_informational',
+      requiresResponse: false,
+      status: 'acked',
+      ackedAt: new Date(nowMs - 500).toISOString(),
+    });
+    const stale = message({
+      id: 'msg_stale',
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: new Date(nowMs - 25 * 60 * 60 * 1_000).toISOString(),
+    });
+    const mailStore = {
+      listInbox: vi.fn(() => [...recent].reverse().concat(informational, stale)),
+      listEvents: vi.fn(() => []),
+    };
+
+    const recovered = listRestartRecoveryAgentMail(mailStore, 'enzo', {
+      nowMs,
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+      limit: 10,
+    });
+
+    expect(recovered.map((item) => item.id)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `msg_recent_${index}`),
+    );
+    expect(recovered.map((item) => item.id)).not.toContain('msg_informational');
+    expect(recovered.map((item) => item.id)).not.toContain('msg_stale');
+    expect(listRestartRecoveryAgentMail({
+      listInbox: vi.fn(() => [stale]),
+      listEvents: vi.fn(() => []),
+    }, 'enzo', {
+      nowMs,
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+      limit: 10,
+    })).toEqual([]);
+  });
+
+  it('revalidates one recovery id without rescanning the ACKED inbox', () => {
+    const eligible = message({
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: '2026-11-25T17:59:00.000Z',
+    });
+    const mailStore = {
+      getMessage: vi.fn(() => eligible),
+      listEvents: vi.fn(() => []),
+    };
+
+    expect(isRestartRecoveryAgentMail(mailStore, 'enzo', eligible.id, {
+      nowMs: Date.parse('2026-11-25T18:00:00.000Z'),
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+    })).toBe(true);
+    expect(mailStore.getMessage).toHaveBeenCalledWith(eligible.id);
+    expect(mailStore.listEvents).toHaveBeenCalledWith(eligible.id);
+  });
+
+  it('settles recovered work after submit succeeds even if acknowledgement throws', async () => {
+    const queued: Array<() => Promise<void>> = [];
+    const deliveredIds = createBoundedIdSet(100);
+    const onDelivered = vi.fn();
+    const recovered = message({
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: '2026-11-25T17:59:00.000Z',
+    });
+
+    enqueueRuntimeAgentMailMessages({
+      agentKey: 'enzo',
+      mailStore: { ackMessage: vi.fn(() => { throw new Error('post-submit ack failed'); }) },
+      messages: [recovered],
+      deliveredIds,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt: async () => undefined,
+      runtimeLogPath: '/tmp/enzo.log',
+      enqueue: (task) => queued.push(task),
+      settleAfterSubmitError: true,
+      onDelivered,
+    });
+
+    await queued[0]();
+    expect(onDelivered).toHaveBeenCalledWith(recovered);
+    expect(deliveredIds.has(recovered.id)).toBe(true);
+  });
+
+  it('retains a recovered id on timeout so a detached submit cannot race a retry', () => {
+    const queued: Array<() => Promise<void>> = [];
+    const options: Array<{ onTimeout?: () => void }> = [];
+    const deliveredIds = createBoundedIdSet(100);
+    const recovered = message({
+      requiresResponse: true,
+      status: 'acked',
+      ackedAt: '2026-11-25T17:59:00.000Z',
+    });
+    const base = {
+      agentKey: 'enzo',
+      mailStore: { ackMessage: vi.fn() },
+      messages: [recovered],
+      deliveredIds,
+      events: createRuntimeEventEmitter({ agent: 'enzo', runtime: 'codex', sinks: [] }),
+      submitPrompt: () => new Promise<void>(() => { /* detached task remains pending */ }),
+      runtimeLogPath: '/tmp/enzo.log',
+      enqueue: (task: () => Promise<void>, opts?: { onTimeout?: () => void }) => {
+        queued.push(task);
+        options.push(opts ?? {});
+      },
+      releaseOnTimeout: false,
+    };
+
+    enqueueRuntimeAgentMailMessages(base);
+    expect(queued).toHaveLength(1);
+    options[0].onTimeout?.();
+    expect(deliveredIds.has(recovered.id)).toBe(true);
+
+    enqueueRuntimeAgentMailMessages(base);
+    expect(queued).toHaveLength(1);
+  });
 });

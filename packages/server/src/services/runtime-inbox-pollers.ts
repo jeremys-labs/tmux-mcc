@@ -1,6 +1,7 @@
 import {
   enqueuePendingRuntimeAgentMail,
   enqueueRuntimeAgentMailMessages,
+  isRestartRecoveryAgentMail,
   listRestartRecoveryAgentMail,
   type EnqueuePendingRuntimeAgentMailInput,
 } from './runtime-agent-mail.js';
@@ -24,11 +25,13 @@ import {
 import type { AgentMailStore } from '@agent-comms/mailbox';
 
 export const DEFAULT_RUNTIME_INBOX_POLL_INTERVAL_MS = 2_000;
+export const RESTART_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+export const RESTART_RECOVERY_LIMIT = 10;
 export { createBoundedIdSet, DEFAULT_DELIVERED_ID_CAP } from './runtime-delivered-ids.js';
 
 type DiscordPollerArgs = Pick<EnqueuePendingRuntimeDiscordInboxInput, 'submitPrompt'>;
 type AgentMailPollerArgs = Pick<EnqueuePendingRuntimeAgentMailInput, 'submitPrompt'> & {
-  mailStore: EnqueuePendingRuntimeAgentMailInput['mailStore'] & Pick<AgentMailStore, 'listEvents'>;
+  mailStore: EnqueuePendingRuntimeAgentMailInput['mailStore'] & Pick<AgentMailStore, 'getMessage' | 'listEvents'>;
 };
 type BlueBubblesPollerArgs = Pick<EnqueuePendingRuntimeBlueBubblesInboxInput, 'submitPrompt'>;
 type HandoffPollerArgs = Pick<RuntimeHandoffInjectionInput, 'workspace' | 'submitHandoff'>;
@@ -86,9 +89,9 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
   const deliveredBlueBubblesIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
   const deliveredEventInboxIds = createBoundedIdSet(DEFAULT_DELIVERED_ID_CAP);
 
-  // Snapshot once per process start. Successful deliveries leave the map; failed or timed-out
-  // deliveries remain and retry on the next tick. Querying ACKED rows forever would eventually
-  // replay ancient work after the bounded delivered-id set evicts it.
+  // Snapshot only recent, newest-first obligations once per process start. The age window and cap
+  // keep historical mailbox debt from monopolizing the serial runtime queue. Successful delivery
+  // removes an entry; a timeout keeps its id claimed because the detached task may still submit.
   let restartRecoveryMail: Map<string, ReturnType<typeof listRestartRecoveryAgentMail>[number]> | null = null;
 
   let handoffSettled = false;
@@ -157,7 +160,10 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
 
     if (restartRecoveryMail === null) {
       restartRecoveryMail = new Map(
-        listRestartRecoveryAgentMail(agentMail.mailStore, agentKey)
+        listRestartRecoveryAgentMail(agentMail.mailStore, agentKey, {
+          maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS,
+          limit: RESTART_RECOVERY_LIMIT,
+        })
           .map((message) => [message.id, message]),
       );
     }
@@ -171,8 +177,23 @@ export function startRuntimeInboxPollers(input: RuntimeInboxPollersInput): Runti
       submitPrompt: agentMail.submitPrompt,
       enqueue,
       messages: [...restartRecoveryMail.values()],
-      shouldDeliver: (message) => listRestartRecoveryAgentMail(agentMail.mailStore, agentKey)
-        .some((eligible) => eligible.id === message.id),
+      shouldDeliver: (message) => isRestartRecoveryAgentMail(
+        agentMail.mailStore,
+        agentKey,
+        message.id,
+        { maxAgeMs: RESTART_RECOVERY_MAX_AGE_MS },
+      ),
+      deliveryNoticeForMessage: (message) => [
+        '[Restart Recovery] This request was delivered before the runtime restarted and still appears unanswered.',
+        `Originally created: ${message.createdAt}`,
+        'Treat it as recovered work, not a brand-new message.',
+      ].join('\n'),
+      // A timed-out task keeps running detached. Releasing its id would let the next tick submit
+      // the same prompt concurrently. A later process restart can recover a genuinely stuck item.
+      releaseOnTimeout: false,
+      // Once submitPrompt resolves, retrying after an acknowledgement/logging error duplicates a
+      // prompt the runtime already received. Remove it from this process-local recovery snapshot.
+      settleAfterSubmitError: true,
       onDelivered: (message) => restartRecoveryMail?.delete(message.id),
     });
 

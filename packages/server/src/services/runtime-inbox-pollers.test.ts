@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const enqueueDiscord = vi.fn();
 const enqueueAgentMail = vi.fn();
 const enqueueRestartAgentMail = vi.fn();
-const listRestartAgentMail = vi.fn((_store: unknown, _agent: unknown) => []);
+const listRestartAgentMail = vi.fn((_store: unknown, _agent: unknown, _options?: unknown) => []);
 const enqueueBlueBubbles = vi.fn();
 const injectHandoff = vi.fn();
 const enqueueEventInbox = vi.fn();
@@ -14,7 +14,9 @@ vi.mock('./runtime-discord-inbox.js', () => ({
 vi.mock('./runtime-agent-mail.js', () => ({
   enqueuePendingRuntimeAgentMail: (input: unknown) => enqueueAgentMail(input),
   enqueueRuntimeAgentMailMessages: (input: unknown) => enqueueRestartAgentMail(input),
-  listRestartRecoveryAgentMail: (store: unknown, agent: unknown) => listRestartAgentMail(store, agent),
+  isRestartRecoveryAgentMail: vi.fn(() => true),
+  listRestartRecoveryAgentMail: (store: unknown, agent: unknown, options: unknown) =>
+    listRestartAgentMail(store, agent, options),
 }));
 vi.mock('./runtime-bluebubbles-inbox.js', () => ({
   enqueuePendingRuntimeBlueBubblesInbox: (input: unknown) => enqueueBlueBubbles(input),
@@ -80,7 +82,13 @@ describe('startRuntimeInboxPollers', () => {
     expect(enqueueDiscord).toHaveBeenCalledTimes(1);
     expect(enqueueAgentMail).toHaveBeenCalledTimes(1);
     expect(enqueueRestartAgentMail).toHaveBeenCalledTimes(1);
+    expect(enqueueRestartAgentMail.mock.calls[0][0].releaseOnTimeout).toBe(false);
+    expect(enqueueRestartAgentMail.mock.calls[0][0].settleAfterSubmitError).toBe(true);
     expect(listRestartAgentMail).toHaveBeenCalledTimes(1);
+    expect(listRestartAgentMail.mock.calls[0][2]).toEqual({
+      maxAgeMs: 24 * 60 * 60 * 1_000,
+      limit: 10,
+    });
     expect(enqueueEventInbox).toHaveBeenCalledTimes(1);
 
     handle.tick();
